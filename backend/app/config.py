@@ -44,3 +44,8 @@ CHUNK_OVERLAP = _int("CHUNK_OVERLAP", 150)
 
 # Scanned PDF: min chars per page to consider "has text"
 MIN_CHARS_PER_PAGE = _int("MIN_CHARS_PER_PAGE", 50)
+
+# OpenRouter (LLM)
+OPENROUTER_API_KEY = _str("OPENROUTER_API_KEY")
+OPENROUTER_BASE_URL = _str("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+OPENROUTER_CHAT_MODEL = _str("OPENROUTER_CHAT_MODEL", "openai/gpt-4o-mini")

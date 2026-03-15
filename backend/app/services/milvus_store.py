@@ -30,9 +30,9 @@ VECTOR_FIELD = "embedding"
 PAGE_FIELD = "page"
 SOURCE_FIELD = "source"
 
-# IVF_FLAT index params
+# IVF_FLAT index params (COSINE for retrieval alignment)
 IVF_NLIST = 128
-METRIC_TYPE = "IP"  # inner product for normalized embeddings (cosine-like)
+METRIC_TYPE = "COSINE"
 
 
 def _ensure_connection() -> None:
