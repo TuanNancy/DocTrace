@@ -1,0 +1,51 @@
+/** Upload response from POST /api/upload (mock / future backend) */
+export interface UploadResponse {
+  doc_id: string;
+  chunks_count: number;
+  message: string;
+}
+
+/** Single citation source from SSE event "sources" */
+export interface ChatSource {
+  page: number;
+  source: string;
+  score: number;
+}
+
+/** Parsed SSE event types for streamChat() */
+export type SSEEventType = "sources" | "token" | "error" | "done";
+
+export interface SSESourcesEvent {
+  type: "sources";
+  data: ChatSource[];
+}
+
+export interface SSETokenEvent {
+  type: "token";
+  data: string;
+}
+
+export interface SSEErrorEvent {
+  type: "error";
+  data: { message: string };
+}
+
+export interface SSEDoneEvent {
+  type: "done";
+  data: "[DONE]";
+}
+
+export type SSEEvent =
+  | SSESourcesEvent
+  | SSETokenEvent
+  | SSEErrorEvent
+  | SSEDoneEvent;
+
+/** One message in chat history */
+export interface ChatMessage {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  sources?: ChatSource[];
+  isStreaming?: boolean;
+}
