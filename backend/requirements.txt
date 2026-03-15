@@ -1,0 +1,38 @@
+# Core API
+fastapi==0.135.1
+uvicorn==0.41.0
+python-multipart==0.0.20
+
+# LangChain
+langchain==1.2.12
+langchain-core==1.2.19
+langchain-community==0.4.1
+langchain-text-splitters==0.3.4
+
+# LangGraph
+langgraph==1.1.2
+
+# LLM / Embeddings
+openai==2.28.0
+
+# Vector DB
+pymilvus==2.6.10
+
+# PDF
+pypdf==6.8.0
+
+# Config
+python-dotenv==1.2.2
+
+# HTTP
+httpx==0.28.1
+requests==2.32.5
+
+# Numeric
+numpy==2.4.3
+
+# Tokenization
+tiktoken==0.8.0
+
+sentence-transformers
+rank-bm25
