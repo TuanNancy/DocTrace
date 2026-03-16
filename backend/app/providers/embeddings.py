@@ -1,14 +1,11 @@
 """
-Embedding service with toggle OpenAI / HuggingFace (BAAI/bge-m3).
-Cache embedder instance via @lru_cache to avoid re-init per request.
+Embedding provider: OpenAI embeddings (text-embedding-3-small, etc.).
 """
 import logging
 from functools import lru_cache
 from typing import Protocol
 
 from app.config import (
-    EMBEDDING_PROVIDER,
-    HUGGINGFACE_EMBEDDING_MODEL,
     OPENAI_API_KEY,
     OPENAI_EMBEDDING_MODEL,
 )
@@ -20,6 +17,7 @@ class Embedder(Protocol):
     """Protocol for embedders: embed_documents and dimension."""
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]: ...
+
     @property
     def dimension(self) -> int: ...
 
@@ -57,47 +55,20 @@ class OpenAIEmbedder:
                 out.append(d.embedding)
         return out
 
-    @property
-    def dimension(self) -> int:
-        return self._dim
-
-
-class HuggingFaceEmbedder:
-    """HuggingFace sentence-transformers (e.g. BAAI/bge-m3)."""
-
-    def __init__(self, model_name: str = HUGGINGFACE_EMBEDDING_MODEL):
-        from sentence_transformers import SentenceTransformer
-        self._model = SentenceTransformer(model_name)
-        self._dim = self._model.get_sentence_embedding_dimension()
-
-    def embed_documents(self, texts: list[str]) -> list[list[float]]:
-        if not texts:
-            return []
-        embeddings = self._model.encode(texts, convert_to_numpy=True)
-        return [e.tolist() for e in embeddings]
-
-    @property
+    @property:
     def dimension(self) -> int:
         return self._dim
 
 
 @lru_cache(maxsize=2)
 def get_embedder(
-    provider: str | None = None,
     openai_model: str | None = None,
-    huggingface_model: str | None = None,
 ) -> Embedder:
     """
-    Return cached embedder. Vary provider/model only when you need a different instance.
+    Return cached OpenAI embedder instance.
     """
-    provider = (provider or EMBEDDING_PROVIDER).lower().strip()
-    if provider == "openai":
-        return OpenAIEmbedder(
-            model=openai_model or OPENAI_EMBEDDING_MODEL,
-            api_key=OPENAI_API_KEY or None,
-        )
-    if provider == "huggingface":
-        return HuggingFaceEmbedder(
-            model_name=huggingface_model or HUGGINGFACE_EMBEDDING_MODEL,
-        )
-    raise ValueError(f"Unknown embedding provider: {provider}. Use 'openai' or 'huggingface'.")
+    return OpenAIEmbedder(
+        model=openai_model or OPENAI_EMBEDDING_MODEL,
+        api_key=OPENAI_API_KEY or None,
+    )
+

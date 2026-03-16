@@ -10,7 +10,7 @@ from pathlib import Path
 # Add backend to path so app is importable
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.services.indexing import chunk_documents, load_pdf_pages
+from app.documents.indexing import chunk_documents, load_pdf_pages
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 logger = logging.getLogger(__name__)

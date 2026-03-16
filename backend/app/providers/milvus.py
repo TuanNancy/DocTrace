@@ -1,6 +1,8 @@
 """
-Milvus collection schema, batch insert, and IVF_FLAT index.
-Ensures collection exists with correct schema; inserts in batches to avoid timeout.
+Milvus vector store provider:
+- Collection schema definition
+- Collection creation / index management
+- Batch insert utilities
 """
 import logging
 import uuid
@@ -132,3 +134,4 @@ def insert_chunks_batch(
     collection.load()  # make new data searchable (e.g. in Attu)
     logger.info("Inserted %s entities for doc_id=%s", total, doc_id)
     return total
+

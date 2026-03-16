@@ -17,8 +17,8 @@ from app.config import (
     CHUNK_SIZE,
     MIN_CHARS_PER_PAGE,
 )
-from app.services.embedding import get_embedder
-from app.services.milvus_store import (
+from app.providers.embeddings import get_embedder
+from app.providers.milvus import (
     ensure_collection,
     insert_chunks_batch,
 )
@@ -166,3 +166,4 @@ def run_indexing_pipeline_from_upload(file_content: bytes, filename: str) -> Ind
             os.unlink(temp_path)
         except OSError:
             pass
+

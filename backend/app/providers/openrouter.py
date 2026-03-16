@@ -1,6 +1,7 @@
 """
-OpenRouter streaming client: AsyncOpenAI with base_url=openrouter.ai/api/v1.
-Async generator stream_answer() yields tokens from chat completions.
+OpenRouter LLM provider:
+- AsyncOpenAI client configured with OpenRouter base URL
+- Streaming chat completion helper
 """
 import logging
 from typing import AsyncIterator
@@ -45,3 +46,4 @@ async def stream_answer(
         delta = chunk.choices[0].delta
         if delta and delta.content:
             yield delta.content
+

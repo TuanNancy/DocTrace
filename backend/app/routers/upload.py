@@ -7,8 +7,8 @@ from typing import Annotated
 from fastapi import APIRouter, File, HTTPException, UploadFile
 
 from app.config import UPLOAD_ALLOWED_CONTENT_TYPES, UPLOAD_MAX_SIZE_MB
+from app.documents.indexing import run_indexing_pipeline_from_upload
 from app.schemas import UploadResponse
-from app.services.indexing import run_indexing_pipeline_from_upload
 
 logger = logging.getLogger(__name__)
 

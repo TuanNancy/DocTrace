@@ -1,13 +1,14 @@
 """
 Retrieval: embed query → Milvus ANN search (metric_type=COSINE, expr filter by doc_id).
+Also includes context builder and Vietnamese system prompt used for RAG answers.
 """
 import logging
 from dataclasses import dataclass
 
 from pymilvus import Collection
 
-from app.services.embedding import get_embedder
-from app.services.milvus_store import (
+from app.providers.embeddings import get_embedder
+from app.providers.milvus import (
     COLLECTION_NAME,
     DOC_ID_FIELD,
     PAGE_FIELD,
@@ -121,3 +122,4 @@ def build_context(chunks: list[RetrievedChunk], max_chars: int = 6000) -> str:
         parts.append(block)
         total += len(block)
     return "\n\n---\n\n".join(parts) if parts else ""
+

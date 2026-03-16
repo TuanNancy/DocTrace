@@ -24,15 +24,11 @@ def _int(key: str, default: int) -> int:
 MILVUS_HOST = _str("MILVUS_HOST", "localhost")
 MILVUS_PORT = _int("MILVUS_PORT", 19530)
 MILVUS_COLLECTION = _str("MILVUS_COLLECTION", "pdf_chunks")
-MILVUS_VECTOR_DIM = _int("MILVUS_VECTOR_DIM", 1536)  # OpenAI; bge-m3 is 1024
+MILVUS_VECTOR_DIM = _int("MILVUS_VECTOR_DIM", 1536)  # Matches default OpenAI embedding dim
 
-# Embedding provider: "openai" | "huggingface"
-EMBEDDING_PROVIDER = _str("EMBEDDING_PROVIDER", "openai")
+# Embedding (OpenAI only)
 OPENAI_API_KEY = _str("OPENAI_API_KEY")
 OPENAI_EMBEDDING_MODEL = _str("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
-HUGGINGFACE_EMBEDDING_MODEL = _str(
-    "HUGGINGFACE_EMBEDDING_MODEL", "BAAI/bge-m3"
-)
 
 # Upload
 UPLOAD_MAX_SIZE_MB = _int("UPLOAD_MAX_SIZE_MB", 50)

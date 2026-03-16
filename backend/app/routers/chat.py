@@ -9,13 +9,13 @@ from typing import AsyncIterator
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 
-from app.schemas import ChatRequest
-from app.services.llm import stream_answer
-from app.services.retrieval import (
+from app.documents.retrieval import (
     SYSTEM_PROMPT_VI,
     build_context,
     search_chunks,
 )
+from app.providers.openrouter import stream_answer
+from app.schemas import ChatRequest
 
 logger = logging.getLogger(__name__)
 
