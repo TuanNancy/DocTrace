@@ -27,30 +27,19 @@ from app.models.document import (
     create_query_result,
 )
 
-# ==================== Agent Models ====================
+# ==================== Conversation Models ====================
 from app.models.agent import (
     # Enums
     MessageRole,
-    TaskType,
     ConversationState,
     # Dataclasses
     ConversationMessage,
     ConversationSummary,
     ConversationContext,
-    AgentTask,
-    TaskPlan,
-    TaskResult,
-    AgentQueryResult,
     # Pydantic Models
     ConversationMessageResponse,
-    AgentTaskResponse,
-    TaskPlanResponse,
     # Factory Functions
     create_conversation_message,
-    create_agent_task,
-    create_task_plan,
-    create_task_result,
-    create_agent_query_result,
 )
 
 # ==================== Exports ====================
@@ -73,26 +62,15 @@ __all__ = [
     "create_document_chunk",
     "create_retrieved_chunk",
     "create_query_result",
-    # Agent Enums
+    # Conversation Enums
     "MessageRole",
-    "TaskType",
     "ConversationState",
-    # Agent Dataclasses
+    # Conversation Dataclasses
     "ConversationMessage",
     "ConversationSummary",
     "ConversationContext",
-    "AgentTask",
-    "TaskPlan",
-    "TaskResult",
-    "AgentQueryResult",
-    # Agent Pydantic Models
+    # Conversation Pydantic Models
     "ConversationMessageResponse",
-    "AgentTaskResponse",
-    "TaskPlanResponse",
-    # Agent Factory Functions
+    # Conversation Factory Functions
     "create_conversation_message",
-    "create_agent_task",
-    "create_task_plan",
-    "create_task_result",
-    "create_agent_query_result",
 ]

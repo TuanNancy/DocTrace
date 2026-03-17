@@ -2,28 +2,27 @@
 
 ## Overview
 
-This project implements a Retrieval-Augmented Generation (RAG) system for PDF document querying. The architecture follows the **DocPixie** reference architecture but is adapted for **embeddings/vector databases** instead of vision AI.
+This project implements a **standard Retrieval-Augmented Generation (RAG)** system for querying PDF documents using **text extraction + embeddings + vector search + an LLM**.
+
+**Non-goals (explicit):**
+- No computer vision / multimodal RAG in the main flow
+- No multi-agent orchestration / task planner
 
 ### Key Design Principles
 
 1. **Provider-Agnostic Configuration**: Generic configuration that works with multiple LLM providers (OpenRouter, OpenAI, Anthropic)
 2. **Separation of Concerns**: Clear boundaries between providers, storage, AI operations, and models
-3. **Vector-Based Processing**: Uses embeddings and vector databases for semantic search instead of vision models
-4. **Adaptive RAG Agent**: Intelligent query processing with context awareness
-5. **Conversation Awareness**: Maintains conversation history for multi-turn interactions
-6. **Pluggable Storage**: Support for multiple vector database backends (Milvus, in-memory)
-7. **Centralized Prompt Management**: All AI prompts in one location for easy maintenance
+3. **Vector-Based Retrieval**: Uses embeddings + vector DB for semantic search over PDF text
+4. **Simple RAG Pipeline**: Retrieve relevant chunks and synthesize an answer with citations
+5. **Pluggable Storage**: Support for multiple vector database backends (Milvus, in-memory)
+6. **Centralized Prompt Management**: All AI prompts in one location for easy maintenance
 
-## Architecture Comparison
+## High-level Data Flow
 
-### DocPixie (Vision-Based)
 ```
-PDF → Images → Vision Model → Page Selection → Analysis → Response
-```
-
-### RAG PDF Chatbot (Embedding-Based)
-```
-PDF → Text → Chunking → Embeddings → Vector Search → Context → LLM → Response
+PDF → Text (by page) → Chunking → Embeddings → Vector DB
+                                  ↓
+User query → Embedding → Vector Search → Context → LLM → Answer (+ citations)
 ```
 
 ## Directory Structure
@@ -55,14 +54,14 @@ backend/app/
 ├── models/                     # Data models
 │   ├── __init__.py
 │   ├── document.py            # Document, chunk, and query models
-│   └── agent.py               # Conversation and agent task models
+│   └── agent.py               # Conversation helpers (legacy name; not multi-agent orchestration)
 │
 ├── ai/                         # AI operations and business logic
 │   ├── __init__.py
-│   ├── rag_agent.py           # Main RAG agent orchestrator
+│   ├── rag_agent.py           # Main RAG pipeline (retrieve → build context → call LLM)
 │   └── prompts.py             # Centralized AI prompts
 │
-├── documents/                  # Document processing (legacy, being refactored)
+├── documents/                  # Legacy modules (not used by current API path)
 │   ├── __init__.py
 │   ├── indexing.py            # PDF indexing pipeline
 │   └── retrieval.py           # Vector search retrieval
@@ -338,9 +337,13 @@ task = AgentTask(
 )
 ```
 
-### 5. RAG Agent (`ai/rag_agent.py`)
+### 5. RAG Pipeline (`ai/rag_agent.py`)
 
-The RAG agent orchestrates the complete query processing workflow.
+The RAG pipeline handles query processing end-to-end:
+- Embed the user query
+- Retrieve top-k chunks from vector storage (optionally filtered by `doc_id`)
+- Build a bounded context string (includes page numbers)
+- Call the LLM to synthesize the final answer grounded in retrieved context
 
 ```python
 from app.ai.rag_agent import create_rag_agent_with_defaults
@@ -377,12 +380,9 @@ await agent.shutdown()
 
 **RAG Workflow:**
 
-1. **Query Classification**: Determine if retrieval is needed
-2. **Context Processing**: Manage conversation history
-3. **Vector Search**: Retrieve relevant chunks using embeddings
-4. **Context Building**: Format retrieved chunks for LLM
-5. **Response Generation**: Generate answer with citations
-6. **Conversation Update**: Add interaction to history
+1. **Vector Search**: Retrieve relevant chunks using embeddings
+2. **Context Building**: Format retrieved chunks for LLM with page citations
+3. **Response Generation**: Generate answer grounded in retrieved context
 
 ### 6. AI Prompts (`ai/prompts.py`)
 
@@ -402,15 +402,9 @@ formatted_prompt = format_response_synthesizer(
 )
 ```
 
-**Available Prompts:**
+**Available Prompts (core):**
 - System prompts (Vietnamese and English)
-- Context summarizer
-- Query reformulator
-- Query classifier
-- Response synthesizer
-- Task planner
-- Document summarizer
-- Chunk analyzer
+- Response synthesis (RAG answer grounded in provided context)
 
 ## API Endpoints
 
@@ -823,7 +817,7 @@ LOG_REQUESTS=true
 
 ## References
 
-- [DocPixie Architecture](./CODEBASE_OVERVIEW.md) - Reference architecture
+- [Codebase Overview](./CODEBASE_OVERVIEW.md) - Repository overview
 - [Milvus Documentation](https://milvus.io/docs) - Vector database
 - [OpenRouter API](https://openrouter.ai/docs) - LLM provider
 - [LangChain](https://python.langchain.com) - Document processing

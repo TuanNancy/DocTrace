@@ -2,7 +2,7 @@
 
 ## Overview
 
-This guide helps you migrate from the old architecture to the new DocPixie-inspired architecture. The new architecture provides better separation of concerns, provider-agnostic configuration, and improved extensibility.
+This guide helps you migrate from the old architecture to the current modular RAG architecture (text extraction + embeddings + vector search + LLM). It focuses on separation of concerns, provider-agnostic configuration, and pluggable storage.
 
 ## What's Changed
 
@@ -13,7 +13,7 @@ This guide helps you migrate from the old architecture to the new DocPixie-inspi
 3. **Centralized Prompts**: All AI prompts in one location
 4. **Better Models**: Comprehensive data models with Pydantic validation
 5. **Factory Pattern**: Easy creation of providers and storage instances
-6. **RAG Agent**: Intelligent query orchestration with conversation awareness
+6. **RAG pipeline**: Retrieve relevant chunks and synthesize grounded answers
 
 ### Architecture Changes
 
@@ -750,7 +750,7 @@ After completing the migration:
 
 ## Conclusion
 
-This migration guide provides a comprehensive path from the old architecture to the new DocPixie-inspired architecture. Take it step by step, test thoroughly, and don't hesitate to rollback if needed.
+This migration guide provides a comprehensive path from the old architecture to the current modular RAG architecture. Take it step by step, test thoroughly, and don't hesitate to rollback if needed.
 
 The new architecture provides better separation of concerns, improved extensibility, and a more maintainable codebase. The investment in migration will pay off in easier development and better long-term maintainability.
 

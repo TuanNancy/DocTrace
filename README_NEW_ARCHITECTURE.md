@@ -1,20 +1,24 @@
-# RAG PDF Chatbot - New Architecture
+# RAG PDF Chatbot - Architecture Notes
 
-A modern, modular Retrieval-Augmented Generation (RAG) system for PDF document querying, built with FastAPI and following the DocPixie reference architecture (adapted for embeddings/vector databases).
+A modular **RAG (Retrieval-Augmented Generation)** system for querying PDF documents, built with FastAPI.
 
-## 🎯 Overview
+**Explicit scope (current):**
+- No computer vision / multimodal RAG in the main flow
+- No multi-agent orchestration / task planning
 
-This project provides a clean, extensible architecture for building PDF document chatbots using RAG. It features:
+## Overview
+
+This project provides a clean architecture for: **upload PDF → index into a vector DB → query via RAG → LLM answer/summary with citations**.
 
 - **Provider-Agnostic Configuration**: Support for multiple LLM providers (OpenRouter, OpenAI, Anthropic)
 - **Pluggable Storage**: Support for multiple vector databases (Milvus, in-memory)
-- **Intelligent RAG Agent**: Context-aware query processing with conversation support
+- **RAG Pipeline**: Retrieve relevant chunks and synthesize grounded answers
 - **Streaming Responses**: Real-time token streaming for better UX
 - **Centralized Prompts**: All AI prompts in one location for easy maintenance
 - **Comprehensive Models**: Rich data models with Pydantic validation
 - **Factory Pattern**: Easy creation of providers and storage instances
 
-## 🏗️ Architecture
+## Architecture
 
 The architecture follows clear separation of concerns:
 
@@ -30,8 +34,7 @@ The architecture follows clear separation of concerns:
 ┌─────────────────────────────────────────────────────────┐
 │              AI Operations (Business Logic)              │
 │  ┌──────────────────────────────────────────────────┐  │
-│  │              RAG Agent (Orchestrator)             │  │
-│  │  • Query Processing  • Context Management         │  │
+│  │                 RAG Pipeline                     │  │
 │  │  • Vector Search     • Response Synthesis         │  │
 │  └──────────────────────────────────────────────────┘  │
 │  ┌──────────────┐              ┌──────────────┐         │
@@ -58,7 +61,7 @@ The architecture follows clear separation of concerns:
 └─────────────────────────────────────────────────────────┘
 ```
 
-## 📦 Key Components
+## Key Components
 
 ### 1. Configuration System (`core/config.py`)
 - Provider-agnostic configuration with `RAGConfig` class
@@ -80,15 +83,14 @@ The architecture follows clear separation of concerns:
 
 ### 4. Data Models (`models/`)
 - **Document Models**: Document, chunk, and query models
-- **Agent Models**: Conversation and agent task models
+- **Conversation helpers**: Optional message tracking (not multi-agent orchestration)
 - Pydantic validation for API responses
 - Factory functions for easy creation
 
 ### 5. AI Operations (`ai/`)
-- **RAGAgent**: Main orchestrator for query processing
+- **RAG pipeline**: Retrieve → build context → call LLM
 - **Prompts**: Centralized AI prompts (Vietnamese & English)
-- Conversation awareness and context management
-- Query classification and routing
+ 
 
 ### 6. API Layer (`routers/`)
 - **Upload**: PDF upload and indexing endpoint
@@ -234,7 +236,7 @@ MIN_RELEVANCE_SCORE=0.5              # Min relevance score
 UPLOAD_MAX_SIZE_MB=50                # Max upload size
 ```
 
-## 🎨 Features
+## Features
 
 ### Document Processing
 - ✅ PDF upload and indexing
@@ -249,9 +251,7 @@ UPLOAD_MAX_SIZE_MB=50                # Max upload size
 - ✅ Context building from retrieved chunks
 - ✅ RAG response generation
 - ✅ Streaming support
-- ✅ Conversation awareness
-- ✅ Query classification
-- ✅ Multi-turn conversation support
+ 
 
 ### Provider Support
 - ✅ OpenRouter (fully implemented)
@@ -508,13 +508,12 @@ See LICENSE file for details.
 - **Issues**: Report bugs on GitHub
 - **Discussions**: Join community discussions
 
-## 🙏 Acknowledgments
+## Acknowledgments
 
-- **DocPixie**: Reference architecture inspiration
 - **LangChain**: Document processing utilities
 - **Milvus**: Vector database
 - **OpenRouter**: LLM provider
 
 ---
 
-**Built with ❤️ using modern Python practices and clean architecture principles.**
+Built with modern Python practices and clean architecture principles.

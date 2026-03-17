@@ -2,7 +2,11 @@
 
 ## Overview
 
-This document summarizes the implementation of the new RAG PDF Chatbot architecture, which follows the **DocPixie** reference architecture but is adapted for **embeddings/vector databases** instead of vision AI. The implementation provides a clean, modular, and extensible foundation for PDF document querying using Retrieval-Augmented Generation (RAG).
+This document summarizes the implementation of the RAG PDF Chatbot architecture. The system uses **text extraction + embeddings + vector search + an LLM** to answer questions over PDF content.
+
+**Explicit scope (current):**
+- No computer vision / OCR / multimodal RAG in the main flow
+- No multi-agent orchestration / task planning
 
 ## What Was Implemented
 
@@ -116,26 +120,17 @@ This document summarizes the implementation of the new RAG PDF Chatbot architect
 - Support for both dataclass and Pydantic models
 
 #### 5. AI Operations (`backend/app/ai/`)
-- **`rag_agent.py`**: Main RAG agent orchestrator
+- **`rag_agent.py`**: Main RAG pipeline (retrieve → build context → call LLM)
   - `RAGAgent`: Main agent class
   - `process_query()`: Complete query processing
   - `process_query_stream()`: Streaming query processing
-  - Conversation history management
-  - Context processing and summarization
-  - Query classification
   - Vector search orchestration
   - Response synthesis
   - Health checking and statistics
 
 - **`prompts.py`**: Centralized AI prompts
   - System prompts (Vietnamese and English)
-  - Context summarizer prompts
-  - Query reformulator prompts
-  - Query classifier prompts
   - Response synthesizer prompts
-  - Task planner prompts
-  - Document summarizer prompts
-  - Chunk analyzer prompts
   - `PromptTemplates` class for organized access
   - Formatting functions for dynamic prompts
 
@@ -526,7 +521,7 @@ async def test_full_workflow():
 
 ## Conclusion
 
-The new RAG PDF Chatbot architecture provides a solid foundation for building a robust, scalable, and maintainable PDF querying system. By following the DocPixie reference architecture and adapting it for embeddings/vector databases, we've created a system that is:
+The RAG PDF Chatbot architecture provides a solid foundation for building a robust, scalable, and maintainable PDF querying system. The implementation focuses on a standard RAG flow (embeddings + vector search + LLM), and the result is:
 
 - **Modular**: Clear separation of concerns
 - **Extensible**: Easy to add new providers and storage backends
@@ -541,7 +536,7 @@ The implementation is complete and ready for testing, integration, and deploymen
 
 - [Architecture Overview](./ARCHITECTURE.md) - Detailed architecture documentation
 - [Migration Guide](./MIGRATION_GUIDE.md) - Step-by-step migration instructions
-- [Codebase Overview](./CODEBASE_OVERVIEW.md) - Reference architecture
+- [Codebase Overview](./CODEBASE_OVERVIEW.md) - Repository overview
 - [API Documentation](http://localhost:8000/docs) - Interactive API docs
 
 ## Support
@@ -555,5 +550,5 @@ For questions or issues:
 ---
 
 **Implementation Date**: 2024
-**Architecture**: DocPixie-inspired (adapted for embeddings/vector databases)
+**Architecture**: Standard RAG (embeddings + vector search + LLM)
 **Status**: Complete and ready for testing

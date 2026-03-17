@@ -2,14 +2,18 @@
 
 ## 🎯 Project Overview
 
-This project implements a modern, modular **Retrieval-Augmented Generation (RAG)** system for PDF document querying. The architecture follows the **DocPixie** reference pattern but is adapted for **embeddings/vector databases** instead of vision AI, providing a clean, extensible foundation for building intelligent document chatbots.
+This project implements a modular **Retrieval-Augmented Generation (RAG)** system for PDF document querying using **text extraction + embeddings + vector search + an LLM**.
+
+**Explicit scope (current):**
+- No computer vision / OCR / multimodal RAG in the main flow
+- No multi-agent orchestration / task planning
 
 ### Key Achievement
 
 Successfully transformed a basic RAG implementation into a **production-ready, modular architecture** with:
 - ✅ Provider-agnostic LLM integration
 - ✅ Pluggable vector database storage
-- ✅ Intelligent RAG agent with conversation awareness
+- ✅ Simple RAG pipeline (retrieve → build context → LLM)
 - ✅ Streaming responses for real-time UX
 - ✅ Comprehensive data models and validation
 - ✅ Factory pattern for easy extensibility
@@ -40,11 +44,11 @@ backend/app/
 ├── models/                        # NEW: Data models
 │   ├── __init__.py
 │   ├── document.py               # NEW: Document, chunk, query models
-│   └── agent.py                  # NEW: Conversation, agent task models
+│   └── agent.py                  # Conversation helpers (legacy name; not multi-agent orchestration)
 │
 ├── ai/                            # NEW: AI operations layer
 │   ├── __init__.py
-│   ├── rag_agent.py              # NEW: Main RAG orchestrator
+│   ├── rag_agent.py              # Main RAG pipeline (retrieve → build context → call LLM)
 │   ├── prompts_rag.py            # MAINTAINED: Old prompts
 │   └── prompts.py                # NEW: Centralized AI prompts
 │
@@ -103,9 +107,7 @@ backend/app/
               ▼
 ┌─────────────────────────────────────────┐
 │      AI Operations (Business Logic)      │
-│  • RAG Agent (orchestrator)             │
-│  • Context processing                    │
-│  • Query classification                  │
+│  • RAG pipeline (retrieve + synthesize)  │
 │  • Response synthesis                   │
 └─────────────────────────────────────────┘
               │
@@ -326,12 +328,12 @@ message = ConversationMessage(
 )
 ```
 
-### 5. RAG Agent (`backend/app/ai/rag_agent.py`)
+### 5. RAG Pipeline (`backend/app/ai/rag_agent.py`)
 
 **What it does:**
-- Main orchestrator for query processing
-- Conversation awareness and context management
-- Query classification and routing
+- Retrieve relevant chunks by vector search
+- Build bounded context with page citations
+- Call the LLM to synthesize a grounded answer
 - Vector search orchestration
 - Response synthesis with citations
 
@@ -365,12 +367,9 @@ await agent.shutdown()
 ```
 
 **RAG workflow:**
-1. Query Classification → Determine if retrieval is needed
-2. Context Processing → Manage conversation history
-3. Vector Search → Retrieve relevant chunks using embeddings
-4. Context Building → Format retrieved chunks for LLM
-5. Response Generation → Generate answer with citations
-6. Conversation Update → Add interaction to history
+1. Vector Search → Retrieve relevant chunks using embeddings
+2. Context Building → Format retrieved chunks with page citations
+3. Response Generation → Generate answer grounded in retrieved context
 
 ### 6. AI Prompts (`backend/app/ai/prompts.py`)
 
@@ -380,15 +379,9 @@ await agent.shutdown()
 - Template-based prompt generation
 - Easy to modify and maintain
 
-**Available prompts:**
+**Available prompts (core):**
 - System prompts (Vietnamese and English)
-- Context summarizer
-- Query reformulator
-- Query classifier
 - Response synthesizer
-- Task planner
-- Document summarizer
-- Chunk analyzer
 
 **Usage:**
 ```python
@@ -845,7 +838,6 @@ pytest backend/app/tests/test_rag_agent.py
 
 ## 🙏 Acknowledgments
 
-- **DocPixie**: Reference architecture inspiration
 - **LangChain**: Document processing utilities
 - **Milvus**: Vector database
 - **OpenRouter**: LLM provider
@@ -872,7 +864,7 @@ The RAG PDF Chatbot has been successfully transformed from a basic implementatio
 - **Clean separation of concerns** with clear boundaries between components
 - **Provider-agnostic configuration** for easy provider switching
 - **Pluggable storage** for multiple vector database backends
-- **Intelligent RAG agent** with conversation awareness
+- **Simple RAG pipeline** (retrieve → build context → LLM)
 - **Streaming responses** for real-time user experience
 - **Comprehensive data models** with Pydantic validation
 - **Factory pattern** for easy extensibility
@@ -885,5 +877,5 @@ The implementation is **complete and ready for testing, integration, and deploym
 ---
 
 **Project Status**: ✅ Complete and Ready for Testing  
-**Architecture**: DocPixie-inspired (adapted for embeddings/vector databases)  
+**Architecture**: Standard RAG (embeddings + vector search + LLM)  
 **Last Updated**: 2024

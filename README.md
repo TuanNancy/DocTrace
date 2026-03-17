@@ -8,13 +8,17 @@ Hệ thống sẽ:
 - **Lưu vào Milvus** (vector database)
 - Khi người dùng hỏi, hệ thống **tìm các đoạn liên quan nhất** rồi **gọi LLM qua OpenRouter** để sinh câu trả lời có trích dẫn số trang.
 
+**Phạm vi hiện tại (explicit):**
+- Không dùng thị giác máy tính / OCR / multimodal trong luồng chính
+- Không dùng điều phối nhiều agent / task planner (chỉ RAG pipeline “chuẩn”)
+
 ---
 
 ## 🚀 Tech Stack
 
 - **Backend**
   - Python, FastAPI
-  - LangChain, LangGraph
+  - LangChain (PDF loader + text splitter)
   - OpenAI embeddings
   - OpenRouter (LLM, mặc định `openai/gpt-4o-mini`)
 - **Vector DB**
@@ -35,12 +39,10 @@ Hệ thống sẽ:
   - `app/main.py`: entrypoint FastAPI, mount router `upload` và `chat`
   - `app/routers/upload.py`: API `/api/upload` nhận PDF, kiểm tra size/type, chạy pipeline index
   - `app/routers/chat.py`: API `/api/chat` trả về **SSE stream** (`token`, `sources`, `done`)
-  - `app/services/indexing.py`: pipeline chunking + embeddings + lưu vào Milvus
-  - `app/services/retrieval.py`: embed query, ANN search trên Milvus, build context + system prompt tiếng Việt
-  - `app/services/milvus_store.py`: schema collection, kết nối Milvus
-  - `app/services/embedding.py`: chọn provider embeddings (`openai` hoặc `huggingface`)
-  - `app/services/llm.py`: client OpenRouter streaming
-  - `app/config.py`: đọc biến môi trường từ `.env`
+  - `app/ai/rag_agent.py`: RAG pipeline (retrieve → build context → call LLM, có streaming)
+  - `app/providers/`: LLM provider + embedding provider
+  - `app/storage/`: Milvus storage + factory
+  - `app/core/config.py`: cấu hình (provider-agnostic)
   - `app/schemas.py`: Pydantic models cho request/response
 - **`frontend/`**: giao diện Next.js
   - `src/app/page.tsx`: trang chính (upload + chat)
@@ -262,8 +264,8 @@ Frontend cần parser SSE để ghép token liên tục thành câu trả lời 
     - Tạo system prompt tiếng Việt (`SYSTEM_PROMPT_VI`) + context
     - Gửi đến OpenRouter, stream từng token
   - Trả về SSE cho frontend:
-    - Gửi trước `sources` (danh sách chunk)
-    - Sau đó stream `token`
+    - Stream `token`
+    - Gửi `sources` (danh sách chunk) khi đã có kết quả retrieval
     - Cuối cùng gửi `done`
 
 ---
