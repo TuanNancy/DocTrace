@@ -398,3 +398,29 @@ def create_query_result(
         total_cost=total_cost,
         metadata=metadata or {},
     )
+
+
+def create_indexing_result(
+    doc_id: str,
+    name: str,
+    chunks_count: int,
+    status: DocumentStatus,
+    processing_time: float,
+    warnings: Optional[List[str]] = None,
+    metadata: Optional[Dict[str, Any]] = None,
+) -> IndexingResult:
+    """
+    Factory function to create an IndexingResult.
+
+    Kept for compatibility with router code that expects this helper.
+    """
+    return IndexingResult(
+        doc_id=doc_id,
+        name=name,
+        chunks_count=chunks_count,
+        status=status,
+        processing_time=processing_time,
+        created_at=datetime.utcnow(),
+        warnings=warnings or [],
+        metadata=metadata or {},
+    )

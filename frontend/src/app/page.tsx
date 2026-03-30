@@ -8,6 +8,8 @@ import type { UploadResponse } from "@/types";
 
 export default function Home() {
   const [docId, setDocId] = useState<string | null>(null);
+  const backendUrl = process.env.NEXT_PUBLIC_API_URL as string | undefined;
+  const mock = !backendUrl;
 
   const handleUploadComplete = (res: UploadResponse) => {
     setDocId(res.doc_id);
@@ -27,7 +29,10 @@ export default function Home() {
           <h2 className="mb-2 text-sm font-medium text-slate-600 dark:text-slate-400">
             Tải tài liệu
           </h2>
-          <UploadZone onUploadComplete={handleUploadComplete} mock />
+          <UploadZone
+            onUploadComplete={handleUploadComplete}
+            mock={mock}
+          />
         </section>
 
         <section className="flex flex-1 flex-col min-h-[400px] md:min-h-[480px]">
@@ -35,13 +40,13 @@ export default function Home() {
             Hỏi đáp
           </h2>
           <div className="flex-1 min-h-0">
-            <ChatWindow docId={docId} mock />
+            <ChatWindow docId={docId} mock={mock} />
           </div>
         </section>
       </main>
 
       <footer className="border-t border-slate-200 py-2 text-center text-xs text-slate-500 dark:border-slate-700 dark:text-slate-400">
-        Chưa kết nối backend — chế độ demo
+        {mock ? "Chưa kết nối backend — chế độ demo" : "Đã kết nối backend"}
       </footer>
     </div>
   );

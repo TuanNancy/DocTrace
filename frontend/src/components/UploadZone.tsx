@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useState } from "react";
+import { uploadPDF } from "@/lib/api";
 import type { UploadResponse } from "@/types";
 
 type Status = "idle" | "dragging" | "uploading" | "success" | "error";
@@ -58,8 +59,36 @@ export function UploadZone({ onUploadComplete, mock = true }: UploadZoneProps) {
     [onUploadComplete]
   );
 
+  const uploadToBackend = useCallback(
+    async (file: File) => {
+      setStatus("uploading");
+      setError(null);
+      setResult(null);
+      setFilename(file.name);
+      setProgress(30);
+
+      try {
+        const res = await uploadPDF(file);
+        if (!res) {
+          throw new Error(
+            "Không thể kết nối backend. Hãy kiểm tra `NEXT_PUBLIC_API_URL`."
+          );
+        }
+
+        setResult(res);
+        setProgress(100);
+        setStatus("success");
+        onUploadComplete?.(res);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Upload failed.");
+        setStatus("error");
+      }
+    },
+    [onUploadComplete]
+  );
+
   const handleDrop = useCallback(
-    (e: React.DragEvent) => {
+    async (e: React.DragEvent) => {
       e.preventDefault();
       e.stopPropagation();
       setStatus("idle");
@@ -73,20 +102,14 @@ export function UploadZone({ onUploadComplete, mock = true }: UploadZoneProps) {
       if (mock) {
         simulateUpload(file);
       } else {
-        setStatus("uploading");
-        setError(null);
-        setFilename(file.name);
-        setProgress(30);
-        // When backend connected: import { uploadPDF } from "@/lib/api"; uploadPDF(file).then(...)
-        setError("Backend chưa kết nối. Dùng chế độ mock.");
-        setStatus("error");
+        await uploadToBackend(file);
       }
     },
-    [mock, simulateUpload]
+    [mock, simulateUpload, uploadToBackend]
   );
 
   const handleFileInput = useCallback(
-    (e: React.ChangeEvent<HTMLInputElement>) => {
+    async (e: React.ChangeEvent<HTMLInputElement>) => {
       const file = e.target.files?.[0];
       if (!file) return;
       if (file.type !== "application/pdf") {
@@ -97,15 +120,11 @@ export function UploadZone({ onUploadComplete, mock = true }: UploadZoneProps) {
       if (mock) {
         simulateUpload(file);
       } else {
-        setStatus("uploading");
-        setError(null);
-        setFilename(file.name);
-        setError("Backend chưa kết nối.");
-        setStatus("error");
+        await uploadToBackend(file);
       }
       e.target.value = "";
     },
-    [mock, simulateUpload]
+    [mock, simulateUpload, uploadToBackend]
   );
 
   const isActive = status === "dragging" || status === "uploading";
@@ -167,7 +186,25 @@ export function UploadZone({ onUploadComplete, mock = true }: UploadZoneProps) {
             <p className="text-sm text-slate-600 dark:text-slate-400">
               Số chunks: <span className="font-medium">{result.chunks_count}</span>
             </p>
-            <p className="text-xs text-slate-500">{result.message}</p>
+            {result.message && (
+              <p className="text-xs text-slate-500">{result.message}</p>
+            )}
+            {result.status && !result.message && (
+              <p className="text-xs text-slate-500">
+                Trạng thái: <span className="font-medium">{result.status}</span>
+              </p>
+            )}
+            {typeof result.processing_time === "number" && (
+              <p className="text-xs text-slate-500">
+                Thời gian:{" "}
+                <span className="font-medium">{result.processing_time}s</span>
+              </p>
+            )}
+            {result.warnings && result.warnings.length > 0 && (
+              <p className="text-xs text-amber-700 dark:text-amber-300">
+                Cảnh báo: {result.warnings[0]}
+              </p>
+            )}
           </div>
         )}
 

@@ -377,7 +377,7 @@ class MilvusStorage(BaseStorage):
             )
 
         logger.info(
-            f"Retrieval: doc_id={doc_id} top_k={top_k} -> {len(out} hits"
+            f"Retrieval: doc_id={doc_id} top_k={top_k} -> {len(out)} hits"
         )
 
         return out

@@ -55,7 +55,7 @@ class OpenAIEmbedder:
                 out.append(d.embedding)
         return out
 
-    @property:
+    @property
     def dimension(self) -> int:
         return self._dim
 

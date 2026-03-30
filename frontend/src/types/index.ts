@@ -2,7 +2,16 @@
 export interface UploadResponse {
   doc_id: string;
   chunks_count: number;
-  message: string;
+  name?: string;
+  status?: string;
+  processing_time?: number;
+  created_at?: string;
+  warnings?: string[];
+  metadata?: Record<string, any>;
+  /**
+   * Kept for mock responses. Backend responses use `status` + `warnings` instead.
+   */
+  message?: string;
 }
 
 /** Single citation source from SSE event "sources" */
