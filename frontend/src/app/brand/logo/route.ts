@@ -5,16 +5,10 @@ function getCandidatePaths(): string[] {
   const cwd = process.cwd();
 
   return [
-    // Preferred: explicit override
-    process.env.BAYMAX_LOGO_PATH ?? "",
-    // Repo-local options
+    // Use only logo1.png to avoid stale old-logo fallback.
     path.resolve(cwd, "logo1.png"),
     path.resolve(cwd, "public", "logo1.png"),
     path.resolve(cwd, "..", "logo1.png"),
-    path.resolve(cwd, "logo.png"),
-    path.resolve(cwd, "public", "logo.png"),
-    path.resolve(cwd, "..", "logo.png"),
-    path.resolve(cwd, "..", "assets", "logo.png"),
   ].filter(Boolean);
 }
 

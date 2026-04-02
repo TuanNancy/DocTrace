@@ -11,9 +11,15 @@ interface UploadZoneProps {
   /** When true, upload is simulated (no backend). For demo. */
   mock?: boolean;
   accessToken?: string | null;
+  compact?: boolean;
 }
 
-export function UploadZone({ onUploadComplete, mock = true, accessToken }: UploadZoneProps) {
+export function UploadZone({
+  onUploadComplete,
+  mock = true,
+  accessToken,
+  compact = false,
+}: UploadZoneProps) {
   const [status, setStatus] = useState<Status>("idle");
   const [progress, setProgress] = useState(0);
   const [result, setResult] = useState<UploadResponse | null>(null);
@@ -134,12 +140,16 @@ export function UploadZone({ onUploadComplete, mock = true, accessToken }: Uploa
   const isActive = status === "dragging" || status === "uploading";
 
   return (
-    <div className="rounded-xl border-2 border-dashed border-slate-300 bg-slate-50 p-6 transition-colors dark:border-slate-600 dark:bg-slate-800/50">
+    <div
+      className={`h-full rounded-xl border-2 border-dashed border-slate-300 bg-slate-50 transition-colors dark:border-slate-600 dark:bg-slate-800/50 ${
+        compact ? "p-3" : "p-6"
+      }`}
+    >
       <div
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
-        className={`flex min-h-[160px] flex-col items-center justify-center gap-3 rounded-lg transition-colors ${
+        className={`flex h-full flex-col items-center justify-center gap-2 rounded-lg transition-colors ${
           isActive ? "bg-blue-50 dark:bg-blue-950/30" : ""
         }`}
       >

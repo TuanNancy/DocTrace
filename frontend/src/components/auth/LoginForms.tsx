@@ -53,7 +53,7 @@ export function LoginForms() {
   };
 
   return (
-    <main className="mx-auto flex min-h-screen w-full max-w-5xl items-center px-4">
+    <main className="mx-auto flex min-h-screen w-full max-w-5xl items-center bg-[#f7f7f4] px-4 dark:bg-slate-900">
       <div className="grid w-full overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm md:grid-cols-2 dark:border-slate-700 dark:bg-slate-900">
         <section className="p-6 md:p-8">
           <div className="mb-4">
@@ -123,11 +123,11 @@ export function LoginForms() {
           </p>
         </section>
 
-        <section className="flex items-center justify-center border-t border-slate-200 bg-slate-50 p-6 md:border-l md:border-t-0 dark:border-slate-700 dark:bg-slate-950/40">
+        <section className="flex items-end justify-center border-t border-[#8f1b1b] bg-[#B22222] p-0 md:border-l md:border-t-0">
           <img
             src="/brand/logo"
             alt="Baymax logo"
-            className="h-auto max-h-[360px] w-full max-w-[320px] object-contain"
+            className="h-auto max-h-[640px] w-full max-w-[520px] object-contain object-bottom"
           />
         </section>
       </div>
