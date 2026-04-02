@@ -10,7 +10,7 @@ import time
 from datetime import datetime
 from typing import AsyncIterator, Dict, List, Optional, Any
 
-from app.ai.prompts import PromptTemplates, format_response_synthesizer
+from app.ai.prompts import PromptTemplates
 from app.core.config import get_config
 from app.models.agent import (
     ConversationMessage,

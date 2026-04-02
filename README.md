@@ -19,7 +19,7 @@ Hệ thống sẽ:
 - **Backend**
   - Python, FastAPI
   - LangChain (PDF loader + text splitter)
-  - OpenAI embeddings
+  - Embeddings qua OpenRouter (`/v1/embeddings`)
   - OpenRouter (LLM, mặc định `openai/gpt-4o-mini`)
 - **Vector DB**
   - Milvus Standalone (pymilvus)
@@ -42,7 +42,7 @@ Hệ thống sẽ:
   - `app/ai/rag_agent.py`: RAG pipeline (retrieve → build context → call LLM, có streaming)
   - `app/providers/`: LLM provider + embedding provider
   - `app/storage/`: Milvus storage + factory
-  - `app/core/config.py`: cấu hình (provider-agnostic)
+  - `app/core/config.py`: cấu hình (OpenRouter + Milvus)
   - `app/schemas.py`: Pydantic models cho request/response
 - **`frontend/`**: giao diện Next.js
   - `src/app/page.tsx`: trang chính (upload + chat)
@@ -56,20 +56,23 @@ Hệ thống sẽ:
 
 ## 🔧 Cấu hình môi trường
 
-### 1. Backend `.env` (trong thư mục gốc project, được `backend/app/config.py` tự động load)
+### 1. Backend `.env` (load bởi `backend/app/core/config.py`)
 
 Tạo file `.env` tại **root** (`g:\project\RAG-PDF-chatbot\.env`) với các biến tối thiểu:
 
 ```bash
+# OpenRouter (chat + embeddings)
+OPENROUTER_API_KEY=...
+OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
+RAG_MODEL=google/gemini-2.0-flash-lite-001
+EMBEDDING_MODEL=qwen/qwen3-embedding-8b
+EMBEDDING_DIMENSION=4096
+
 # Milvus
 MILVUS_HOST=localhost
 MILVUS_PORT=19530
 MILVUS_COLLECTION=pdf_chunks
-MILVUS_VECTOR_DIM=1536          # 1536 cho OpenAI embeddings
-
-# Embedding (OpenAI)
-OPENAI_API_KEY=sk-...
-OPENAI_EMBEDDING_MODEL=text-embedding-3-small
+MILVUS_VECTOR_DIM=4096          # phải khớp EMBEDDING_DIMENSION
 
 # Upload
 UPLOAD_MAX_SIZE_MB=50
@@ -78,13 +81,9 @@ UPLOAD_MAX_SIZE_MB=50
 CHUNK_SIZE=1000
 CHUNK_OVERLAP=150
 
-# LLM qua OpenRouter
-OPENROUTER_API_KEY=...
-OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
-OPENROUTER_CHAT_MODEL=openai/gpt-4o-mini
 ```
 
-- Nếu đổi model embeddings OpenAI, nhớ **cập nhật `MILVUS_VECTOR_DIM`** khớp với dimension của model (nếu cần).
+- Nếu đổi `EMBEDDING_MODEL`, nhớ cập nhật `EMBEDDING_DIMENSION` và `MILVUS_VECTOR_DIM` cho khớp.
 
 ### 2. Frontend `.env.local`
 
@@ -252,7 +251,7 @@ Frontend cần parser SSE để ghép token liên tục thành câu trả lời 
     1. Đọc PDF (pypdf), tách theo trang
     2. Kiểm tra số ký tự để phát hiện tài liệu scan (ít text)
     3. Chunking theo `CHUNK_SIZE` và `CHUNK_OVERLAP`
-    4. Gọi embedding (OpenAI)
+    4. Gọi embedding qua OpenRouter
     5. Lưu `{doc_id, page, source, text, vector}` vào Milvus
 - **Chat**
   - Nhận `query` và `doc_id`
@@ -267,20 +266,6 @@ Frontend cần parser SSE để ghép token liên tục thành câu trả lời 
     - Stream `token`
     - Gửi `sources` (danh sách chunk) khi đã có kết quả retrieval
     - Cuối cùng gửi `done`
-
----
-
-## ✅ Kiểm thử & script hỗ trợ
-
-- **Unit tests / script** (trong `backend/scripts/`):
-  - `test_chunking.py`: test logic chunking PDF
-  - `test_retrieval.py` (nếu có): test retrieval từ Milvus
-- Chạy pytest:
-
-```bash
-cd backend
-pytest
-```
 
 ---
 

@@ -1,5 +1,0 @@
-"""Backward compatibility: use `app.processors.pdf` instead."""
-
-from app.processors.pdf import chunk_documents, load_pdf_pages
-
-__all__ = ["chunk_documents", "load_pdf_pages"]
