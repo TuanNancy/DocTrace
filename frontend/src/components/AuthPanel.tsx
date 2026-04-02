@@ -3,12 +3,14 @@
 import Link from "next/link";
 
 interface AuthPanelProps {
+  displayName: string | null;
   userEmail: string | null;
   loading: boolean;
   onSignOut: () => Promise<void>;
 }
 
 export function AuthPanel({
+  displayName,
   userEmail,
   loading,
   onSignOut,
@@ -17,7 +19,7 @@ export function AuthPanel({
     return (
       <div className="flex items-center gap-3">
         <span className="text-xs text-slate-600 dark:text-slate-300">
-          {userEmail}
+          {displayName ? `${displayName} (${userEmail})` : userEmail}
         </span>
         <button
           type="button"

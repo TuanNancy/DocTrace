@@ -8,6 +8,7 @@ import { createClient } from "@/lib/client";
 export default function SignupPage() {
   const supabase = createClient();
   const router = useRouter();
+  const [fullName, setFullName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
@@ -16,7 +17,7 @@ export default function SignupPage() {
 
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!email.trim() || !password.trim()) return;
+    if (!fullName.trim() || !email.trim() || !password.trim()) return;
     setLoading(true);
     setError(null);
     setNotice(null);
@@ -24,6 +25,11 @@ export default function SignupPage() {
     const { error: signUpError, data } = await supabase.auth.signUp({
       email: email.trim(),
       password,
+      options: {
+        data: {
+          full_name: fullName.trim(),
+        },
+      },
     });
     if (signUpError) {
       setError(signUpError.message);
@@ -49,6 +55,14 @@ export default function SignupPage() {
         </h1>
         <form onSubmit={onSubmit} className="space-y-3">
           <input
+            type="text"
+            placeholder="Họ và tên"
+            value={fullName}
+            onChange={(e) => setFullName(e.target.value)}
+            disabled={loading}
+            className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-slate-900 focus:border-blue-500 focus:outline-none dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100"
+          />
+          <input
             type="email"
             placeholder="Email"
             value={email}
@@ -66,7 +80,12 @@ export default function SignupPage() {
           />
           <button
             type="submit"
-            disabled={loading || !email.trim() || password.length < 6}
+            disabled={
+              loading ||
+              !fullName.trim() ||
+              !email.trim() ||
+              password.length < 6
+            }
             className="w-full rounded-lg bg-blue-600 px-4 py-2 font-medium text-white hover:bg-blue-700 disabled:opacity-50 dark:bg-blue-500 dark:hover:bg-blue-600"
           >
             {loading ? "Signing up..." : "Sign up"}

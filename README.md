@@ -201,6 +201,17 @@ Nếu chưa, frontend có thể đang ở chế độ **mock** (xem thêm trong 
 
 ## 🔌 API chính
 
+### Frontend routes (Next.js)
+
+- `/`:
+  - Trang chính upload + chat.
+  - Yêu cầu đã đăng nhập (middleware sẽ điều hướng về `/auth/login` nếu chưa có session).
+- `/auth/login`:
+  - Đăng nhập bằng **email/password**.
+- `/auth/signup`:
+  - Đăng ký bằng **tên + email/password**.
+  - Tên được lưu vào `user_metadata.full_name` trên Supabase Auth user.
+
 ### 1. Upload PDF
 
 - **Endpoint**: `POST /api/upload`

@@ -70,6 +70,10 @@ export default function Home() {
   };
 
   const isAuthed = !!user;
+  const displayName =
+    (user?.user_metadata?.full_name as string | undefined) ??
+    (user?.user_metadata?.name as string | undefined) ??
+    null;
 
   return (
     <div className="flex min-h-screen flex-col bg-slate-50 dark:bg-slate-900">
@@ -79,6 +83,7 @@ export default function Home() {
         </h1>
         <div className="flex items-center gap-3">
           <AuthPanel
+            displayName={displayName}
             userEmail={user?.email ?? null}
             loading={authLoading}
             onSignOut={handleSignOut}
