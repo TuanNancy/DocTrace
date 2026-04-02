@@ -10,9 +10,10 @@ interface UploadZoneProps {
   onUploadComplete?: (res: UploadResponse) => void;
   /** When true, upload is simulated (no backend). For demo. */
   mock?: boolean;
+  accessToken?: string | null;
 }
 
-export function UploadZone({ onUploadComplete, mock = true }: UploadZoneProps) {
+export function UploadZone({ onUploadComplete, mock = true, accessToken }: UploadZoneProps) {
   const [status, setStatus] = useState<Status>("idle");
   const [progress, setProgress] = useState(0);
   const [result, setResult] = useState<UploadResponse | null>(null);
@@ -68,7 +69,10 @@ export function UploadZone({ onUploadComplete, mock = true }: UploadZoneProps) {
       setProgress(30);
 
       try {
-        const res = await uploadPDF(file);
+        if (!accessToken) {
+          throw new Error("Thiếu phiên đăng nhập. Vui lòng đăng nhập lại.");
+        }
+        const res = await uploadPDF(file, accessToken);
         if (!res) {
           throw new Error(
             "Không thể kết nối backend. Hãy kiểm tra `NEXT_PUBLIC_API_URL`."
@@ -84,7 +88,7 @@ export function UploadZone({ onUploadComplete, mock = true }: UploadZoneProps) {
         setStatus("error");
       }
     },
-    [onUploadComplete]
+    [accessToken, onUploadComplete]
   );
 
   const handleDrop = useCallback(

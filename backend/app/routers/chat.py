@@ -6,10 +6,11 @@ import json
 import logging
 from typing import AsyncIterator
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 
 from app.ai.rag_agent import create_rag_agent_with_defaults
+from app.core.auth import require_supabase_user
 from app.models.document import QueryMode
 from app.schemas import ChatRequest
 
@@ -80,7 +81,10 @@ async def _stream_chat_sse(query: str, doc_id: str, language: str = "vi") -> Asy
 
 
 @router.post("/chat")
-async def chat(request: ChatRequest) -> StreamingResponse:
+async def chat(
+    request: ChatRequest,
+    _user: dict = Depends(require_supabase_user),
+) -> StreamingResponse:
     """
     RAG chat: retrieve chunks by doc_id, then stream LLM response via SSE.
     Updated to use new RAG agent architecture.

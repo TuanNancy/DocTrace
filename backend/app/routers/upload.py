@@ -7,8 +7,9 @@ import time
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 
+from app.core.auth import require_supabase_user
 from app.core.config import get_config
 from app.models.document import DocumentStatus, IndexingResult, create_indexing_result
 from app.storage.base import InsertResult
@@ -118,6 +119,7 @@ async def run_indexing_pipeline_from_upload(
 @router.post("/upload")
 async def upload_pdf(
     file: Annotated[UploadFile, File(description="PDF file to index")],
+    _user: dict = Depends(require_supabase_user),
 ) -> IndexingResult:
     """
     Accept a PDF via multipart/form-data, validate size/type, run indexing pipeline,

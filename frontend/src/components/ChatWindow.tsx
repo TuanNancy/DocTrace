@@ -10,13 +10,14 @@ interface ChatWindowProps {
   docId: string | null;
   /** When true, simulate SSE stream (no backend). */
   mock?: boolean;
+  accessToken?: string | null;
 }
 
 function genId() {
   return `msg-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 }
 
-export function ChatWindow({ docId, mock = true }: ChatWindowProps) {
+export function ChatWindow({ docId, mock = true, accessToken }: ChatWindowProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
@@ -98,7 +99,13 @@ export function ChatWindow({ docId, mock = true }: ChatWindowProps) {
 
       try {
         const { streamChat } = await import("@/lib/api");
-        const res = await streamChat(q, docId!);
+        if (!accessToken) {
+          setError("Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại.");
+          finishStreaming(assistantId);
+          setLoading(false);
+          return;
+        }
+        const res = await streamChat(q, docId!, accessToken);
         if (!res || !res.body) {
           setError("Không thể kết nối. Kiểm tra backend.");
           finishStreaming(assistantId);
@@ -124,6 +131,7 @@ export function ChatWindow({ docId, mock = true }: ChatWindowProps) {
       loading,
       docId,
       mock,
+      accessToken,
       appendToken,
       setSourcesForMessage,
       finishStreaming,

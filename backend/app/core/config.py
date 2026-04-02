@@ -102,6 +102,8 @@ class RAGConfig:
     # ==================== API Keys (OpenRouter only; OPENAI_API_KEY accepted as legacy alias) ====================
     openrouter_api_key: Optional[str] = None
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
+    supabase_url: Optional[str] = None
+    supabase_publishable_key: Optional[str] = None
 
     # ==================== Logging ====================
     log_level: str = "INFO"
@@ -164,6 +166,15 @@ class RAGConfig:
             self.openrouter_api_key = legacy_openai
 
         self.openrouter_base_url = _str("OPENROUTER_BASE_URL", self.openrouter_base_url).rstrip("/")
+        self.supabase_url = _optional_str("SUPABASE_URL", self.supabase_url) or _optional_str(
+            "NEXT_PUBLIC_SUPABASE_URL",
+            self.supabase_url,
+        )
+        self.supabase_publishable_key = (
+            _optional_str("SUPABASE_PUBLISHABLE_KEY", self.supabase_publishable_key)
+            or _optional_str("NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY", self.supabase_publishable_key)
+            or _optional_str("NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY", self.supabase_publishable_key)
+        )
 
         # Embedding model IDs on OpenRouter use provider/model (e.g. openai/text-embedding-3-small)
         em = (self.embedding_model or "").strip()
