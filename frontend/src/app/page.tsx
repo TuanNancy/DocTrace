@@ -13,6 +13,7 @@ export default function Home() {
   const [docId, setDocId] = useState<string | null>(null);
   const [user, setUser] = useState<User | null>(null);
   const [accessToken, setAccessToken] = useState<string | null>(null);
+  const [authReady, setAuthReady] = useState(false);
   const [authLoading, setAuthLoading] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
   const backendUrl = process.env.NEXT_PUBLIC_API_URL as string | undefined;
@@ -32,12 +33,14 @@ export default function Home() {
         supabase.auth.getSession(),
       ]);
       if (!mounted) return;
-      if (userError) {
-        setAuthError(userError.message);
-        return;
-      }
-      setUser(userData.user ?? null);
+      const sessionUser = sessionData.session?.user ?? null;
+      const resolvedUser = userData.user ?? sessionUser;
+      setUser(resolvedUser);
       setAccessToken(sessionData.session?.access_token ?? null);
+      if (userError && !resolvedUser) {
+        setAuthError(userError.message);
+      }
+      setAuthReady(true);
     };
 
     bootstrapUser();
@@ -47,6 +50,7 @@ export default function Home() {
     } = supabase.auth.onAuthStateChange((_event, session) => {
       setUser(session?.user ?? null);
       setAccessToken(session?.access_token ?? null);
+      setAuthReady(true);
       if (!session?.user) {
         setDocId(null);
       }
@@ -69,7 +73,7 @@ export default function Home() {
     setAuthLoading(false);
   };
 
-  const isAuthed = !!user;
+  const isAuthed = !!user && !!accessToken;
   const displayName =
     (user?.user_metadata?.full_name as string | undefined) ??
     (user?.user_metadata?.name as string | undefined) ??
@@ -99,6 +103,11 @@ export default function Home() {
       )}
 
       <main className="flex flex-1 flex-col gap-4 p-4 md:mx-auto md:max-w-4xl md:gap-6 md:p-6">
+        {!authReady && (
+          <div className="rounded-xl border border-slate-200 bg-white p-4 text-sm text-slate-600 dark:border-slate-700 dark:bg-slate-800/50 dark:text-slate-300">
+            Đang kiểm tra phiên đăng nhập...
+          </div>
+        )}
         <section>
           <h2 className="mb-2 text-sm font-medium text-slate-600 dark:text-slate-400">
             Tải tài liệu
@@ -109,9 +118,13 @@ export default function Home() {
               mock={mock}
               accessToken={accessToken}
             />
-          ) : (
+          ) : authReady ? (
             <div className="rounded-xl border border-slate-200 bg-white p-4 text-sm text-slate-600 dark:border-slate-700 dark:bg-slate-800/50 dark:text-slate-300">
               Vui lòng đăng nhập để tải tài liệu PDF.
+            </div>
+          ) : (
+            <div className="rounded-xl border border-slate-200 bg-white p-4 text-sm text-slate-600 dark:border-slate-700 dark:bg-slate-800/50 dark:text-slate-300">
+              Đang tải...
             </div>
           )}
         </section>
@@ -123,9 +136,13 @@ export default function Home() {
           <div className="flex-1 min-h-0">
             {isAuthed ? (
               <ChatWindow docId={docId} mock={mock} accessToken={accessToken} />
-            ) : (
+            ) : authReady ? (
               <div className="flex h-full min-h-[220px] items-center justify-center rounded-xl border border-slate-200 bg-white text-sm text-slate-600 dark:border-slate-700 dark:bg-slate-800/50 dark:text-slate-300">
                 Đăng nhập để bắt đầu chat với tài liệu của bạn.
+              </div>
+            ) : (
+              <div className="flex h-full min-h-[220px] items-center justify-center rounded-xl border border-slate-200 bg-white text-sm text-slate-600 dark:border-slate-700 dark:bg-slate-800/50 dark:text-slate-300">
+                Đang tải...
               </div>
             )}
           </div>
