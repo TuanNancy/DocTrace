@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import type { User } from "@supabase/supabase-js";
 import { ChatWindow } from "@/components/ChatWindow";
 import { AuthPanel } from "@/components/AuthPanel";
+import { BrandMark } from "@/components/BrandMark";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { UploadZone } from "@/components/UploadZone";
 import { createClient } from "@/lib/client";
@@ -78,17 +79,20 @@ export default function Home() {
     (user?.user_metadata?.full_name as string | undefined) ??
     (user?.user_metadata?.name as string | undefined) ??
     null;
+  const avatarUrl =
+    (user?.user_metadata?.avatar_url as string | undefined) ??
+    (user?.user_metadata?.picture as string | undefined) ??
+    null;
 
   return (
     <div className="flex min-h-screen flex-col bg-slate-50 dark:bg-slate-900">
-      <header className="sticky top-0 z-10 flex items-center justify-between border-b border-slate-200 bg-white/95 px-4 py-3 backdrop-blur dark:border-slate-700 dark:bg-slate-900/95">
-        <h1 className="text-lg font-semibold text-slate-800 dark:text-slate-100">
-          RAG PDF Chatbot
-        </h1>
+      <header className="sticky top-0 z-10 flex items-center justify-between border-b border-rose-200 bg-rose-50/95 px-4 py-3 backdrop-blur dark:border-rose-900/40 dark:bg-rose-950/35">
+        <BrandMark refreshOnClick />
         <div className="flex items-center gap-3">
           <AuthPanel
             displayName={displayName}
             userEmail={user?.email ?? null}
+            avatarUrl={avatarUrl}
             loading={authLoading}
             onSignOut={handleSignOut}
           />

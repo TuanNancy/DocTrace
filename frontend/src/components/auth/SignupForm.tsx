@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { useFormState } from "react-dom";
 import { signupAction } from "@/app/auth/actions";
 import { AuthSubmitButton } from "@/components/auth/AuthSubmitButton";
+import { BrandMark } from "@/components/BrandMark";
 
 type AuthActionState = {
   status: "idle" | "success" | "error";
@@ -32,60 +33,77 @@ export function SignupForm() {
   }, [router, state.message, state.status]);
 
   return (
-    <main className="mx-auto flex min-h-screen w-full max-w-md items-center px-4">
-      <div className="w-full rounded-xl border border-slate-200 bg-white p-6 dark:border-slate-700 dark:bg-slate-800/50">
-        <h1 className="mb-4 text-xl font-semibold text-slate-800 dark:text-slate-100">
-          Sign up
-        </h1>
-        <form action={formAction} className="space-y-3">
-          <input
-            name="full_name"
-            type="text"
-            placeholder="Họ và tên"
-            required
-            className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-slate-900 focus:border-blue-500 focus:outline-none dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100"
-          />
-          <input
-            name="email"
-            type="email"
-            placeholder="Email"
-            required
-            className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-slate-900 focus:border-blue-500 focus:outline-none dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100"
-          />
-          <input
-            name="password"
-            type="password"
-            placeholder="Password (>= 6 ký tự)"
-            minLength={6}
-            required
-            className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-slate-900 focus:border-blue-500 focus:outline-none dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100"
-          />
-          <AuthSubmitButton
-            idleText="Sign up"
-            pendingText="Signing up..."
-            className="w-full rounded-lg bg-blue-600 px-4 py-2 font-medium text-white hover:bg-blue-700 disabled:opacity-50 dark:bg-blue-500 dark:hover:bg-blue-600"
-          />
-          {state.message && (
-            <p
-              className={`text-sm ${
-                state.status === "error"
-                  ? "text-red-600 dark:text-red-400"
-                  : "text-emerald-700 dark:text-emerald-400"
-              }`}
+    <main className="mx-auto flex min-h-screen w-full max-w-5xl items-center px-4">
+      <div className="grid w-full overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm md:grid-cols-2 dark:border-slate-700 dark:bg-slate-900">
+        <section className="p-6 md:p-8">
+          <div className="mb-4">
+            <BrandMark compact />
+          </div>
+          <h1 className="text-2xl font-semibold text-slate-900 dark:text-slate-100">
+            Create account
+          </h1>
+          <p className="mt-1 text-sm text-slate-600 dark:text-slate-300">
+            Tạo tài khoản để bắt đầu với Baymax
+          </p>
+
+          <form action={formAction} className="mt-5 space-y-3">
+            <input
+              name="full_name"
+              type="text"
+              placeholder="Họ và tên"
+              required
+              className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-slate-900 focus:border-blue-500 focus:outline-none dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100"
+            />
+            <input
+              name="email"
+              type="email"
+              placeholder="Email"
+              required
+              className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-slate-900 focus:border-blue-500 focus:outline-none dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100"
+            />
+            <input
+              name="password"
+              type="password"
+              placeholder="Password (>= 6 ký tự)"
+              minLength={6}
+              required
+              className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-slate-900 focus:border-blue-500 focus:outline-none dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100"
+            />
+            <AuthSubmitButton
+              idleText="Sign up"
+              pendingText="Signing up..."
+              className="w-full rounded-lg bg-slate-900 px-4 py-2 font-medium text-white hover:bg-slate-800 disabled:opacity-50 dark:bg-white dark:text-slate-900 dark:hover:bg-slate-200"
+            />
+            {state.message && (
+              <p
+                className={`text-sm ${
+                  state.status === "error"
+                    ? "text-red-600 dark:text-red-400"
+                    : "text-emerald-700 dark:text-emerald-400"
+                }`}
+              >
+                {state.message}
+              </p>
+            )}
+          </form>
+          <p className="mt-5 text-sm text-slate-600 dark:text-slate-300">
+            Đã có tài khoản?{" "}
+            <Link
+              href="/auth/login"
+              className="font-medium text-blue-600 hover:underline dark:text-blue-400"
             >
-              {state.message}
-            </p>
-          )}
-        </form>
-        <p className="mt-4 text-sm text-slate-600 dark:text-slate-300">
-          Đã có tài khoản?{" "}
-          <Link
-            href="/auth/login"
-            className="text-blue-600 hover:underline dark:text-blue-400"
-          >
-            Sign in
-          </Link>
-        </p>
+              Sign in
+            </Link>
+          </p>
+        </section>
+
+        <section className="flex items-center justify-center border-t border-slate-200 bg-slate-50 p-6 md:border-l md:border-t-0 dark:border-slate-700 dark:bg-slate-950/40">
+          <img
+            src="/brand/logo"
+            alt="Baymax logo"
+            className="h-auto max-h-[360px] w-full max-w-[320px] object-contain"
+          />
+        </section>
       </div>
     </main>
   );
