@@ -4,6 +4,7 @@ Implements BaseStorage interface for Milvus vector database operations.
 """
 import logging
 import uuid
+import json
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -151,6 +152,23 @@ class MilvusStorage(BaseStorage):
             description=f"PDF chunks with embeddings - {self.collection_name}",
         )
 
+    def _collection_vector_dim(self) -> Optional[int]:
+        """Return embedding field dim if collection exists, else None."""
+        try:
+            if not has_collection(self.collection_name):
+                return None
+            coll = Collection(self.collection_name)
+            for field in coll.schema.fields:
+                if field.name != self.VECTOR_FIELD:
+                    continue
+                params = getattr(field, "params", None) or {}
+                dim = params.get("dim")
+                if dim is not None:
+                    return int(dim)
+        except Exception as e:
+            logger.warning("Could not read collection schema dim: %s", e)
+        return None
+
     async def ensure_collection(
         self,
         vector_dim: int,
@@ -176,7 +194,24 @@ class MilvusStorage(BaseStorage):
                 f"Created collection {self.collection_name} with dim={vector_dim}"
             )
         else:
-            collection = Collection(self.collection_name)
+            existing_dim = self._collection_vector_dim()
+            if existing_dim is not None and existing_dim != vector_dim:
+                logger.warning(
+                    "Collection %s has dim=%s but embeddings require dim=%s; recreating collection.",
+                    self.collection_name,
+                    existing_dim,
+                    vector_dim,
+                )
+                drop_collection(self.collection_name)
+                schema = self._get_collection_schema(vector_dim)
+                collection = Collection(name=self.collection_name, schema=schema)
+                logger.info(
+                    "Recreated collection %s with dim=%s",
+                    self.collection_name,
+                    vector_dim,
+                )
+            else:
+                collection = Collection(self.collection_name)
 
         # Create index on vector field if not present
         try:
@@ -243,7 +278,7 @@ class MilvusStorage(BaseStorage):
             created_ats = [current_time] * len(batch_chunks)
             updated_ats = [current_time] * len(batch_chunks)
             statuses = ["completed"] * len(batch_chunks)
-            metadatas = [str(c.get("metadata", {})) for c in batch_chunks]
+            metadatas = [json.dumps(c.get("metadata", {}), ensure_ascii=False) for c in batch_chunks]
 
             data = [
                 ids,
@@ -356,12 +391,12 @@ class MilvusStorage(BaseStorage):
                 source = getattr(entity, self.SOURCE_FIELD, "") or ""
                 doc_id_result = getattr(entity, self.DOC_ID_FIELD, "") or ""
 
-            # Get score (distance)
+            # COSINE metric: Milvus returns similarity (higher = more similar), range typically ~[0, 1].
             score = float(
                 hit.get("distance", hit.score if hasattr(hit, "score") else 0) or 0.0
             )
 
-            # Apply minimum score filter
+            # Minimum cosine similarity (not L2 distance)
             if min_score is not None and score < min_score:
                 continue
 
@@ -410,6 +445,7 @@ class MilvusStorage(BaseStorage):
                 expr=expr,
                 output_fields=[
                     self.DOC_ID_FIELD,
+                    self.SOURCE_FIELD,
                     self.CREATED_AT_FIELD,
                     self.UPDATED_AT_FIELD,
                     self.STATUS_FIELD,
@@ -424,6 +460,14 @@ class MilvusStorage(BaseStorage):
             result = results[0]
             chunks_count = await self.count_chunks(doc_id)
 
+            metadata_raw = result.get(self.METADATA_FIELD, "")
+            parsed_metadata: Dict[str, Any] = {}
+            if metadata_raw:
+                try:
+                    parsed_metadata = json.loads(metadata_raw)
+                except Exception:
+                    parsed_metadata = {}
+
             return DocumentMetadata(
                 doc_id=result.get(self.DOC_ID_FIELD, doc_id),
                 name=result.get(self.SOURCE_FIELD, "Unknown"),
@@ -435,9 +479,7 @@ class MilvusStorage(BaseStorage):
                     result.get(self.UPDATED_AT_FIELD)
                 ) if result.get(self.UPDATED_AT_FIELD) else None,
                 status=result.get(self.STATUS_FIELD, "unknown"),
-                metadata=eval(result.get(self.METADATA_FIELD, "{}"))
-                if result.get(self.METADATA_FIELD)
-                else {},
+                metadata=parsed_metadata,
             )
 
         except Exception as e:

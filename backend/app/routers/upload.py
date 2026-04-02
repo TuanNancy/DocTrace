@@ -41,13 +41,9 @@ async def run_indexing_pipeline_from_upload(
     """
     import os
     import tempfile
-    from datetime import datetime
-
-    from langchain_community.document_loaders import PyPDFLoader
-    from langchain_core.documents import Document
-    from langchain_text_splitters import RecursiveCharacterTextSplitter
 
     from app.core.config import get_config
+    from app.processors.pdf import chunk_documents, load_pdf_pages
     from app.providers.embeddings import get_embedder
 
     config = get_config()
@@ -60,81 +56,45 @@ async def run_indexing_pipeline_from_upload(
         temp_path = f.name
 
     try:
-        # Load PDF
-        loader = PyPDFLoader(temp_path, mode="page")
-        docs = loader.load()
-
-        if not docs:
-            raise ValueError("PDF produced no pages (empty or unreadable).")
-
-        # Check for scanned PDF
-        warnings = []
-        low_text_pages = 0
-        for d in docs:
-            d.metadata["source"] = d.metadata.get("source") or filename
-            d.metadata["page"] = d.metadata.get("page", 0)
-            if len((d.page_content or "").strip()) < config.min_chars_per_page:
-                low_text_pages += 1
-
-        if low_text_pages / len(docs) >= config.scanned_page_ratio_threshold:
-            warnings.append(
-                "Many pages have little or no extractable text. This PDF may be scanned; "
-                "consider using OCR for better results."
-            )
-            logger.warning(
-                "Possible scanned PDF: %s of %s pages below %s chars",
-                low_text_pages,
-                len(docs),
-                config.min_chars_per_page,
-            )
-
-        # Chunk documents
-        splitter = RecursiveCharacterTextSplitter(
-            chunk_size=config.chunk_size,
-            chunk_overlap=config.chunk_overlap,
-            length_function=len,
-        )
-        split_docs = splitter.split_documents(docs)
-
-        chunks = []
-        for d in split_docs:
-            meta = d.metadata
-            chunks.append({
-                "text": d.page_content,
-                "page": meta.get("page", 0),
-                "source": meta.get("source", filename),
-            })
-
-        logger.info(
-            "Chunking produced %s chunks (chunk_size=%s, chunk_overlap=%s)",
-            len(chunks),
-            config.chunk_size,
-            config.chunk_overlap,
-        )
+        docs, warnings = load_pdf_pages(temp_path, original_filename=filename)
+        chunks = chunk_documents(docs)
 
         if not chunks:
             raise ValueError("No text chunks produced from PDF.")
 
-        # Embed chunks
+        # Embed chunks (dimension must match Milvus collection — use len(vectors[0]), not a guessed probe default)
         embedder = get_embedder()
         vectors = embedder.embed_documents([c["text"] for c in chunks])
 
         if len(vectors) != len(chunks):
             raise RuntimeError("Embedding count does not match chunk count.")
+        if not vectors or not vectors[0]:
+            raise RuntimeError("Embedding API returned empty vectors.")
+
+        vector_dim = len(vectors[0])
+        if embedder.dimension != vector_dim:
+            logger.warning(
+                "Embedder.dimension=%s differs from actual vector length=%s; using vector length for Milvus.",
+                embedder.dimension,
+                vector_dim,
+            )
 
         # Insert into storage
         storage = await create_and_connect_storage()
-        doc_id = str(uuid.uuid4())
+        try:
+            doc_id = str(uuid.uuid4())
 
-        # Ensure collection exists
-        await storage.ensure_collection(vector_dim=embedder.dimension)
+            # Ensure collection exists (recreates if existing schema dim mismatches)
+            await storage.ensure_collection(vector_dim=vector_dim)
 
-        # Insert chunks
-        insert_result = await storage.insert_chunks(
-            doc_id=doc_id,
-            chunks=chunks,
-            vectors=vectors,
-        )
+            # Insert chunks
+            insert_result = await storage.insert_chunks(
+                doc_id=doc_id,
+                chunks=chunks,
+                vectors=vectors,
+            )
+        finally:
+            await storage.disconnect()
 
         processing_time = time.time() - start_time
 
@@ -211,9 +171,13 @@ async def upload_pdf(
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
         logger.exception("Indexing failed: %s", e)
+        # Surface cause for debugging (API/Milvus/dim); PDF issues usually raise ValueError → 400 above
+        msg = str(e).strip() or repr(e)
+        if len(msg) > 500:
+            msg = msg[:500] + "…"
         raise HTTPException(
             status_code=500,
-            detail="Indexing failed. The file may be corrupt or unsupported.",
+            detail=f"Indexing failed: {msg}",
         ) from e
 
     return result

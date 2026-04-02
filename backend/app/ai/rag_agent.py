@@ -7,6 +7,7 @@ but is adapted for embeddings/vector databases instead of vision AI.
 """
 import logging
 import time
+from datetime import datetime
 from typing import AsyncIterator, Dict, List, Optional, Any
 
 from app.ai.prompts import PromptTemplates, format_response_synthesizer
@@ -71,6 +72,8 @@ class RAGAgent:
         # Statistics
         self.total_queries = 0
         self.total_cost = 0.0
+        # Filled after each `process_query_stream` (RAG path) for API layers (e.g. SSE sources)
+        self._last_stream_retrieved_chunks: List[StorageRetrievedChunk] = []
 
     async def initialize(self) -> None:
         """
@@ -171,6 +174,8 @@ class RAGAgent:
         doc_id: Optional[str] = None,
         mode: QueryMode = QueryMode.AUTO,
         language: str = "vi",
+        *,
+        retrieved_chunks_override: Optional[List[StorageRetrievedChunk]] = None,
     ) -> AsyncIterator[str]:
         """
         Process a query and stream the response.
@@ -180,11 +185,13 @@ class RAGAgent:
             doc_id: Optional document ID to search within
             mode: Query processing mode (AUTO, RAG, DIRECT)
             language: Language for prompts and responses ("vi" or "en")
+            retrieved_chunks_override: If set (RAG mode), skip retrieval and use these chunks
 
         Yields:
             Response tokens as they arrive
         """
         start_time = time.time()
+        self._last_stream_retrieved_chunks = []
 
         try:
             # Determine if we need document retrieval
@@ -195,13 +202,17 @@ class RAGAgent:
                 needs_retrieval = mode == QueryMode.RAG
 
             if needs_retrieval:
-                # RAG mode: retrieve chunks first
-                retrieved_chunks = await self._retrieve_chunks(query, doc_id)
+                # RAG mode: retrieve chunks first (or use pre-fetched list from router)
+                retrieved_chunks = (
+                    retrieved_chunks_override
+                    if retrieved_chunks_override is not None
+                    else await self._retrieve_chunks(query, doc_id)
+                )
+                self._last_stream_retrieved_chunks = list(retrieved_chunks)
                 context = self._build_context(retrieved_chunks)
 
-                # Stream response with context
+                # Stream LLM response with retrieved context (OpenRouter chat completions)
                 system_prompt = PromptTemplates.get_system_prompt(language)
-                full_context = f"{system_prompt}\n\nContext:\n{context}"
 
                 tokens = []
                 async for token in self.provider.stream_with_context(
@@ -486,7 +497,7 @@ class RAGAgent:
             recent_messages=self.conversation_history,
             summary=None,  # Summary not implemented yet
             total_message_count=len(self.conversation_history),
-            processed_at=time.time(),
+            processed_at=datetime.utcnow(),
         )
 
     def clear_conversation(self) -> None:

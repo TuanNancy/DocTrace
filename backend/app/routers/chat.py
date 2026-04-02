@@ -10,8 +10,8 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 
 from app.ai.rag_agent import create_rag_agent_with_defaults
-from app.core.config import get_config
 from app.models.document import QueryMode
+from app.schemas import ChatRequest
 
 logger = logging.getLogger(__name__)
 
@@ -25,65 +25,48 @@ def _sse_message(event: str, data: str) -> str:
 
 async def _stream_chat_sse(query: str, doc_id: str, language: str = "vi") -> AsyncIterator[str]:
     """
-    Yield SSE events: token, sources, done using new RAG agent architecture.
+    Yield SSE events: sources (retrieval), then LLM tokens (OpenRouter), then done.
 
-    Args:
-        query: User query
-        doc_id: Document ID to search within
-        language: Language for prompts ("vi" or "en")
-
-    Yields:
-        SSE formatted messages
+    Retrieval uses embeddings + Milvus; answers use the same OpenRouter key as configured for chat.
     """
-    config = get_config()
     agent = None
 
     try:
-        # Create RAG agent
         agent = await create_rag_agent_with_defaults()
 
-        # Process query with streaming
-        retrieved_chunks = []
-        answer_tokens = []
-
-        async for token in agent.process_query_stream(
-            query=query,
-            doc_id=doc_id,
-            mode=QueryMode.RAG,
-            language=language,
-        ):
-            # Collect tokens for the answer
-            answer_tokens.append(token)
-
-            # Stream each token as SSE event
-            safe = json.dumps(token) if token else ""
-            yield _sse_message("token", safe)
-
-        # Get retrieved chunks from the agent's last query
-        # We need to retrieve chunks separately since streaming doesn't return them
-        query_vector = agent.embedder.embed_documents([query])
-        if query_vector:
-            retrieved_chunks = await agent.storage.search_chunks(
-                query_vector=query_vector[0],
-                doc_id=doc_id,
-                top_k=config.retrieval_top_k,
-                min_score=config.min_relevance_score,
-            )
-
-        # If no chunks found, emit error
-        if not retrieved_chunks:
-            yield _sse_message("error", json.dumps({"message": "Không tìm thấy nội dung liên quan cho tài liệu này."}))
-            yield _sse_message("done", "[DONE]")
-            return
-
-        # Emit sources
+        # 1) Retrieve chunks once (embedding + vector search)
+        retrieved_chunks = await agent._retrieve_chunks(query, doc_id)
         sources_payload = [
             {"page": chunk.page, "source": chunk.source, "score": round(chunk.score, 4)}
             for chunk in retrieved_chunks
         ]
         yield _sse_message("sources", json.dumps(sources_payload))
 
-        # Done
+        if not retrieved_chunks:
+            # Avoid calling the LLM with empty context (models often refuse "summarize PDF" with no text)
+            fallback = (
+                "Không tìm thấy đoạn văn nào trong tài liệu đủ liên quan với câu hỏi "
+                "(có thể do ngưỡng MIN_RELEVANCE_SCORE quá cao hoặc câu hỏi quá khác nội dung đã index). "
+                "Hãy thử hạ MIN_RELEVANCE_SCORE trong .env (ví dụ 0.25) hoặc đặt câu hỏi gần với nội dung file hơn."
+                if language == "vi"
+                else "No sufficiently relevant passages were retrieved from this document. "
+                "Try lowering MIN_RELEVANCE_SCORE in .env or rephrasing your question."
+            )
+            yield _sse_message("token", json.dumps(fallback))
+            yield _sse_message("done", "[DONE]")
+            return
+
+        # 2) Stream LLM answer (OpenRouter chat completions) with the same context
+        async for token in agent.process_query_stream(
+            query=query,
+            doc_id=doc_id,
+            mode=QueryMode.RAG,
+            language=language,
+            retrieved_chunks_override=retrieved_chunks,
+        ):
+            safe = json.dumps(token) if token else ""
+            yield _sse_message("token", safe)
+
         yield _sse_message("done", "[DONE]")
 
     except Exception as e:
@@ -92,13 +75,12 @@ async def _stream_chat_sse(query: str, doc_id: str, language: str = "vi") -> Asy
         yield _sse_message("done", "[DONE]")
 
     finally:
-        # Cleanup agent
         if agent:
             await agent.shutdown()
 
 
 @router.post("/chat")
-async def chat(request: dict) -> StreamingResponse:
+async def chat(request: ChatRequest) -> StreamingResponse:
     """
     RAG chat: retrieve chunks by doc_id, then stream LLM response via SSE.
     Updated to use new RAG agent architecture.
@@ -116,10 +98,9 @@ async def chat(request: dict) -> StreamingResponse:
         }
     """
     try:
-        query = request.get("query", "")
-        doc_id = request.get("doc_id", "")
-        language = request.get("language", "vi")
-
+        query = request.query.strip()
+        doc_id = request.doc_id.strip()
+        language = getattr(request, "language", "vi")
         if not query:
             raise HTTPException(status_code=400, detail="Query is required")
         if not doc_id:

@@ -21,10 +21,11 @@ MILVUS_PORT = _config.milvus_port
 MILVUS_COLLECTION = _config.milvus_collection
 MILVUS_VECTOR_DIM = _config.milvus_vector_dim
 
-# ==================== OpenAI Configuration ====================
-# Backward compatibility exports
-OPENAI_API_KEY = _config.openai_api_key
+# ==================== OpenAI-compatible SDK (routed to OpenRouter) ====================
+# OPENAI_* names are legacy aliases — keys and base URL are OpenRouter.
+OPENAI_API_KEY = _config.openrouter_api_key
 OPENAI_EMBEDDING_MODEL = _config.embedding_model
+OPENAI_BASE_URL = _config.openrouter_base_url
 
 # ==================== Upload Configuration ====================
 # Backward compatibility exports
@@ -41,9 +42,8 @@ CHUNK_OVERLAP = _config.chunk_overlap
 MIN_CHARS_PER_PAGE = _config.min_chars_per_page
 
 # ==================== OpenRouter Configuration ====================
-# Backward compatibility exports
 OPENROUTER_API_KEY = _config.openrouter_api_key
-OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+OPENROUTER_BASE_URL = _config.openrouter_base_url
 OPENROUTER_CHAT_MODEL = _config.model
 
 
@@ -83,24 +83,26 @@ def reload_config() -> RAGConfig:
 
     # Update module-level variables for backward compatibility
     global MILVUS_HOST, MILVUS_PORT, MILVUS_COLLECTION, MILVUS_VECTOR_DIM
-    global OPENAI_API_KEY, OPENAI_EMBEDDING_MODEL
+    global OPENAI_API_KEY, OPENAI_EMBEDDING_MODEL, OPENAI_BASE_URL
     global UPLOAD_MAX_SIZE_MB, UPLOAD_ALLOWED_CONTENT_TYPES
     global CHUNK_SIZE, CHUNK_OVERLAP
     global MIN_CHARS_PER_PAGE
-    global OPENROUTER_API_KEY, OPENROUTER_CHAT_MODEL
+    global OPENROUTER_API_KEY, OPENROUTER_BASE_URL, OPENROUTER_CHAT_MODEL
 
     MILVUS_HOST = _config.milvus_host
     MILVUS_PORT = _config.milvus_port
     MILVUS_COLLECTION = _config.milvus_collection
     MILVUS_VECTOR_DIM = _config.milvus_vector_dim
-    OPENAI_API_KEY = _config.openai_api_key
+    OPENAI_API_KEY = _config.openrouter_api_key
     OPENAI_EMBEDDING_MODEL = _config.embedding_model
+    OPENAI_BASE_URL = _config.openrouter_base_url
     UPLOAD_MAX_SIZE_MB = _config.upload_max_size_mb
     UPLOAD_ALLOWED_CONTENT_TYPES = _config.upload_allowed_content_types
     CHUNK_SIZE = _config.chunk_size
     CHUNK_OVERLAP = _config.chunk_overlap
     MIN_CHARS_PER_PAGE = _config.min_chars_per_page
     OPENROUTER_API_KEY = _config.openrouter_api_key
+    OPENROUTER_BASE_URL = _config.openrouter_base_url
     OPENROUTER_CHAT_MODEL = _config.model
 
     return _config
@@ -141,7 +143,8 @@ def get_openai_config() -> dict:
         >>> print(openai_config['api_key'])
     """
     return {
-        "api_key": _config.openai_api_key,
+        "api_key": _config.openrouter_api_key,
+        "base_url": _config.openrouter_base_url,
         "embedding_model": _config.embedding_model,
         "embedding_dimension": _config.embedding_dimension,
     }
@@ -160,7 +163,7 @@ def get_openrouter_config() -> dict:
     """
     return {
         "api_key": _config.openrouter_api_key,
-        "base_url": OPENROUTER_BASE_URL,
+        "base_url": _config.openrouter_base_url,
         "model": _config.model,
     }
 
@@ -238,6 +241,7 @@ __all__ = [
     # OpenAI
     "OPENAI_API_KEY",
     "OPENAI_EMBEDDING_MODEL",
+    "OPENAI_BASE_URL",
     "get_openai_config",
     # OpenRouter
     "OPENROUTER_API_KEY",

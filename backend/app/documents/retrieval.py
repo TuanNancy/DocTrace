@@ -1,33 +1,5 @@
-"""
-Deprecated legacy module.
+"""Backward compatibility: use `app.processors.legacy_retrieval` instead."""
 
-Retrieval is implemented via:
-- `app.storage.*` (vector search)
-- `app.ai.rag_agent` (end-to-end query processing)
+from app.processors.legacy_retrieval import RetrievedChunk, build_context, search_chunks
 
-This file remains only to avoid breaking old imports.
-"""
-from typing import Any
-
-
-class RetrievedChunk:  # backward-compat placeholder
-    def __init__(self, *_: Any, **__: Any) -> None:
-        raise RuntimeError(
-            "app.documents.retrieval.RetrievedChunk is deprecated and was removed. "
-            "Use app.models.document.RetrievedChunk (storage result) instead."
-        )
-
-
-def search_chunks(*_: Any, **__: Any) -> Any:  # backward-compat placeholder
-    raise RuntimeError(
-        "app.documents.retrieval.search_chunks is deprecated and was removed. "
-        "Use app.ai.rag_agent.RAGAgent or app.storage.* instead."
-    )
-
-
-def build_context(*_: Any, **__: Any) -> Any:  # backward-compat placeholder
-    raise RuntimeError(
-        "app.documents.retrieval.build_context is deprecated and was removed. "
-        "Use app.ai.rag_agent.RAGAgent (internal context builder) instead."
-    )
-
+__all__ = ["RetrievedChunk", "build_context", "search_chunks"]

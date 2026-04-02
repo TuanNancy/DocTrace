@@ -25,7 +25,6 @@ class StorageFactory:
     _backends: Dict[str, type] = {
         "milvus": MilvusStorage,
         # Add more backends as they are implemented:
-        # "memory": InMemoryStorage,
         # "chroma": ChromaStorage,
     }
 
@@ -127,10 +126,6 @@ class StorageFactory:
                 "metric_type": config.milvus_metric_type,
                 "nlist": config.milvus_nlist,
                 "nprobe": config.milvus_nprobe,
-            },
-            "memory": {
-                # In-memory storage doesn't need much config
-                "storage_path": config.local_storage_path,
             },
         }
         return backend_configs.get(backend, {})

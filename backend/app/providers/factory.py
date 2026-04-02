@@ -1,6 +1,5 @@
 """
-Provider factory for creating LLM provider instances.
-Supports multiple providers (OpenRouter, OpenAI, Anthropic) with provider-agnostic interface.
+LLM provider factory. This project uses OpenRouter only (see STRUCTURE.md).
 """
 import logging
 from typing import Optional, Dict, Any
@@ -21,12 +20,8 @@ class ProviderFactory:
     initialization details.
     """
 
-    # Registry of available providers
     _providers: Dict[str, type] = {
         "openrouter": OpenRouterProvider,
-        # Add more providers as they are implemented:
-        # "openai": OpenAIProvider,
-        # "anthropic": AnthropicProvider,
     }
 
     @classmethod
@@ -97,9 +92,11 @@ class ProviderFactory:
         # Get model from config if not provided
         provider_model = model or config.model
 
-        # Get provider-specific config
+        # Get provider-specific config (exclude keys passed explicitly to avoid duplicate kwargs)
         provider_config = config.get_provider_config()
         provider_config.update(kwargs)
+        provider_config.pop("api_key", None)
+        provider_config.pop("model", None)
 
         # Create provider instance
         try:
@@ -135,12 +132,9 @@ class ProviderFactory:
         Returns:
             API key or None if not found
         """
-        key_map = {
-            "openrouter": config.openrouter_api_key,
-            "openai": config.openai_api_key,
-            "anthropic": config.anthropic_api_key,
-        }
-        return key_map.get(provider)
+        if provider != "openrouter":
+            return None
+        return config.openrouter_api_key
 
     @classmethod
     def get_available_providers(cls) -> list[str]:

@@ -1,13 +1,16 @@
 """
-Embedding provider: OpenAI embeddings (text-embedding-3-small, etc.).
+Embeddings via OpenRouter (OpenAI-compatible `/v1/embeddings`).
+
+Model ID is `RAGConfig.embedding_model` (e.g. `openai/text-embedding-3-small`).
 """
 import logging
 from functools import lru_cache
 from typing import Protocol
 
 from app.config import (
-    OPENAI_API_KEY,
     OPENAI_EMBEDDING_MODEL,
+    OPENROUTER_API_KEY,
+    OPENROUTER_BASE_URL,
 )
 
 logger = logging.getLogger(__name__)
@@ -27,11 +30,15 @@ class OpenAIEmbedder:
 
     def __init__(self, model: str = OPENAI_EMBEDDING_MODEL, api_key: str | None = None):
         self._model = model
-        self._client = __import__("openai").OpenAI(api_key=api_key or OPENAI_API_KEY)
+        openai = __import__("openai")
+        kwargs: dict = {"api_key": api_key or OPENROUTER_API_KEY}
+        if OPENROUTER_BASE_URL:
+            kwargs["base_url"] = OPENROUTER_BASE_URL.rstrip("/")
+        self._client = openai.OpenAI(**kwargs)
         self._dim = self._get_dimension()
 
     def _get_dimension(self) -> int:
-        # text-embedding-3-small = 1536, ada-002 = 1536
+        """Probe API for vector size. Do not guess — wrong dim breaks Milvus insert."""
         try:
             r = self._client.embeddings.create(
                 model=self._model,
@@ -39,8 +46,11 @@ class OpenAIEmbedder:
             )
             return len(r.data[0].embedding)
         except Exception as e:
-            logger.warning("Could not infer OpenAI embedding dim, defaulting to 1536: %s", e)
-            return 1536
+            logger.exception("Embedding dimension probe failed for model=%s: %s", self._model, e)
+            raise RuntimeError(
+                f"Embedding API failed (check OPENROUTER_API_KEY, OPENROUTER_BASE_URL, "
+                f"and EMBEDDING_MODEL). Model={self._model!r}. Original error: {e}"
+            ) from e
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
         if not texts:
@@ -69,6 +79,6 @@ def get_embedder(
     """
     return OpenAIEmbedder(
         model=openai_model or OPENAI_EMBEDDING_MODEL,
-        api_key=OPENAI_API_KEY or None,
+        api_key=OPENROUTER_API_KEY or None,
     )
 

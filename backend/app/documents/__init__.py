@@ -1,11 +1,11 @@
 """
-Deprecated legacy module.
+Legacy package path. Prefer:
 
-The current API flow uses:
-- `app.routers.upload` for PDF upload + indexing
-- `app.ai.rag_agent` + `app.storage.*` for retrieval + answering
-
-Only a small subset of pure text utilities may remain here for backward compatibility
-(e.g. scripts importing `chunk_documents`, `load_pdf_pages`).
+- `app.processors` — PDF / chunking
+- `app.storage` — vector retrieval
+- `app.ai` — RAG workflows
 """
 
+from app.processors.pdf import chunk_documents, load_pdf_pages
+
+__all__ = ["chunk_documents", "load_pdf_pages"]
