@@ -15,7 +15,6 @@ from app.core.config import get_config
 from app.models.agent import (
     ConversationMessage,
     ConversationContext,
-    ConversationSummary,
     MessageRole,
     create_conversation_message,
 )
@@ -72,8 +71,6 @@ class RAGAgent:
         # Statistics
         self.total_queries = 0
         self.total_cost = 0.0
-        # Filled after each `process_query_stream` (RAG path) for API layers (e.g. SSE sources)
-        self._last_stream_retrieved_chunks: List[StorageRetrievedChunk] = []
 
     async def initialize(self) -> None:
         """
@@ -191,7 +188,6 @@ class RAGAgent:
             Response tokens as they arrive
         """
         start_time = time.time()
-        self._last_stream_retrieved_chunks = []
 
         try:
             # Determine if we need document retrieval
@@ -208,7 +204,6 @@ class RAGAgent:
                     if retrieved_chunks_override is not None
                     else await self._retrieve_chunks(query, doc_id)
                 )
-                self._last_stream_retrieved_chunks = list(retrieved_chunks)
                 context = self._build_context(retrieved_chunks)
 
                 # Stream LLM response with retrieved context (OpenRouter chat completions)

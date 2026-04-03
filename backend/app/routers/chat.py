@@ -54,7 +54,7 @@ async def _stream_chat_sse(query: str, doc_id: str, language: str = "vi") -> Asy
                 "Try lowering MIN_RELEVANCE_SCORE in .env or rephrasing your question."
             )
             yield _sse_message("token", json.dumps(fallback))
-            yield _sse_message("done", "[DONE]")
+            yield _sse_message("done", json.dumps("[DONE]"))
             return
 
         # 2) Stream LLM answer (OpenRouter chat completions) with the same context
@@ -68,12 +68,12 @@ async def _stream_chat_sse(query: str, doc_id: str, language: str = "vi") -> Asy
             safe = json.dumps(token) if token else ""
             yield _sse_message("token", safe)
 
-        yield _sse_message("done", "[DONE]")
+        yield _sse_message("done", json.dumps("[DONE]"))
 
     except Exception as e:
         logger.exception("Chat stream error: %s", e)
         yield _sse_message("error", json.dumps({"message": str(e)}))
-        yield _sse_message("done", "[DONE]")
+        yield _sse_message("done", json.dumps("[DONE]"))
 
     finally:
         if agent:

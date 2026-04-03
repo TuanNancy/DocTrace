@@ -7,6 +7,8 @@ export interface UploadResponse {
   processing_time?: number;
   created_at?: string;
   warnings?: string[];
+  /** S3 object key in Supabase Storage bucket when original PDF was stored (backend only). */
+  pdf_storage_key?: string | null;
   metadata?: Record<string, any>;
   /**
    * Kept for mock responses. Backend responses use `status` + `warnings` instead.

@@ -77,6 +77,14 @@ MILVUS_VECTOR_DIM=4096          # phải khớp EMBEDDING_DIMENSION
 # Upload
 UPLOAD_MAX_SIZE_MB=50
 
+# Supabase Storage — lưu file PDF gốc (S3-compatible API; tạo bucket + S3 keys trong Dashboard → Storage)
+# Endpoint mặc định khớp project; override nếu dùng project khác.
+SUPABASE_S3_ENDPOINT=https://rnenbtarmbzhjyvhhpjx.storage.supabase.co/storage/v1/s3
+SUPABASE_S3_REGION=ap-southeast-2
+SUPABASE_S3_ACCESS_KEY_ID=...
+SUPABASE_S3_SECRET_ACCESS_KEY=...
+SUPABASE_STORAGE_BUCKET=pdfs
+
 # Chunking
 CHUNK_SIZE=1000
 CHUNK_OVERLAP=150

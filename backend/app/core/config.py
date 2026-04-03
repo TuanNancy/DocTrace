@@ -105,6 +105,13 @@ class RAGConfig:
     supabase_url: Optional[str] = None
     supabase_publishable_key: Optional[str] = None
 
+    # Supabase Storage (S3-compatible API) — original PDF retention
+    supabase_s3_endpoint: Optional[str] = None
+    supabase_s3_region: str = "ap-southeast-2"
+    supabase_s3_access_key_id: Optional[str] = None
+    supabase_s3_secret_access_key: Optional[str] = None
+    supabase_storage_bucket: Optional[str] = None
+
     # ==================== Logging ====================
     log_level: str = "INFO"
     log_requests: bool = False
@@ -175,6 +182,18 @@ class RAGConfig:
             or _optional_str("NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY", self.supabase_publishable_key)
             or _optional_str("NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY", self.supabase_publishable_key)
         )
+
+        # Supabase Storage S3 (optional — when set, POST /api/upload stores the PDF in the bucket)
+        self.supabase_s3_endpoint = _optional_str(
+            "SUPABASE_S3_ENDPOINT",
+            self.supabase_s3_endpoint,
+        )
+        self.supabase_s3_region = _str("SUPABASE_S3_REGION", self.supabase_s3_region)
+        self.supabase_s3_access_key_id = _optional_str("SUPABASE_S3_ACCESS_KEY_ID", self.supabase_s3_access_key_id)
+        self.supabase_s3_secret_access_key = _optional_str(
+            "SUPABASE_S3_SECRET_ACCESS_KEY", self.supabase_s3_secret_access_key
+        )
+        self.supabase_storage_bucket = _optional_str("SUPABASE_STORAGE_BUCKET", self.supabase_storage_bucket)
 
         # Embedding model IDs on OpenRouter use provider/model (e.g. openai/text-embedding-3-small)
         em = (self.embedding_model or "").strip()

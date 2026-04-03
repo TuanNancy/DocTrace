@@ -2,17 +2,18 @@
 POST /api/upload: multipart/form-data PDF upload → indexing pipeline → UploadResponse.
 Updated to use new architecture with storage factory and document models.
 """
+import asyncio
 import logging
 import time
 import uuid
-from typing import Annotated
+from typing import Annotated, Any, Dict
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 
 from app.core.auth import require_supabase_user
 from app.core.config import get_config
 from app.models.document import DocumentStatus, IndexingResult, create_indexing_result
-from app.storage.base import InsertResult
+from app.services.supabase_pdf_storage import try_upload_pdf
 from app.storage.factory import create_and_connect_storage
 
 logger = logging.getLogger(__name__)
@@ -23,6 +24,7 @@ router = APIRouter(prefix="/api", tags=["upload"])
 async def run_indexing_pipeline_from_upload(
     file_content: bytes,
     filename: str,
+    doc_id: str,
 ) -> IndexingResult:
     """
     Run indexing pipeline on uploaded file content.
@@ -36,6 +38,7 @@ async def run_indexing_pipeline_from_upload(
     Args:
         file_content: PDF file content as bytes
         filename: Original filename
+        doc_id: Pre-generated document ID used for both S3 key and Milvus rows
 
     Returns:
         IndexingResult with doc_id, chunks_count, and warnings
@@ -83,8 +86,6 @@ async def run_indexing_pipeline_from_upload(
         # Insert into storage
         storage = await create_and_connect_storage()
         try:
-            doc_id = str(uuid.uuid4())
-
             # Ensure collection exists (recreates if existing schema dim mismatches)
             await storage.ensure_collection(vector_dim=vector_dim)
 
@@ -99,13 +100,19 @@ async def run_indexing_pipeline_from_upload(
 
         processing_time = time.time() - start_time
 
+        merged_warnings: list[str] = []
+        if warnings:
+            merged_warnings.extend(warnings)
+        if insert_result.warnings:
+            merged_warnings.extend(insert_result.warnings)
+
         return create_indexing_result(
             doc_id=doc_id,
             name=filename,
             chunks_count=insert_result.chunks_inserted,
             status=DocumentStatus.COMPLETED,
             processing_time=processing_time,
-            warnings=warnings or insert_result.warnings,
+            warnings=merged_warnings,
         )
 
     finally:
@@ -119,8 +126,8 @@ async def run_indexing_pipeline_from_upload(
 @router.post("/upload")
 async def upload_pdf(
     file: Annotated[UploadFile, File(description="PDF file to index")],
-    _user: dict = Depends(require_supabase_user),
-) -> IndexingResult:
+    user: dict = Depends(require_supabase_user),
+) -> Dict[str, Any]:
     """
     Accept a PDF via multipart/form-data, validate size/type, run indexing pipeline,
     return doc_id and chunks count. Handles errors gracefully.
@@ -166,8 +173,30 @@ async def upload_pdf(
     if not file_content:
         raise HTTPException(status_code=400, detail="Empty file.")
 
+    uid = str(user.get("id") or "")
+    if not uid:
+        raise HTTPException(status_code=401, detail="Invalid user: missing id.")
+    doc_id = str(uuid.uuid4())
+
+    # Store original PDF early so users can still find the file in Storage
+    # even if downstream indexing (Milvus/embeddings) fails.
+    pdf_key, storage_warn = await asyncio.to_thread(
+        try_upload_pdf,
+        file_content,
+        uid,
+        doc_id,
+        filename,
+    )
+
     try:
-        result = await run_indexing_pipeline_from_upload(file_content, filename)
+        result = await run_indexing_pipeline_from_upload(file_content, filename, doc_id)
+        if storage_warn:
+            result.warnings.append(storage_warn)
+        if pdf_key:
+            result.pdf_storage_key = pdf_key
+            logger.info("PDF storage key set in response: %s", pdf_key)
+        else:
+            logger.info("PDF storage key is None — S3 upload was skipped or failed")
     except ValueError as e:
         logger.warning("Indexing validation error: %s", e)
         raise HTTPException(status_code=400, detail=str(e)) from e
@@ -182,4 +211,4 @@ async def upload_pdf(
             detail=f"Indexing failed: {msg}",
         ) from e
 
-    return result
+    return result.to_dict()

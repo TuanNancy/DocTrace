@@ -214,6 +214,11 @@ export function UploadZone({
                 <span className="font-medium">{result.processing_time}s</span>
               </p>
             )}
+            {result.pdf_storage_key && (
+              <p className="text-xs text-green-600 dark:text-green-400">
+                ✅ Đã lưu PDF lên Storage: <span className="font-medium">{result.pdf_storage_key}</span>
+              </p>
+            )}
             {result.warnings && result.warnings.length > 0 && (
               <p className="text-xs text-amber-700 dark:text-amber-300">
                 Cảnh báo: {result.warnings[0]}

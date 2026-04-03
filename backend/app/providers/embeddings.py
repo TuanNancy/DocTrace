@@ -1,17 +1,11 @@
 """
 Embeddings via OpenRouter (OpenAI-compatible `/v1/embeddings`).
-
-Model ID is `RAGConfig.embedding_model` (e.g. `openai/text-embedding-3-small`).
 """
 import logging
 from functools import lru_cache
 from typing import Protocol
 
-from app.config import (
-    OPENAI_EMBEDDING_MODEL,
-    OPENROUTER_API_KEY,
-    OPENROUTER_BASE_URL,
-)
+from app.core.config import get_config
 
 logger = logging.getLogger(__name__)
 
@@ -26,15 +20,16 @@ class Embedder(Protocol):
 
 
 class OpenAIEmbedder:
-    """OpenAI embeddings (e.g. text-embedding-3-small)."""
+    """OpenAI embeddings via OpenRouter."""
 
-    def __init__(self, model: str = OPENAI_EMBEDDING_MODEL, api_key: str | None = None):
+    def __init__(self, model: str, api_key: str):
         self._model = model
         openai = __import__("openai")
-        kwargs: dict = {"api_key": api_key or OPENROUTER_API_KEY}
-        if OPENROUTER_BASE_URL:
-            kwargs["base_url"] = OPENROUTER_BASE_URL.rstrip("/")
-        self._client = openai.OpenAI(**kwargs)
+        config = get_config()
+        self._client = openai.OpenAI(
+            api_key=api_key,
+            base_url=config.openrouter_base_url.rstrip("/"),
+        )
         self._dim = self._get_dimension()
 
     def _get_dimension(self) -> int:
@@ -48,14 +43,13 @@ class OpenAIEmbedder:
         except Exception as e:
             logger.exception("Embedding dimension probe failed for model=%s: %s", self._model, e)
             raise RuntimeError(
-                f"Embedding API failed (check OPENROUTER_API_KEY, OPENROUTER_BASE_URL, "
-                f"and EMBEDDING_MODEL). Model={self._model!r}. Original error: {e}"
+                f"Embedding API failed (check OPENROUTER_API_KEY and EMBEDDING_MODEL). "
+                f"Model={self._model!r}. Original error: {e}"
             ) from e
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
         if not texts:
             return []
-        # OpenAI allows batch; cap at 2048 inputs per request to be safe
         batch_size = 2048
         out: list[list[float]] = []
         for i in range(0, len(texts), batch_size):
@@ -71,14 +65,10 @@ class OpenAIEmbedder:
 
 
 @lru_cache(maxsize=2)
-def get_embedder(
-    openai_model: str | None = None,
-) -> Embedder:
-    """
-    Return cached OpenAI embedder instance.
-    """
+def get_embedder(model: str | None = None) -> Embedder:
+    """Return cached OpenAI embedder instance."""
+    config = get_config()
     return OpenAIEmbedder(
-        model=openai_model or OPENAI_EMBEDDING_MODEL,
-        api_key=OPENROUTER_API_KEY or None,
+        model=model or config.embedding_model,
+        api_key=config.openrouter_api_key,
     )
-

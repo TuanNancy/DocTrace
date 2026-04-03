@@ -2,8 +2,6 @@
 venv/
 .venv/
 env/
-scripts/
-tests/
 __pycache__/
 *.py[cod]
 *$py.class
@@ -52,6 +50,12 @@ htmlcov/
 
 # Jupyter
 .ipynb_checkpoints/
+
+# Frontend
+frontend/.next/
+frontend/out/
+frontend/node_modules/
+frontend/tsconfig.tsbuildinfo
 
 # Optional
 *.bak

@@ -9,9 +9,6 @@ langchain-core==1.2.19
 langchain-community==0.4.1
 langchain-text-splitters==1.0.0
 
-# LangGraph
-langgraph==1.1.2
-
 # LLM / Embeddings
 openai==2.28.0
 
@@ -26,16 +23,9 @@ python-dotenv==1.2.2
 
 # HTTP
 httpx==0.28.1
-requests==2.32.5
 
-# Numeric
-numpy==2.4.3
-
-# Tokenization
-tiktoken==0.8.0
-
-sentence-transformers
-rank-bm25
+# Supabase Storage (S3-compatible)
+boto3==1.35.99
 
 # Test
 pytest==8.3.4

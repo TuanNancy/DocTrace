@@ -2,8 +2,8 @@
 
 import Link from "next/link";
 import { useEffect } from "react";
-import { useRouter } from "next/navigation";
 import { useFormState } from "react-dom";
+import { useRouter } from "next/navigation";
 import { signupAction } from "@/app/auth/actions";
 import { AuthSubmitButton } from "@/components/auth/AuthSubmitButton";
 import { BrandMark } from "@/components/BrandMark";
@@ -30,7 +30,7 @@ export function SignupForm() {
       }, 900);
       return () => window.clearTimeout(timer);
     }
-  }, [router, state.message, state.status]);
+  }, [router, state.status]);
 
   return (
     <main className="mx-auto flex min-h-screen w-full max-w-5xl items-center bg-[#f7f7f4] px-4 dark:bg-slate-900">
