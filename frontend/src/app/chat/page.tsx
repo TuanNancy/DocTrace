@@ -11,16 +11,6 @@ import { UploadZone } from "@/components/UploadZone";
 import { createClient } from "@/lib/client";
 import type { UploadResponse } from "@/types";
 
-const HISTORY_TODAY = [
-  { title: "Phân tích tài liệu PDF", time: "10:30" },
-  { title: "Hỏi đáp về AI", time: "09:15" },
-];
-
-const HISTORY_YESTERDAY = [
-  { title: "Tóm tắt văn bản", time: "Hôm qua" },
-  { title: "Dịch thuật", time: "Hôm qua" },
-];
-
 export default function ChatPage() {
   const router = useRouter();
   const chatRef = useRef<ChatWindowHandle>(null);
@@ -211,40 +201,9 @@ export default function ChatPage() {
           </button>
 
           <div className="min-h-0 flex-1 overflow-y-auto px-3 py-2">
-            <p className="px-3 pb-2 pt-4 text-[0.65rem] font-semibold uppercase tracking-wider text-white/50">
-              Hôm nay
+            <p className="px-3 pt-4 text-sm text-white/40 text-center">
+              Lịch sử trò chuyện sẽ xuất hiện ở đây
             </p>
-            <ul className="space-y-1">
-              {HISTORY_TODAY.map((item) => (
-                <li
-                  key={item.title}
-                  className="flex cursor-pointer items-start gap-3 rounded-lg px-3 py-3 text-sm transition hover:bg-white/10"
-                >
-                  <span className="mt-0.5 text-[#B22222]">💬</span>
-                  <div className="min-w-0 flex-1">
-                    <div className="truncate font-medium">{item.title}</div>
-                    <div className="text-xs text-white/50">{item.time}</div>
-                  </div>
-                </li>
-              ))}
-            </ul>
-            <p className="px-3 pb-2 pt-6 text-[0.65rem] font-semibold uppercase tracking-wider text-white/50">
-              Hôm qua
-            </p>
-            <ul className="space-y-1">
-              {HISTORY_YESTERDAY.map((item) => (
-                <li
-                  key={item.title}
-                  className="flex cursor-pointer items-start gap-3 rounded-lg px-3 py-3 text-sm transition hover:bg-white/10"
-                >
-                  <span className="mt-0.5 text-[#B22222]">💬</span>
-                  <div className="min-w-0 flex-1">
-                    <div className="truncate font-medium">{item.title}</div>
-                    <div className="text-xs text-white/50">{item.time}</div>
-                  </div>
-                </li>
-              ))}
-            </ul>
           </div>
 
           <div className="shrink-0 border-t border-white/10 px-4 py-4">
@@ -332,7 +291,6 @@ export default function ChatPage() {
 
           <section className="shrink-0 border-b border-slate-200 bg-[#f7f7f4] px-4 py-5 dark:border-slate-700 dark:bg-slate-900/50">
             <div className="mx-auto w-full max-w-[800px]">
-              <p className="mb-2 text-sm font-medium text-slate-600 dark:text-slate-400"></p>
               <div className="h-[104px] w-full">
                 <UploadZone
                   onUploadComplete={handleUploadComplete}
@@ -350,7 +308,6 @@ export default function ChatPage() {
               docId={docId}
               mock={mock}
               accessToken={accessToken}
-              variant="shell"
             />
           </div>
         </main>

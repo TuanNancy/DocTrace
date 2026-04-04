@@ -23,8 +23,6 @@ interface ChatWindowProps {
   /** When true, simulate SSE stream (no backend). */
   mock?: boolean;
   accessToken?: string | null;
-  /** Shell: full-height panel, no outer card border — for app-shell layout */
-  variant?: "default" | "shell";
 }
 
 function genId() {
@@ -33,7 +31,7 @@ function genId() {
 
 export const ChatWindow = forwardRef<ChatWindowHandle, ChatWindowProps>(
   function ChatWindow(
-    { docId, mock = true, accessToken, variant = "default" },
+    { docId, mock = true, accessToken },
     ref
   ) {
     const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -178,7 +176,6 @@ export const ChatWindow = forwardRef<ChatWindowHandle, ChatWindowProps>(
 
     const isEmpty = messages.length === 0;
     const hasDoc = !!docId || mock;
-    const isShell = variant === "shell";
 
     const userBubble =
       "bg-[#B22222] text-white dark:bg-[#B22222] dark:text-white";
@@ -189,13 +186,7 @@ export const ChatWindow = forwardRef<ChatWindowHandle, ChatWindowProps>(
       "border-slate-200 bg-[#f7f7f4] focus-within:border-[#B22222]/50 focus-within:ring-2 focus-within:ring-[#B22222]/15";
 
     return (
-      <div
-        className={
-          isShell
-            ? "flex h-full min-h-0 flex-col bg-white"
-            : "flex h-full flex-col rounded-xl border border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-800/50"
-        }
-      >
+      <div className="flex h-full min-h-0 flex-col bg-white">
         <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto p-4 md:p-6">
           {isEmpty && (
             <div className="flex h-full min-h-[200px] flex-col items-center justify-center gap-2 text-center text-slate-500 dark:text-slate-400">
@@ -249,56 +240,34 @@ export const ChatWindow = forwardRef<ChatWindowHandle, ChatWindowProps>(
 
         <form
           onSubmit={handleSubmit}
-          className={`shrink-0 border-t border-slate-200 bg-white p-4 dark:border-slate-700 ${
-            isShell ? "md:px-6" : ""
-          }`}
+          className="shrink-0 border-t border-slate-200 bg-white p-4 dark:border-slate-700 md:px-6"
         >
-          {isShell ? (
-            <div className={`flex gap-3 rounded-2xl border p-3 ${shellInputWrap}`}>
-              <textarea
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && !e.shiftKey) {
-                    e.preventDefault();
-                    if (!loading && input.trim()) {
-                      e.currentTarget.form?.requestSubmit();
-                    }
+          <div className={`flex gap-3 rounded-2xl border p-3 ${shellInputWrap}`}>
+            <textarea
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  if (!loading && input.trim()) {
+                    e.currentTarget.form?.requestSubmit();
                   }
-                }}
-                placeholder="Nhập tin nhắn của bạn..."
-                rows={1}
-                className="max-h-36 min-h-[44px] flex-1 resize-none border-0 bg-transparent px-2 py-2 text-slate-900 placeholder-slate-400 focus:outline-none dark:text-slate-100"
-                disabled={loading}
-              />
-              <button
-                type="submit"
-                disabled={loading || !input.trim()}
-                className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-xl text-white disabled:opacity-40 ${sendBtn}`}
-                aria-label="Gửi"
-              >
-                {loading ? "…" : "➤"}
-              </button>
-            </div>
-          ) : (
-            <div className="flex gap-2">
-              <input
-                type="text"
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                placeholder="Nhập câu hỏi..."
-                className="flex-1 rounded-lg border border-slate-300 bg-white px-3 py-2 text-slate-900 placeholder-slate-400 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100 dark:placeholder-slate-500"
-                disabled={loading}
-              />
-              <button
-                type="submit"
-                disabled={loading || !input.trim()}
-                className={`rounded-lg px-4 py-2 font-medium text-white disabled:opacity-50 ${sendBtn}`}
-              >
-                {loading ? "Đang gửi..." : "Gửi"}
-              </button>
-            </div>
-          )}
+                }
+              }}
+              placeholder="Nhập tin nhắn của bạn..."
+              rows={1}
+              className="max-h-36 min-h-[44px] flex-1 resize-none border-0 bg-transparent px-2 py-2 text-slate-900 placeholder-slate-400 focus:outline-none dark:text-slate-100"
+              disabled={loading}
+            />
+            <button
+              type="submit"
+              disabled={loading || !input.trim()}
+              className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-xl text-white disabled:opacity-40 ${sendBtn}`}
+              aria-label="Gửi"
+            >
+              {loading ? "…" : "➤"}
+            </button>
+          </div>
         </form>
       </div>
     );

@@ -5,11 +5,9 @@ import type { ChatSource } from "@/types";
 
 interface SourceCardListProps {
   sources: ChatSource[];
-  /** Optional full text per source for preview (e.g. chunk text) */
-  previewTexts?: string[];
 }
 
-export function SourceCardList({ sources, previewTexts = [] }: SourceCardListProps) {
+export function SourceCardList({ sources }: SourceCardListProps) {
   return (
     <div className="mt-2 space-y-2">
       <p className="text-xs font-medium text-slate-500 dark:text-slate-400">
@@ -20,7 +18,6 @@ export function SourceCardList({ sources, previewTexts = [] }: SourceCardListPro
           <SourceCard
             key={`${s.page}-${s.source}-${i}`}
             source={s}
-            previewText={previewTexts[i]}
           />
         ))}
       </div>

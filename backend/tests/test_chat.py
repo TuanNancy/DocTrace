@@ -6,22 +6,22 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 
-def test_chat_400_when_query_empty(client: TestClient) -> None:
-    """400 when body has empty query."""
+def test_chat_422_when_query_empty(client: TestClient) -> None:
+    """422 (Pydantic validation) when body has empty query."""
     response = client.post(
         "/api/chat",
         json={"query": "", "doc_id": "some-doc-id"},
     )
-    assert response.status_code == 400
+    assert response.status_code == 422
 
 
-def test_chat_400_when_doc_id_missing(client: TestClient) -> None:
-    """400 when doc_id is missing."""
+def test_chat_422_when_doc_id_missing(client: TestClient) -> None:
+    """422 (Pydantic validation) when doc_id is missing."""
     response = client.post(
         "/api/chat",
         json={"query": "Nội dung chính?"},
     )
-    assert response.status_code == 400
+    assert response.status_code == 422
 
 
 @patch("app.routers.chat._stream_chat_sse")

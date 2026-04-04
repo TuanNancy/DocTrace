@@ -15,7 +15,6 @@ load_dotenv(_project_root / "backend" / ".env", override=True)
 
 
 def _str(key: str, default: str = "") -> str:
-    """Get string environment variable."""
     v = os.getenv(key)
     if v is None or v == "":
         return default
@@ -23,7 +22,6 @@ def _str(key: str, default: str = "") -> str:
 
 
 def _optional_str(key: str, default: Optional[str] = None) -> Optional[str]:
-    """Get optional string env var; preserves None when unset and default is None."""
     v = os.getenv(key)
     if v is None or v.strip() == "":
         return default
@@ -31,31 +29,18 @@ def _optional_str(key: str, default: Optional[str] = None) -> Optional[str]:
 
 
 def _int(key: str, default: int) -> int:
-    """Get integer environment variable."""
     v = os.getenv(key)
     return int(v) if v not in (None, "") else default
 
 
 def _float(key: str, default: float) -> float:
-    """Get float environment variable."""
     v = os.getenv(key)
     return float(v) if v not in (None, "") else default
 
 
-def _bool(key: str, default: bool) -> bool:
-    """Get boolean environment variable."""
-    v = os.getenv(key)
-    if v is None or v == "":
-        return default
-    return v.lower() in ("true", "1", "yes", "on")
-
-
 @dataclass
 class RAGConfig:
-    """
-    Main configuration for RAG PDF Chatbot.
-    Chat and embeddings are routed through OpenRouter (see providers/openrouter.py).
-    """
+    """Main configuration for RAG PDF Chatbot."""
 
     # ==================== Document Processing ====================
     chunk_size: int = 1000
@@ -77,29 +62,21 @@ class RAGConfig:
     milvus_nlist: int = 128
     milvus_nprobe: int = 32
 
-    # ==================== OpenRouter (LLM + embeddings via OpenAI-compatible SDK) ====================
-    provider: str = "openrouter"  # fixed; this project uses OpenRouter only
+    # ==================== OpenRouter (LLM + embeddings) ====================
     model: str = "openai/gpt-4o-mini"
     temperature: float = 0.7
     max_tokens: int = 4096
 
-    # ==================== Embedding Settings (OpenRouter model id, e.g. openai/text-embedding-3-small) ====================
-    embedding_provider: str = "openai"
+    # ==================== Embedding Settings ====================
     embedding_model: str = "text-embedding-3-small"
     embedding_dimension: int = 1536
 
     # ==================== RAG Settings ====================
     retrieval_top_k: int = 8
     context_max_chars: int = 6000
-    # Milvus COSINE returns similarity in ~[0,1]; 0.5 was too strict and filtered all hits → empty RAG context.
     min_relevance_score: float = 0.32
 
-    # ==================== Conversation Settings ====================
-    max_conversation_turns: int = 8
-    turns_to_summarize: int = 5
-    turns_to_keep_full: int = 3
-
-    # ==================== API Keys (OpenRouter only; OPENAI_API_KEY accepted as legacy alias) ====================
+    # ==================== API Keys ====================
     openrouter_api_key: Optional[str] = None
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
     supabase_url: Optional[str] = None
@@ -112,21 +89,13 @@ class RAGConfig:
     supabase_s3_secret_access_key: Optional[str] = None
     supabase_storage_bucket: Optional[str] = None
 
-    # ==================== Logging ====================
-    log_level: str = "INFO"
-    log_requests: bool = False
-
     # ==================== Storage ====================
-    storage_type: str = "milvus"  # milvus
-    local_storage_path: str = "./rag_data"
+    storage_type: str = "milvus"
 
     def __post_init__(self):
-        """Load environment variables and set provider defaults."""
         self._load_from_env()
-        self._set_provider_defaults()
 
     def _load_from_env(self):
-        """Load configuration from environment variables."""
         # Document Processing
         self.chunk_size = _int("CHUNK_SIZE", self.chunk_size)
         self.chunk_overlap = _int("CHUNK_OVERLAP", self.chunk_overlap)
@@ -146,13 +115,12 @@ class RAGConfig:
         self.milvus_nlist = _int("MILVUS_NLIST", self.milvus_nlist)
         self.milvus_nprobe = _int("MILVUS_NPROBE", self.milvus_nprobe)
 
-        # OpenRouter LLM (ignore RAG_PROVIDER if set — OpenRouter only)
-        self.provider = "openrouter"
+        # OpenRouter LLM
         self.model = _str("RAG_MODEL", self.model)
         self.temperature = _float("RAG_TEMPERATURE", self.temperature)
         self.max_tokens = _int("RAG_MAX_TOKENS", self.max_tokens)
 
-        # Embedding (same HTTP API as chat; model id is OpenRouter-style)
+        # Embedding
         self.embedding_model = _str("EMBEDDING_MODEL", self.embedding_model)
         self.embedding_dimension = _int("EMBEDDING_DIMENSION", self.embedding_dimension)
 
@@ -161,12 +129,7 @@ class RAGConfig:
         self.context_max_chars = _int("CONTEXT_MAX_CHARS", self.context_max_chars)
         self.min_relevance_score = _float("MIN_RELEVANCE_SCORE", self.min_relevance_score)
 
-        # Conversation
-        self.max_conversation_turns = _int("MAX_CONVERSATION_TURNS", self.max_conversation_turns)
-        self.turns_to_summarize = _int("TURNS_TO_SUMMARIZE", self.turns_to_summarize)
-        self.turns_to_keep_full = _int("TURNS_TO_KEEP_FULL", self.turns_to_keep_full)
-
-        # OpenRouter API key (legacy: OPENAI_API_KEY if it holds an OpenRouter key)
+        # OpenRouter API key
         self.openrouter_api_key = _optional_str("OPENROUTER_API_KEY", self.openrouter_api_key)
         legacy_openai = _optional_str("OPENAI_API_KEY", None)
         if not self.openrouter_api_key and legacy_openai:
@@ -183,11 +146,8 @@ class RAGConfig:
             or _optional_str("NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY", self.supabase_publishable_key)
         )
 
-        # Supabase Storage S3 (optional — when set, POST /api/upload stores the PDF in the bucket)
-        self.supabase_s3_endpoint = _optional_str(
-            "SUPABASE_S3_ENDPOINT",
-            self.supabase_s3_endpoint,
-        )
+        # Supabase Storage S3
+        self.supabase_s3_endpoint = _optional_str("SUPABASE_S3_ENDPOINT", self.supabase_s3_endpoint)
         self.supabase_s3_region = _str("SUPABASE_S3_REGION", self.supabase_s3_region)
         self.supabase_s3_access_key_id = _optional_str("SUPABASE_S3_ACCESS_KEY_ID", self.supabase_s3_access_key_id)
         self.supabase_s3_secret_access_key = _optional_str(
@@ -195,62 +155,24 @@ class RAGConfig:
         )
         self.supabase_storage_bucket = _optional_str("SUPABASE_STORAGE_BUCKET", self.supabase_storage_bucket)
 
-        # Embedding model IDs on OpenRouter use provider/model (e.g. openai/text-embedding-3-small)
+        # Embedding model IDs on OpenRouter use provider/model prefix
         em = (self.embedding_model or "").strip()
         if em and "/" not in em and em.startswith("text-embedding"):
             self.embedding_model = f"openai/{em}"
 
-        # Logging
-        self.log_level = _str("LOG_LEVEL", self.log_level).upper()
-        self.log_requests = _bool("LOG_REQUESTS", self.log_requests)
-
-        # Storage
-        self.storage_type = _str("STORAGE_TYPE", self.storage_type).lower()
-        self.local_storage_path = _str("LOCAL_STORAGE_PATH", self.local_storage_path)
-
-    def _set_provider_defaults(self):
-        """Reserved for future defaults; OpenRouter-only project."""
-
     def get_provider_config(self) -> dict:
-        """OpenRouter chat/completions configuration."""
         return {
             "api_key": self.openrouter_api_key,
             "base_url": self.openrouter_base_url,
             "model": self.model,
         }
 
-    def get_embedding_config(self) -> dict:
-        """Embeddings use the same OpenRouter base URL and API key."""
-        return {
-            "api_key": self.openrouter_api_key,
-            "model": self.embedding_model,
-            "dimension": self.embedding_dimension,
-            "base_url": self.openrouter_base_url,
-        }
-
     def validate(self) -> list[str]:
-        """
-        Validate configuration and return list of errors.
-        Returns empty list if configuration is valid.
-        """
         errors = []
-
         key = self.openrouter_api_key
         if not key or key == "test-key":
             if key != "test-key":
                 errors.append("OPENROUTER_API_KEY required (or set OPENAI_API_KEY to a legacy OpenRouter key)")
-
-        # Validate storage type
-        if self.storage_type not in ["milvus"]:
-            errors.append(f"Invalid storage type: {self.storage_type}")
-
-        # Validate Milvus settings if using Milvus
-        if self.storage_type == "milvus":
-            if not self.milvus_host:
-                errors.append("Milvus host required when storage_type=milvus")
-            if not self.milvus_port:
-                errors.append("Milvus port required when storage_type=milvus")
-
         return errors
 
 
@@ -259,7 +181,6 @@ _config: Optional[RAGConfig] = None
 
 
 def get_config() -> RAGConfig:
-    """Get or create global configuration instance."""
     global _config
     if _config is None:
         _config = RAGConfig()
@@ -268,9 +189,3 @@ def get_config() -> RAGConfig:
             import warnings
             warnings.warn(f"Configuration validation errors: {errors}")
     return _config
-
-
-def reset_config():
-    """Reset global configuration (useful for testing)."""
-    global _config
-    _config = None

@@ -1,5 +1,5 @@
 """
-LLM and embedding providers. This project uses **OpenRouter only**.
+LLM provider. This project uses OpenRouter only.
 """
 
 from app.providers.base import BaseProvider
@@ -9,7 +9,6 @@ from app.providers.openrouter import OpenRouterProvider
 
 __all__ = [
     "BaseProvider",
-    "OpenRouterProvider",
     "create_provider",
     "get_embedder",
 ]

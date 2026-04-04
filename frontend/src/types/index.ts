@@ -1,4 +1,4 @@
-/** Upload response from POST /api/upload (mock / future backend) */
+/** Upload response from POST /api/upload */
 export interface UploadResponse {
   doc_id: string;
   chunks_count: number;
@@ -7,12 +7,8 @@ export interface UploadResponse {
   processing_time?: number;
   created_at?: string;
   warnings?: string[];
-  /** S3 object key in Supabase Storage bucket when original PDF was stored (backend only). */
   pdf_storage_key?: string | null;
   metadata?: Record<string, any>;
-  /**
-   * Kept for mock responses. Backend responses use `status` + `warnings` instead.
-   */
   message?: string;
 }
 
@@ -26,31 +22,11 @@ export interface ChatSource {
 /** Parsed SSE event types for streamChat() */
 export type SSEEventType = "sources" | "token" | "error" | "done";
 
-export interface SSESourcesEvent {
-  type: "sources";
-  data: ChatSource[];
-}
-
-export interface SSETokenEvent {
-  type: "token";
-  data: string;
-}
-
-export interface SSEErrorEvent {
-  type: "error";
-  data: { message: string };
-}
-
-export interface SSEDoneEvent {
-  type: "done";
-  data: "[DONE]";
-}
-
 export type SSEEvent =
-  | SSESourcesEvent
-  | SSETokenEvent
-  | SSEErrorEvent
-  | SSEDoneEvent;
+  | { type: "sources"; data: ChatSource[] }
+  | { type: "token"; data: string }
+  | { type: "error"; data: { message: string } }
+  | { type: "done"; data: "[DONE]" };
 
 /** One message in chat history */
 export interface ChatMessage {

@@ -1,126 +1,173 @@
-# RAG PDF Chatbot Architecture
+# RAG PDF Chatbot — Architecture
 
 ## Scope
 
-Project implements a standard text-based RAG flow for PDF:
-
+- Standard text-based RAG flow for PDF
 - No OCR/computer vision in the main pipeline
-- No multi-agent task planner in runtime flow
-- Single LLM provider path: OpenRouter (chat + embeddings)
-- Single storage backend path: Milvus
+- No multi-agent task planner
+- Single LLM provider: OpenRouter (chat + embeddings)
+- Single storage backend: Milvus
+- Auth: Supabase Auth (JWT)
 
 ## Runtime Flow
 
-```text
+```
 Upload PDF
-  -> extract text by page
-  -> split into chunks
-  -> generate embeddings
-  -> insert vectors + metadata into Milvus
+  → extract text by page (PyPDFLoader)
+  → split into chunks (RecursiveCharacterTextSplitter)
+  → generate embeddings (OpenRouter /v1/embeddings)
+  → insert vectors + metadata into Milvus
 
 Chat query (with doc_id)
-  -> embed query
-  -> search top-k chunks from Milvus
-  -> build bounded context with page citations
-  -> call chat model via OpenRouter
-  -> stream SSE events: sources -> token -> done
+  → embed query (OpenRouter)
+  → search top-k chunks from Milvus (COSINE, filter by doc_id)
+  → build bounded context with page citations
+  → call chat model via OpenRouter (stream)
+  → stream SSE events: sources → token → done
 ```
 
 ## Backend Structure
 
-```text
+```
 backend/app/
-├── main.py                  # FastAPI app + CORS + router mount
+├── main.py                  # FastAPI app + CORS + mount routers
+├── schemas.py               # Pydantic request models (ChatRequest)
+│
 ├── core/
-│   └── config.py            # Centralized env-based config
+│   ├── config.py            # RAGConfig dataclass + env loading + singleton
+│   └── auth.py              # Supabase JWT verification
+│
 ├── routers/
-│   ├── upload.py            # POST /api/upload
-│   └── chat.py              # POST /api/chat (SSE)
+│   ├── upload.py            # POST /api/upload — PDF upload + indexing
+│   └── chat.py              # POST /api/chat — SSE streaming
+│
 ├── processors/
-│   └── pdf.py               # PDF loading + chunking
+│   └── pdf.py               # PDF loading + chunking (LangChain)
+│
 ├── providers/
-│   ├── base.py              # LLM provider interface
-│   ├── openrouter.py        # OpenRouter chat provider
-│   ├── embeddings.py        # OpenRouter embeddings
-│   └── factory.py           # Provider factory
+│   ├── base.py              # Abstract BaseProvider interface
+│   ├── openrouter.py        # OpenRouter implementation (AsyncOpenAI)
+│   ├── embeddings.py        # OpenAIEmbedder via OpenRouter
+│   └── factory.py           # create_provider() factory
+│
 ├── storage/
-│   ├── base.py              # Storage interface
-│   ├── milvus_storage.py    # Milvus implementation
-│   └── factory.py           # Storage factory
+│   ├── base.py              # Abstract BaseStorage + dataclasses
+│   ├── milvus_storage.py    # Milvus implementation (pymilvus)
+│   └── factory.py           # StorageFactory + helpers
+│
 ├── ai/
-│   ├── prompts.py           # Prompt templates
-│   └── rag_agent.py         # Retrieval + synthesis orchestration
-└── models/
-    ├── document.py          # Query/indexing models
-    └── agent.py             # Conversation context models
+│   ├── prompts.py           # System prompts (VI + EN)
+│   └── rag_agent.py         # RAGAgent: retrieve → context → stream LLM
+│
+├── models/
+│   ├── document.py          # DocumentStatus, QueryMode, RetrievedChunk, IndexingResult
+│   └── agent.py             # MessageRole, ConversationMessage, ConversationContext
+│
+└── services/
+    └── supabase_pdf_storage.py  # PDF backup to Supabase S3 (boto3)
 ```
 
 ## Frontend Structure
 
-```text
+```
 frontend/src/
-├── app/page.tsx             # main screen (upload + chat)
-├── components/UploadZone.tsx
-├── components/ChatWindow.tsx
-├── components/SourceCard*.tsx
-└── lib/api.ts               # upload/chat API + SSE parser
+├── middleware.ts              # Next.js edge middleware (auth redirect)
+│
+├── types/
+│   └── index.ts               # TypeScript types
+│
+├── lib/
+│   ├── api.ts                 # streamChat(), uploadPDF(), SSE parser
+│   ├── client.ts              # Supabase browser client
+│   ├── server.ts              # Supabase server client
+│   ├── middleware.ts          # updateSession() for auth redirect
+│   └── utils.ts               # cn() — clsx + tailwind-merge
+│
+├── app/
+│   ├── layout.tsx             # Root layout (Inter font, metadata)
+│   ├── globals.css            # Tailwind + CSS variables
+│   ├── page.tsx               # Landing page
+│   │
+│   ├── chat/
+│   │   └── page.tsx           # Main chat page (sidebar + upload + chat)
+│   │
+│   └── auth/
+│       ├── actions.ts         # Server actions: loginAction, signupAction
+│       ├── login/page.tsx
+│       ├── signup/page.tsx
+│       ├── callback/route.ts  # OAuth callback
+│       └── auth-code-error/page.tsx
+│
+└── components/
+    ├── BrandMark.tsx
+    ├── ThemeToggle.tsx
+    ├── UploadZone.tsx
+    ├── ChatWindow.tsx
+    ├── SourceCard.tsx
+    ├── SourceCardList.tsx
+    ├── StreamingCursor.tsx
+    └── auth/
+        ├── LoginForms.tsx
+        ├── SignupForm.tsx
+        └── AuthSubmitButton.tsx
 ```
 
 ## Key Configuration
 
-Loaded by `backend/app/core/config.py` from:
+Loaded by `backend/app/core/config.py` from repo root `.env` then `backend/.env` (override).
 
-1. repo root `.env`
-2. `backend/.env` (override)
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `OPENROUTER_API_KEY` | — | API key for OpenRouter |
+| `OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` | OpenRouter endpoint |
+| `RAG_MODEL` | `openai/gpt-4o-mini` | LLM model for chat |
+| `EMBEDDING_MODEL` | `text-embedding-3-small` | Embedding model |
+| `EMBEDDING_DIMENSION` | `1536` | Vector dimension |
+| `MILVUS_HOST` | `localhost` | Milvus server |
+| `MILVUS_PORT` | `19530` | Milvus gRPC port |
+| `MILVUS_COLLECTION` | `pdf_chunks` | Collection name |
+| `MILVUS_VECTOR_DIM` | `1536` | Must match EMBEDDING_DIMENSION |
+| `RETRIEVAL_TOP_K` | `8` | Number of chunks to retrieve |
+| `MIN_RELEVANCE_SCORE` | `0.32` | Min cosine similarity threshold |
+| `CHUNK_SIZE` | `1000` | Text chunk size |
+| `CHUNK_OVERLAP` | `150` | Chunk overlap |
+| `UPLOAD_MAX_SIZE_MB` | `50` | Max PDF upload size |
 
-Important variables:
-
-- `OPENROUTER_API_KEY`
-- `OPENROUTER_BASE_URL`
-- `RAG_MODEL`
-- `EMBEDDING_MODEL`
-- `EMBEDDING_DIMENSION`
-- `MILVUS_HOST`
-- `MILVUS_PORT`
-- `MILVUS_COLLECTION`
-- `MILVUS_VECTOR_DIM`
-- `RETRIEVAL_TOP_K`
-- `MIN_RELEVANCE_SCORE`
-- `CHUNK_SIZE`
-- `CHUNK_OVERLAP`
-
-Notes:
-
-- `EMBEDDING_DIMENSION` and `MILVUS_VECTOR_DIM` must match embedding output.
-- `STORAGE_TYPE` currently supports only `milvus`.
-- `OPENAI_API_KEY` is treated as a legacy alias for OpenRouter key if needed.
+**Note:** `EMBEDDING_DIMENSION` and `MILVUS_VECTOR_DIM` must match. `OPENAI_API_KEY` is accepted as a legacy alias for OpenRouter key.
 
 ## API Contract
 
 ### `POST /api/upload`
 
-- Input: `multipart/form-data`, field `file` (PDF)
-- Output: indexing result with `doc_id`, `chunks_count`, status metadata
+- **Input**: `multipart/form-data`, field `file` (PDF)
+- **Auth**: `Authorization: Bearer <supabase_token>`
+- **Output**: JSON with `doc_id`, `chunks_count`, `status`, `warnings`
 
 ### `POST /api/chat`
 
-- Input JSON:
-  - `query`
-  - `doc_id`
-  - optional `language` (`vi`/`en`)
-- Output: `text/event-stream`
-  - `event: sources`
-  - `event: token`
-  - `event: error` (if any)
-  - `event: done`
+- **Input**: JSON `{ query, doc_id, language? }`
+- **Auth**: `Authorization: Bearer <supabase_token>`
+- **Output**: `text/event-stream`
+  - `event: sources` — `[{page, source, score}]`
+  - `event: token` — streamed text token
+  - `event: error` — error message
+  - `event: done` — `[DONE]`
+
+## Design Patterns
+
+| Pattern | Usage |
+|---------|-------|
+| **Factory** | `create_provider()`, `StorageFactory`, `create_rag_agent_with_defaults()` |
+| **Strategy** | `BaseProvider` → `OpenRouterProvider`, `BaseStorage` → `MilvusStorage` |
+| **Singleton** | `get_config()`, `get_embedder()` (@lru_cache) |
+| **Dependency Injection** | FastAPI `Depends(require_supabase_user)` |
+| **Streaming/Generator** | SSE events, LLM token streaming, SSE parser |
 
 ## Infra
 
 `docker-compose.yml` provides:
 
-- `etcd`
-- `minio`
-- `milvus`
-- `attu` (web UI)
-
-Milvus gRPC endpoint: `localhost:19530`.
+- `etcd` — metadata store
+- `minio` — object storage
+- `milvus` — vector DB (gRPC: `localhost:19530`)
+- `attu` — web UI (`http://localhost:8001`)

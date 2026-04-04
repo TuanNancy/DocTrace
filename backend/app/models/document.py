@@ -1,6 +1,5 @@
 """
 Document models for data structures used in the RAG pipeline.
-Only contains models that are actually used by routers, agents, or storage.
 """
 from __future__ import annotations
 
@@ -10,53 +9,12 @@ from enum import Enum
 from typing import Any, Dict, List, Optional
 
 
-# ==================== Enums ====================
-
 class DocumentStatus(str, Enum):
-    """Status of document processing."""
-    PENDING = "pending"
-    PROCESSING = "processing"
     COMPLETED = "completed"
-    FAILED = "failed"
-    DELETING = "deleting"
-
-
-class QueryMode(str, Enum):
-    """Mode for query processing."""
-    AUTO = "auto"
-    RAG = "rag"
-    DIRECT = "direct"
-
-
-# ==================== Dataclasses ====================
-
-@dataclass
-class RetrievedChunk:
-    """Chunk retrieved from vector search with relevance score."""
-    chunk_id: str
-    doc_id: str
-    text: str
-    page: int
-    source: str
-    score: float
-    metadata: Dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass
-class QueryResult:
-    """Result of a RAG query operation."""
-    query: str
-    answer: str
-    retrieved_chunks: List[RetrievedChunk]
-    mode: QueryMode
-    processing_time: float
-    total_cost: float = 0.0
-    created_at: datetime = field(default_factory=datetime.utcnow)
 
 
 @dataclass
 class IndexingResult:
-    """Result of document indexing operation."""
     doc_id: str
     name: str
     chunks_count: int
@@ -80,26 +38,6 @@ class IndexingResult:
         if self.pdf_storage_key is not None:
             out["pdf_storage_key"] = self.pdf_storage_key
         return out
-
-
-# ==================== Factory Functions ====================
-
-def create_query_result(
-    query: str,
-    answer: str,
-    retrieved_chunks: List[RetrievedChunk],
-    mode: QueryMode,
-    processing_time: float,
-    total_cost: float = 0.0,
-) -> QueryResult:
-    return QueryResult(
-        query=query,
-        answer=answer,
-        retrieved_chunks=retrieved_chunks,
-        mode=mode,
-        processing_time=processing_time,
-        total_cost=total_cost,
-    )
 
 
 def create_indexing_result(
