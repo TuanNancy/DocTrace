@@ -31,7 +31,7 @@ export function LoginForms() {
 
   useEffect(() => {
     if (loginState.status === "success") {
-      router.replace("/");
+      router.replace("/chat");
       router.refresh();
     }
   }, [loginState.status, router]);
@@ -40,10 +40,13 @@ export function LoginForms() {
     setOauthLoading(true);
     setOauthError(null);
 
-    const redirectTo = `${window.location.origin}/auth/callback?next=/`;
+    const redirectTo = `${window.location.origin}/auth/callback?next=/chat`;
     const { error } = await supabase.auth.signInWithOAuth({
       provider: "google",
-      options: { redirectTo },
+      options: {
+        redirectTo,
+        queryParams: { prompt: "select_account" },
+      },
     });
 
     if (error) {
