@@ -9,8 +9,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.routers import chat, upload
 
 app = FastAPI(
-    title="RAG PDF Chatbot API",
-    description="Upload PDFs and chat with indexed content.",
+    title="DocTrace API",
+    description="Document Q&A with source citations",
     version="0.1.0",
 )
 

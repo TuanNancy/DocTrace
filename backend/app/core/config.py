@@ -40,7 +40,7 @@ def _float(key: str, default: float) -> float:
 
 @dataclass
 class RAGConfig:
-    """Main configuration for RAG PDF Chatbot."""
+    """Main configuration for DocTrace."""
 
     # ==================== Document Processing ====================
     chunk_size: int = 1000

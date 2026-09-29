@@ -1,1 +1,1 @@
-# RAG PDF Chatbot backend app
+# DocTrace backend app

@@ -66,7 +66,7 @@ export function LoginForms() {
             Welcome back
           </h1>
           <p className="mt-1 text-sm text-slate-600 dark:text-slate-300">
-            Đăng nhập để tiếp tục vào Baymax
+            Đăng nhập để tiếp tục vào DocTrace
           </p>
 
           <form action={loginFormAction} className="mt-5 space-y-3">
@@ -129,7 +129,7 @@ export function LoginForms() {
         <section className="flex items-end justify-center border-t border-[#8f1b1b] bg-[#B22222] p-0 md:border-l md:border-t-0">
           <img
             src="/brand/logo"
-            alt="Baymax logo"
+            alt="DocTrace logo"
             className="h-auto max-h-[640px] w-full max-w-[520px] object-contain object-bottom"
           />
         </section>

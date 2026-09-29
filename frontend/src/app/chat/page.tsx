@@ -223,7 +223,7 @@ export default function ChatPage() {
                   </div>
                 )}
                 <div className="min-w-0 flex-1">
-                  <div className="truncate text-sm font-medium">{displayName || "Baymax user"}</div>
+                  <div className="truncate text-sm font-medium">{displayName || "DocTrace user"}</div>
                   <div className="truncate text-xs text-white/50">{user?.email}</div>
                 </div>
               </button>

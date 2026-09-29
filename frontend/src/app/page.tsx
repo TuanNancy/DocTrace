@@ -128,7 +128,7 @@ export default function Home() {
 
       {/* Footer */}
       <footer className="border-t border-[#B22222]/10 px-6 py-6 text-center text-xs text-slate-500">
-        Baymax — AI-powered PDF Q&A
+        DocTrace — Document Q&A with source citations
       </footer>
     </div>
   );

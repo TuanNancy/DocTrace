@@ -43,7 +43,7 @@ export function SignupForm() {
             Create account
           </h1>
           <p className="mt-1 text-sm text-slate-600 dark:text-slate-300">
-            Tạo tài khoản để bắt đầu với Baymax
+            Tạo tài khoản để bắt đầu với DocTrace
           </p>
 
           <form action={formAction} className="mt-5 space-y-3">
@@ -100,7 +100,7 @@ export function SignupForm() {
         <section className="flex items-end justify-center border-t border-[#8f1b1b] bg-[#B22222] p-0 md:border-l md:border-t-0">
           <img
             src="/brand/logo"
-            alt="Baymax logo"
+            alt="DocTrace logo"
             className="h-auto max-h-[640px] w-full max-w-[520px] object-contain object-bottom"
           />
         </section>

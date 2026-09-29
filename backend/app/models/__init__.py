@@ -1,5 +1,5 @@
 """
-Models package for RAG PDF Chatbot.
+Models package for DocTrace.
 """
 
 from app.models.document import (

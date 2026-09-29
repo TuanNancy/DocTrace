@@ -6,8 +6,8 @@ import { cn } from "@/lib/utils";
 const inter = Inter({ subsets: ["latin"], variable: "--font-sans" });
 
 export const metadata: Metadata = {
-  title: "RAG PDF Chatbot",
-  description: "Upload PDFs and chat with your documents",
+  title: "DocTrace",
+  description: "Document Q&A with source citations",
 };
 
 export default function RootLayout({
