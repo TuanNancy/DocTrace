@@ -8,7 +8,7 @@ type AuthActionState = {
   message: string;
 };
 
-function getOriginFromHeaders(value: string | null): string {
+function normalizeOriginValue(value: string | null): string {
   if (!value) return "http://localhost:3000";
   const first = value.split(",")[0].trim();
   if (first.startsWith("http://") || first.startsWith("https://")) return first;
@@ -21,7 +21,7 @@ async function resolveRedirectUrl(path: string): Promise<string> {
   const hostHeader = h.get("x-forwarded-host") ?? h.get("host");
   const envSiteUrl = process.env.NEXT_PUBLIC_SITE_URL;
   const origin = envSiteUrl || originHeader || hostHeader || "http://localhost:3000";
-  const resolvedOrigin = getOriginFromHeaders(origin);
+  const resolvedOrigin = normalizeOriginValue(origin);
   return `${resolvedOrigin}${path}`;
 }
 
