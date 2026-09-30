@@ -1,4 +1,4 @@
-# RAG PDF Chatbot — Architecture
+# DocTrace — Architecture
 
 ## Scope
 
