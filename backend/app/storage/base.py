@@ -1,6 +1,5 @@
 """
-Base storage interface for vector database operations.
-Defines the contract that all storage backends must implement.
+Vector store interface for indexing and retrieving document chunks.
 """
 import logging
 from abc import ABC, abstractmethod
@@ -36,7 +35,7 @@ class InsertResult:
             self.warnings = []
 
 
-class BaseStorage(ABC):
+class VectorStore(ABC):
     def __init__(self, config: Dict[str, Any]):
         self.config = config
         self._connected = False
@@ -57,8 +56,13 @@ class BaseStorage(ABC):
     async def ensure_collection(
         self,
         vector_dim: int,
-        recreate: bool = False
     ) -> None:
+        """Create a collection if missing; reject incompatible schemas without deleting data."""
+        pass
+
+    @abstractmethod
+    async def recreate_collection(self, vector_dim: int) -> None:
+        """Destructively replace the collection, deleting all existing chunks."""
         pass
 
     @abstractmethod
@@ -81,18 +85,19 @@ class BaseStorage(ABC):
     ) -> List[RetrievedChunk]:
         pass
 
-    async def health_check(self) -> Dict[str, Any]:
+    async def get_connection_status(self) -> Dict[str, Any]:
+        """Report local connection state without probing server health."""
         try:
             connected = await self.is_connected()
             return {
-                "status": "healthy" if connected else "unhealthy",
+                "status": "connected" if connected else "disconnected",
                 "connected": connected,
                 "backend": self.__class__.__name__,
             }
         except Exception as e:
-            logger.exception("Health check failed: %s", e)
+            logger.exception("Could not read connection status: %s", e)
             return {
-                "status": "unhealthy",
+                "status": "unknown",
                 "connected": False,
                 "backend": self.__class__.__name__,
                 "error": str(e),

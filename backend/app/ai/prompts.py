@@ -1,5 +1,5 @@
 """
-System prompts for the RAG agent.
+System prompts for the RAG pipeline.
 Only contains prompts actually used by the application.
 """
 

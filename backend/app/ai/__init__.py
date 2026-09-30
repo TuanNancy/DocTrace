@@ -1,6 +1,5 @@
 """
-AI-related utilities:
-- System & user prompts
-- Orchestration helpers (planning, synthesis, etc.)
+Document question answering:
+- System prompts
+- Fixed RAG pipeline: retrieve chunks, build context, stream an answer
 """
-

@@ -6,12 +6,12 @@ from typing import AsyncIterator, Dict, List, Optional
 
 from openai import AsyncOpenAI
 
-from app.providers.base import BaseProvider
+from app.providers.base import ChatProvider
 
 logger = logging.getLogger(__name__)
 
 
-class OpenRouterProvider(BaseProvider):
+class OpenRouterChatProvider(ChatProvider):
     def __init__(
         self,
         api_key: str,
@@ -31,7 +31,7 @@ class OpenRouterProvider(BaseProvider):
             )
         return self._client
 
-    async def process_text_messages(
+    async def generate_completion(
         self,
         messages: List[Dict[str, str]],
         max_tokens: Optional[int] = None,
@@ -56,7 +56,7 @@ class OpenRouterProvider(BaseProvider):
             logger.exception("OpenRouter API error: %s", e)
             raise RuntimeError(f"OpenRouter API error: {e}") from e
 
-    async def stream_text_messages(
+    async def stream_completion(
         self,
         messages: List[Dict[str, str]],
         max_tokens: Optional[int] = None,

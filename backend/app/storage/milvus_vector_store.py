@@ -1,6 +1,5 @@
 """
-Milvus storage backend implementation.
-Implements BaseStorage interface for Milvus vector database operations.
+Milvus vector store for indexing and retrieving document chunks.
 """
 import logging
 import uuid
@@ -18,12 +17,12 @@ from pymilvus import (
     has_collection,
 )
 
-from app.storage.base import BaseStorage, RetrievedChunk, InsertResult
+from app.storage.base import VectorStore, RetrievedChunk, InsertResult
 
 logger = logging.getLogger(__name__)
 
 
-class MilvusStorage(BaseStorage):
+class MilvusVectorStore(VectorStore):
     PK_FIELD = "id"
     DOC_ID_FIELD = "doc_id"
     TEXT_FIELD = "text"
@@ -104,12 +103,11 @@ class MilvusStorage(BaseStorage):
             logger.warning("Could not read collection schema dim: %s", e)
         return None
 
-    async def ensure_collection(self, vector_dim: int, recreate: bool = False) -> None:
+    async def ensure_collection(self, vector_dim: int) -> None:
+        """Create/load a compatible collection without deleting existing chunks."""
+        if vector_dim <= 0:
+            raise ValueError("Vector dimension must be positive.")
         await self.connect()
-
-        if recreate and has_collection(self.collection_name):
-            drop_collection(self.collection_name)
-            logger.info(f"Dropped collection {self.collection_name}")
 
         if not has_collection(self.collection_name):
             schema = self._get_collection_schema(vector_dim)
@@ -117,17 +115,18 @@ class MilvusStorage(BaseStorage):
             logger.info(f"Created collection {self.collection_name} with dim={vector_dim}")
         else:
             existing_dim = self._collection_vector_dim()
-            if existing_dim is not None and existing_dim != vector_dim:
-                logger.warning(
-                    "Collection %s has dim=%s but embeddings require dim=%s; recreating collection.",
-                    self.collection_name, existing_dim, vector_dim,
+            if existing_dim is None:
+                raise RuntimeError(
+                    f"Could not verify vector dimension of collection {self.collection_name!r}."
                 )
-                drop_collection(self.collection_name)
-                schema = self._get_collection_schema(vector_dim)
-                collection = Collection(name=self.collection_name, schema=schema)
-                logger.info("Recreated collection %s with dim=%s", self.collection_name, vector_dim)
-            else:
-                collection = Collection(self.collection_name)
+            if existing_dim != vector_dim:
+                raise RuntimeError(
+                    f"Collection {self.collection_name!r} has dimension {existing_dim}, "
+                    f"but embeddings have dimension {vector_dim}. "
+                    "Use a compatible embedding model or a new collection; "
+                    "recreate_collection() explicitly deletes existing chunks."
+                )
+            collection = Collection(self.collection_name)
 
         try:
             if not collection.indexes:
@@ -144,6 +143,17 @@ class MilvusStorage(BaseStorage):
 
         collection.load()
         self._collection = collection
+
+    async def recreate_collection(self, vector_dim: int) -> None:
+        """Delete all existing chunks and create a collection with the requested dimension."""
+        if vector_dim <= 0:
+            raise ValueError("Vector dimension must be positive.")
+        await self.connect()
+        if has_collection(self.collection_name):
+            drop_collection(self.collection_name)
+            logger.info("Dropped collection %s for explicit recreation", self.collection_name)
+        self._collection = None
+        await self.ensure_collection(vector_dim)
 
     async def insert_chunks(
         self,
@@ -236,6 +246,7 @@ class MilvusStorage(BaseStorage):
 
         for hit in results[0]:
             entity = hit.get("entity", hit) if isinstance(hit, dict) else getattr(hit, "entity", hit)
+            chunk_id = hit[self.PK_FIELD] if isinstance(hit, dict) else hit.id
 
             if isinstance(entity, dict):
                 text = entity.get(self.TEXT_FIELD) or ""
@@ -248,14 +259,14 @@ class MilvusStorage(BaseStorage):
                 source = getattr(entity, self.SOURCE_FIELD, "") or ""
                 doc_id_result = getattr(entity, self.DOC_ID_FIELD, "") or ""
 
-            score = float(hit.get("distance", hit.score if hasattr(hit, "score") else 0) or 0.0)
+            score = float(hit.get("distance", hit.get("score", 0.0)) if isinstance(hit, dict) else hit.score)
 
             if min_score is not None and score < min_score:
                 continue
 
             out.append(
                 RetrievedChunk(
-                    chunk_id=str(uuid.uuid4()),
+                    chunk_id=str(chunk_id),
                     doc_id=str(doc_id_result),
                     text=str(text),
                     page=int(page),

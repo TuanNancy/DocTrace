@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.core.config import get_config
 from app.providers.embeddings import get_embedder
-from app.storage.factory import create_and_connect_storage
+from app.storage.factory import create_connected_vector_store
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 
@@ -34,16 +34,16 @@ async def search_chunks(query: str, doc_id: str, top_k: int = 5):
     if not vectors:
         return []
 
-    storage = await create_and_connect_storage()
+    vector_store = await create_connected_vector_store()
     try:
-        return await storage.search_chunks(
+        return await vector_store.search_chunks(
             query_vector=vectors[0],
             doc_id=doc_id,
             top_k=top_k,
             min_score=0.32,
         )
     finally:
-        await storage.disconnect()
+        await vector_store.disconnect()
 
 
 async def main():

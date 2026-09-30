@@ -1,10 +1,8 @@
 """
 POST /api/upload: multipart/form-data PDF upload → indexing pipeline → UploadResponse.
-Updated to use new architecture with storage factory and document models.
 """
 import asyncio
 import logging
-import time
 import uuid
 from typing import Annotated, Any, Dict
 
@@ -12,115 +10,12 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 
 from app.core.auth import require_supabase_user
 from app.core.config import get_config
-from app.models.document import DocumentStatus, IndexingResult, create_indexing_result
+from app.services.pdf_indexing import index_pdf_bytes
 from app.services.supabase_pdf_storage import try_upload_pdf
-from app.storage.factory import create_and_connect_storage
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["upload"])
-
-
-async def run_indexing_pipeline_from_upload(
-    file_content: bytes,
-    filename: str,
-    doc_id: str,
-) -> IndexingResult:
-    """
-    Run indexing pipeline on uploaded file content.
-
-    This function:
-    1. Loads PDF and extracts text
-    2. Chunks the text
-    3. Embeds chunks
-    4. Inserts into vector database
-
-    Args:
-        file_content: PDF file content as bytes
-        filename: Original filename
-        doc_id: Pre-generated document ID used for both S3 key and Milvus rows
-
-    Returns:
-        IndexingResult with doc_id, chunks_count, and warnings
-    """
-    import os
-    import tempfile
-
-    from app.core.config import get_config
-    from app.processors.pdf import chunk_documents, load_pdf_pages
-    from app.providers.embeddings import get_embedder
-
-    config = get_config()
-    start_time = time.time()
-
-    # Create temporary file
-    suffix = os.path.splitext(filename)[1] or ".pdf"
-    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as f:
-        f.write(file_content)
-        temp_path = f.name
-
-    try:
-        docs, warnings = load_pdf_pages(temp_path, original_filename=filename)
-        chunks = chunk_documents(docs)
-
-        if not chunks:
-            raise ValueError("No text chunks produced from PDF.")
-
-        # Embed chunks (dimension must match Milvus collection — use len(vectors[0]), not a guessed probe default)
-        embedder = get_embedder()
-        vectors = embedder.embed_documents([c["text"] for c in chunks])
-
-        if len(vectors) != len(chunks):
-            raise RuntimeError("Embedding count does not match chunk count.")
-        if not vectors or not vectors[0]:
-            raise RuntimeError("Embedding API returned empty vectors.")
-
-        vector_dim = len(vectors[0])
-        if embedder.dimension != vector_dim:
-            logger.warning(
-                "Embedder.dimension=%s differs from actual vector length=%s; using vector length for Milvus.",
-                embedder.dimension,
-                vector_dim,
-            )
-
-        # Insert into storage
-        storage = await create_and_connect_storage()
-        try:
-            # Ensure collection exists (recreates if existing schema dim mismatches)
-            await storage.ensure_collection(vector_dim=vector_dim)
-
-            # Insert chunks
-            insert_result = await storage.insert_chunks(
-                doc_id=doc_id,
-                chunks=chunks,
-                vectors=vectors,
-            )
-        finally:
-            await storage.disconnect()
-
-        processing_time = time.time() - start_time
-
-        merged_warnings: list[str] = []
-        if warnings:
-            merged_warnings.extend(warnings)
-        if insert_result.warnings:
-            merged_warnings.extend(insert_result.warnings)
-
-        return create_indexing_result(
-            doc_id=doc_id,
-            name=filename,
-            chunks_count=insert_result.chunks_inserted,
-            status=DocumentStatus.COMPLETED,
-            processing_time=processing_time,
-            warnings=merged_warnings,
-        )
-
-    finally:
-        # Clean up temp file
-        try:
-            os.unlink(temp_path)
-        except OSError:
-            pass
 
 
 @router.post("/upload")
@@ -132,7 +27,7 @@ async def upload_pdf(
     Accept a PDF via multipart/form-data, validate size/type, run indexing pipeline,
     return doc_id and chunks count. Handles errors gracefully.
 
-    Updated to use new architecture with storage factory and document models.
+    Delegates PDF indexing to services.pdf_indexing.index_pdf_bytes.
     """
     config = get_config()
 
@@ -189,7 +84,7 @@ async def upload_pdf(
     )
 
     try:
-        result = await run_indexing_pipeline_from_upload(file_content, filename, doc_id)
+        result = await index_pdf_bytes(file_content, filename, doc_id)
         if storage_warn:
             result.warnings.append(storage_warn)
         if pdf_key:
