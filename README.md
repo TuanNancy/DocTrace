@@ -40,41 +40,44 @@ RAG-PDF-chatbot/
 │   │   ├── schemas.py            # Pydantic request models (ChatRequest)
 │   │   │
 │   │   ├── core/
-│   │   │   ├── config.py         # RAGConfig dataclass + env loading + singleton
+│   │   │   ├── config.py         # AppConfig dataclass + env loading + singleton
 │   │   │   └── auth.py           # Supabase JWT verification (Bearer token)
 │   │   │
 │   │   ├── routers/
-│   │   │   ├── upload.py         # POST /api/upload — PDF upload + indexing pipeline
+│   │   │   ├── upload.py         # POST /api/upload — auth, validation, gọi indexing service
 │   │   │   └── chat.py           # POST /api/chat — SSE streaming chat
 │   │   │
 │   │   ├── processors/
 │   │   │   └── pdf.py            # PDF loading (PyPDFLoader) + chunking
 │   │   │
 │   │   ├── providers/
-│   │   │   ├── base.py           # Abstract BaseProvider interface (LLM ops)
-│   │   │   ├── openrouter.py     # OpenRouter implementation (AsyncOpenAI)
-│   │   │   ├── embeddings.py     # OpenAIEmbedder via OpenRouter /v1/embeddings
-│   │   │   └── factory.py        # create_provider() factory
+│   │   │   ├── base.py           # ChatProvider: generate/stream chat completions
+│   │   │   ├── openrouter.py     # OpenRouterChatProvider (AsyncOpenAI SDK)
+│   │   │   ├── embeddings.py     # OpenRouterEmbedder: text → vectors
+│   │   │   └── factory.py        # create_chat_provider()
 │   │   │
 │   │   ├── storage/
-│   │   │   ├── base.py           # Abstract BaseStorage + RetrievedChunk/InsertResult
-│   │   │   ├── milvus_storage.py # Milvus implementation (pymilvus)
-│   │   │   └── factory.py        # StorageFactory + create_storage helpers
+│   │   │   ├── base.py           # VectorStore + RetrievedChunk/InsertResult
+│   │   │   ├── milvus_vector_store.py # MilvusVectorStore (pymilvus)
+│   │   │   └── factory.py        # VectorStoreFactory + connection helpers
 │   │   │
 │   │   ├── ai/
 │   │   │   ├── prompts.py        # System prompts (VI + EN) + PromptTemplates
-│   │   │   └── rag_agent.py      # RAGAgent: retrieve → build context → stream LLM
+│   │   │   └── rag_pipeline.py   # RAGPipeline: retrieve → build context → stream answer
 │   │   │
 │   │   ├── models/
 │   │   │   └── document.py       # DocumentStatus, IndexingResult
 │   │   │
 │   │   └── services/
+│   │       ├── pdf_indexing.py  # index_pdf_bytes(): extract → chunk → embed → insert
 │   │       └── supabase_pdf_storage.py  # PDF backup to Supabase S3 (boto3)
 │   │
 │   ├── tests/
 │   │   ├── conftest.py           # Pytest fixtures (TestClient, auth override)
-│   │   ├── test_upload.py        # 8 tests — upload validation + mocked pipeline
-│   │   └── test_chat.py          # 4 tests — chat validation + mocked SSE
+│   │   ├── test_upload.py        # Upload validation; indexing và S3 được mock
+│   │   ├── test_chat.py          # Pipeline/SSE thật; external services được mock
+│   │   ├── test_pdf_indexing.py  # Metadata, dimensions, cleanup khi indexing lỗi
+│   │   └── test_vector_store.py  # Bảo toàn collection, stable chunk IDs
 │   │
 │   └── scripts/
 │       ├── test_chunking.py      # Manual chunking test
@@ -92,7 +95,7 @@ RAG-PDF-chatbot/
 │       ├── types/
 │       │   └── index.ts           # TypeScript types (UploadResponse, ChatSource, ChatMessage, SSEEvent)
 │       │
-│       ├── lib/
+│       ├── lib/                   # Các module được import nhưng hiện thiếu trong checkout
 │       │   ├── api.ts             # streamChat(), uploadPDF(), streamChatSSEParser()
 │       │   ├── client.ts          # Supabase browser client
 │       │   ├── server.ts          # Supabase server client (cookie-based)
@@ -205,6 +208,8 @@ Attu UI: `http://localhost:8001`
 
 ### Backend
 
+Sử dụng Python 3.10+; bộ test đã được kiểm tra với Python 3.12.
+
 ```bash
 cd backend
 python -m venv .venv
@@ -221,11 +226,13 @@ API docs: `http://localhost:8000/docs`
 
 ```bash
 cd frontend
-npm install
+npm ci
 npm run dev
 ```
 
 Mở `http://localhost:3000`
+
+**Checkout hiện tại:** `frontend/src/lib/{api,client,server,middleware,utils}.ts` đang thiếu nên frontend chưa build được. Pattern `lib/` trong `.gitignore` cũng bỏ qua thư mục này; cần sửa rule khi khôi phục module. `ChatWindow` dùng tên local `parseChatEvents` cho import `streamChatSSEParser` từ API client.
 
 ---
 
@@ -234,7 +241,7 @@ Mở `http://localhost:3000`
 ### Upload Pipeline
 
 ```
-User upload PDF → POST /api/upload
+User upload PDF → POST /api/upload → services/pdf_indexing.py:index_pdf_bytes()
   │
   ├─ 1. Xác thực Supabase JWT (Bearer token)
   ├─ 2. Validate: content-type, extension, size ≤ 50MB
@@ -242,7 +249,7 @@ User upload PDF → POST /api/upload
   ├─ 4. load_pdf_pages() → PyPDFLoader (phát hiện scanned PDF)
   ├─ 5. chunk_documents() → RecursiveCharacterTextSplitter (1000/150)
   ├─ 6. Embed chunks → OpenRouter embeddings (batch 2048)
-  ├─ 7. ensure_collection() → Tạo Milvus collection nếu chưa có
+  ├─ 7. ensure_collection() → Tạo nếu chưa có; báo lỗi khi dimension không tương thích
   └─ 8. insert_chunks() → Batch insert vào Milvus (64/batch)
 
 Response: { doc_id, chunks_count, processing_time, warnings, pdf_storage_key }
@@ -255,14 +262,14 @@ User gửi câu hỏi → POST /api/chat
   │
   ├─ 1. Xác thực Supabase JWT
   ├─ 2. Validate query + doc_id
-  ├─ 3. RAGAgent._retrieve_chunks()
+  ├─ 3. RAGPipeline.retrieve_chunks()
   │     ├─ Embed query → OpenRouter
   │     └─ search_chunks() → Milvus (top_k=8, min_score=0.32)
   │
   ├─ 4. SSE "sources" → [{page, source, score}, ...]
   ├─ 5. Nếu không có chunks → Fallback message (VI/EN)
   ├─ 6. _build_context() → "[Trang X] (độ liên quan: Y)\n{nội dung}"
-  ├─ 7. provider.stream_with_context() → OpenRouter chat (stream=True)
+  ├─ 7. RAGPipeline.stream_answer() → chat_provider.stream_with_context() → OpenRouter
   ├─ 8. SSE "token" → từng token từ LLM
   └─ 9. SSE "done" → hoàn thành
 ```
@@ -319,8 +326,8 @@ User gửi câu hỏi → POST /api/chat
 
 | Pattern | Áp dụng |
 |---------|---------|
-| **Factory** | `create_provider()`, `StorageFactory`, `create_rag_agent_with_defaults()` |
-| **Strategy** | `BaseProvider` → `OpenRouterProvider`, `BaseStorage` → `MilvusStorage` |
+| **Factory** | `create_chat_provider()`, `VectorStoreFactory`, `create_initialized_rag_pipeline()` |
+| **Strategy** | `ChatProvider` → `OpenRouterChatProvider`, `VectorStore` → `MilvusVectorStore` |
 | **Singleton** | `get_config()`, `get_embedder()` (@lru_cache) |
 | **Dependency Injection** | FastAPI `Depends(require_supabase_user)` |
 | **Streaming/Generator** | SSE events, LLM token streaming, SSE parser |
@@ -331,11 +338,14 @@ User gửi câu hỏi → POST /api/chat
 ```
 routers/ (API endpoints, auth, validation)
     │
-    ├── ai/rag_agent.py (orchestration: retrieve → context → LLM)
+    ├── ai/rag_pipeline.py (retrieve → context → stream answer)
     │       ├── providers/ (LLM + embeddings)
     │       └── storage/ (vector DB)
     │
-    └── processors/ (PDF extraction + chunking)
+    └── services/pdf_indexing.py (extract → chunk → embed → insert)
+            ├── processors/ (PDF extraction + chunking)
+            ├── providers/embeddings.py (OpenRouterEmbedder)
+            └── storage/ (VectorStore)
 ```
 
 ---
@@ -344,10 +354,14 @@ routers/ (API endpoints, auth, validation)
 
 ```bash
 cd backend
-pytest -v
+python -m pytest -v
+
+# Chạy tập trung một luồng hoặc một test
+python -m pytest tests/test_vector_store.py
+python -m pytest tests/test_chat.py::test_chat_sse_stream
 ```
 
-12 tests: 8 upload (validation + mocked pipeline), 4 chat (validation + mocked SSE).
+Tests mock các API bên ngoài; không cần Milvus, OpenRouter hay Supabase đang chạy. Fixture `client` bypass authentication. Test chat đi qua `RAGPipeline`, chat provider và SSE thật; test indexing kiểm tra cleanup; test vector store kiểm tra dimension mismatch và ID chunk. Test upload mock cả indexing service và S3.
 
 ---
 
@@ -357,6 +371,8 @@ pytest -v
 - **CORS** — đang cho phép `localhost:3000/3001`, cần giới hạn khi deploy
 - **Single-turn chat** — mỗi query độc lập, không lưu lịch sử hội thoại
 - **Single-document** — chỉ hỗ trợ 1 `doc_id` mỗi phiên chat
+- **Collection dimensions** — `ensure_collection()` không xoá collection hiện có. Đổi model sang dimension khác cần collection mới hoặc gọi rõ `recreate_collection()` sau khi bảo toàn dữ liệu; hàm này xoá toàn bộ chunks cũ.
+- **Connection status** — `get_connection_status()` chỉ báo trạng thái connection local, không phải health check đến server.
 
 ---
 
