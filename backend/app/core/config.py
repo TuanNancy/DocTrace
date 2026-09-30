@@ -39,8 +39,8 @@ def _float(key: str, default: float) -> float:
 
 
 @dataclass
-class RAGConfig:
-    """Main configuration for RAG PDF Chatbot."""
+class AppConfig:
+    """Application settings for PDF processing, AI, storage, and authentication."""
 
     # ==================== Document Processing ====================
     chunk_size: int = 1000
@@ -90,7 +90,7 @@ class RAGConfig:
     supabase_storage_bucket: Optional[str] = None
 
     # ==================== Storage ====================
-    storage_type: str = "milvus"
+    vector_store_type: str = "milvus"
 
     def __post_init__(self):
         self._load_from_env()
@@ -160,7 +160,7 @@ class RAGConfig:
         if em and "/" not in em and em.startswith("text-embedding"):
             self.embedding_model = f"openai/{em}"
 
-    def get_provider_config(self) -> dict:
+    def get_chat_provider_config(self) -> dict:
         return {
             "api_key": self.openrouter_api_key,
             "base_url": self.openrouter_base_url,
@@ -177,13 +177,13 @@ class RAGConfig:
 
 
 # Global configuration instance
-_config: Optional[RAGConfig] = None
+_config: Optional[AppConfig] = None
 
 
-def get_config() -> RAGConfig:
+def get_config() -> AppConfig:
     global _config
     if _config is None:
-        _config = RAGConfig()
+        _config = AppConfig()
         errors = _config.validate()
         if errors:
             import warnings

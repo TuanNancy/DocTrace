@@ -19,8 +19,8 @@ class Embedder(Protocol):
     def dimension(self) -> int: ...
 
 
-class OpenAIEmbedder:
-    """OpenAI embeddings via OpenRouter."""
+class OpenRouterEmbedder:
+    """Generate embeddings through OpenRouter using the OpenAI-compatible SDK."""
 
     def __init__(self, model: str, api_key: str):
         self._model = model
@@ -30,9 +30,9 @@ class OpenAIEmbedder:
             api_key=api_key,
             base_url=config.openrouter_base_url.rstrip("/"),
         )
-        self._dim = self._get_dimension()
+        self._dim = self._probe_embedding_dimension()
 
-    def _get_dimension(self) -> int:
+    def _probe_embedding_dimension(self) -> int:
         """Probe API for vector size. Do not guess — wrong dim breaks Milvus insert."""
         try:
             r = self._client.embeddings.create(
@@ -66,9 +66,9 @@ class OpenAIEmbedder:
 
 @lru_cache(maxsize=2)
 def get_embedder(model: str | None = None) -> Embedder:
-    """Return cached OpenAI embedder instance."""
+    """Return a cached OpenRouter embedder; first creation probes the API for dimension."""
     config = get_config()
-    return OpenAIEmbedder(
+    return OpenRouterEmbedder(
         model=model or config.embedding_model,
         api_key=config.openrouter_api_key,
     )

@@ -1,38 +1,38 @@
 """
-Storage factory for creating storage backend instances.
+Factory for creating vector stores used to index and retrieve chunks.
 """
 import logging
 from typing import Optional, Dict, Any
 
 from app.core.config import get_config
-from app.storage.base import BaseStorage
-from app.storage.milvus_storage import MilvusStorage
+from app.storage.base import VectorStore
+from app.storage.milvus_vector_store import MilvusVectorStore
 
 logger = logging.getLogger(__name__)
 
 
-class StorageFactory:
-    """Factory for creating storage backend instances."""
+class VectorStoreFactory:
+    """Factory for creating vector store instances."""
 
     _backends: Dict[str, type] = {
-        "milvus": MilvusStorage,
+        "milvus": MilvusVectorStore,
     }
 
     @classmethod
-    def create_storage(
+    def create_vector_store(
         cls,
-        storage_type: Optional[str] = None,
+        vector_store_type: Optional[str] = None,
         config: Optional[Dict[str, Any]] = None,
         **kwargs
-    ) -> BaseStorage:
+    ) -> VectorStore:
         config_obj = get_config()
 
-        backend_name = (storage_type or config_obj.storage_type).lower()
+        backend_name = (vector_store_type or config_obj.vector_store_type).lower()
 
         if backend_name not in cls._backends:
             available = ", ".join(cls._backends.keys())
             raise ValueError(
-                f"Unsupported storage type: {backend_name}. "
+                f"Unsupported vector store type: {backend_name}. "
                 f"Available backends: {available}"
             )
 
@@ -43,9 +43,9 @@ class StorageFactory:
 
         config.update(kwargs)
 
-        storage_instance = backend_class(config=config)
-        logger.info("Created storage backend: %s", backend_name)
-        return storage_instance
+        vector_store = backend_class(config=config)
+        logger.info("Created vector store: %s", backend_name)
+        return vector_store
 
     @classmethod
     def _get_config_for_backend(cls, backend: str, config) -> Dict[str, Any]:
@@ -64,29 +64,29 @@ class StorageFactory:
         return backend_configs.get(backend, {})
 
 
-def create_storage(
-    storage_type: Optional[str] = None,
+def create_vector_store(
+    vector_store_type: Optional[str] = None,
     config: Optional[Dict[str, Any]] = None,
     **kwargs
-) -> BaseStorage:
-    """Convenience function that delegates to StorageFactory.create_storage()."""
-    return StorageFactory.create_storage(
-        storage_type=storage_type,
+) -> VectorStore:
+    """Create a vector store without opening a connection."""
+    return VectorStoreFactory.create_vector_store(
+        vector_store_type=vector_store_type,
         config=config,
         **kwargs
     )
 
 
-async def create_and_connect_storage(
-    storage_type: Optional[str] = None,
+async def create_connected_vector_store(
+    vector_store_type: Optional[str] = None,
     config: Optional[Dict[str, Any]] = None,
     **kwargs
-) -> BaseStorage:
-    """Create a storage backend instance and connect to it."""
-    storage = create_storage(
-        storage_type=storage_type,
+) -> VectorStore:
+    """Create a vector store and open its connection; the caller must disconnect it."""
+    vector_store = create_vector_store(
+        vector_store_type=vector_store_type,
         config=config,
         **kwargs
     )
-    await storage.connect()
-    return storage
+    await vector_store.connect()
+    return vector_store

@@ -8,7 +8,7 @@ from typing import AsyncIterator
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 
-from app.ai.rag_agent import create_rag_agent_with_defaults
+from app.ai.rag_pipeline import create_initialized_rag_pipeline
 from app.core.auth import require_supabase_user
 from app.schemas import ChatRequest
 
@@ -22,12 +22,12 @@ def _sse_message(event: str, data: str) -> str:
 
 
 async def _stream_chat_sse(query: str, doc_id: str, language: str = "vi") -> AsyncIterator[str]:
-    agent = None
+    pipeline = None
 
     try:
-        agent = await create_rag_agent_with_defaults()
+        pipeline = await create_initialized_rag_pipeline()
 
-        retrieved_chunks = await agent._retrieve_chunks(query, doc_id)
+        retrieved_chunks = await pipeline.retrieve_chunks(query, doc_id)
         sources_payload = [
             {"page": chunk.page, "source": chunk.source, "score": round(chunk.score, 4)}
             for chunk in retrieved_chunks
@@ -47,13 +47,13 @@ async def _stream_chat_sse(query: str, doc_id: str, language: str = "vi") -> Asy
             yield _sse_message("done", json.dumps("[DONE]"))
             return
 
-        async for token in agent.process_query_stream(
+        async for text_delta in pipeline.stream_answer(
             query=query,
             doc_id=doc_id,
             language=language,
             retrieved_chunks_override=retrieved_chunks,
         ):
-            safe = json.dumps(token) if token else ""
+            safe = json.dumps(text_delta) if text_delta else ""
             yield _sse_message("token", safe)
 
         yield _sse_message("done", json.dumps("[DONE]"))
@@ -64,8 +64,8 @@ async def _stream_chat_sse(query: str, doc_id: str, language: str = "vi") -> Asy
         yield _sse_message("done", json.dumps("[DONE]"))
 
     finally:
-        if agent:
-            await agent.shutdown()
+        if pipeline:
+            await pipeline.shutdown()
 
 
 @router.post("/chat")

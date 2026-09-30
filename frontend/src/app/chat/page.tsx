@@ -108,13 +108,13 @@ export default function ChatPage() {
 
   const initials = (displayName || user?.email || "U").trim().charAt(0).toUpperCase();
 
-  const startNewChat = () => {
-    chatRef.current?.clear();
+  const clearMessages = () => {
+    chatRef.current?.clearMessages();
   };
 
-  const clearChat = () => {
+  const confirmClearMessages = () => {
     if (typeof window !== "undefined" && window.confirm("Bạn có chắc muốn xóa toàn bộ cuộc trò chuyện?")) {
-      chatRef.current?.clear();
+      clearMessages();
     }
   };
 
@@ -193,11 +193,11 @@ export default function ChatPage() {
 
           <button
             type="button"
-            onClick={startNewChat}
+            onClick={clearMessages}
             className="mx-5 mt-4 flex shrink-0 items-center justify-center gap-2 rounded-lg bg-[#B22222] px-4 py-3 text-sm font-medium text-white transition hover:bg-[#9a1d1d]"
           >
-            <span className="text-lg leading-none">+</span>
-            Cuộc trò chuyện mới
+            <span className="text-lg leading-none" aria-hidden="true">🗑</span>
+            Xóa tin nhắn
           </button>
 
           <div className="min-h-0 flex-1 overflow-y-auto px-3 py-2">
@@ -274,7 +274,7 @@ export default function ChatPage() {
             <div className="flex shrink-0 items-center gap-2">
               <button
                 type="button"
-                onClick={clearChat}
+                onClick={confirmClearMessages}
                 className="hidden items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-1.5 text-sm text-slate-600 transition hover:border-[#B22222]/40 hover:bg-[#f7f7f4] hover:text-[#B22222] sm:inline-flex dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-800"
               >
                 🗑 Xóa chat

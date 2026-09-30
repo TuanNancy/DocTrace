@@ -8,13 +8,13 @@ import {
   useRef,
   useState,
 } from "react";
-import { streamChatSSEParser } from "@/lib/api";
+import { streamChatSSEParser as parseChatEvents } from "@/lib/api";
 import type { ChatMessage, ChatSource } from "@/types";
 import { SourceCardList } from "./SourceCardList";
 import { StreamingCursor } from "./StreamingCursor";
 
 export type ChatWindowHandle = {
-  clear: () => void;
+  clearMessages: () => void;
   exportTranscript: () => void;
 };
 
@@ -25,7 +25,7 @@ interface ChatWindowProps {
   accessToken?: string | null;
 }
 
-function genId() {
+function createMessageId() {
   return `msg-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 }
 
@@ -47,7 +47,7 @@ export const ChatWindow = forwardRef<ChatWindowHandle, ChatWindowProps>(
     useImperativeHandle(
       ref,
       () => ({
-        clear: () => {
+        clearMessages: () => {
           setMessages([]);
           setError(null);
         },
@@ -69,9 +69,9 @@ export const ChatWindow = forwardRef<ChatWindowHandle, ChatWindowProps>(
       [messages]
     );
 
-    const appendToken = useCallback((messageId: string, token: string) => {
+    const appendTextDelta = useCallback((messageId: string, textDelta: string) => {
       setMessages((prev) =>
-        prev.map((m) => (m.id === messageId ? { ...m, content: m.content + token } : m))
+        prev.map((m) => (m.id === messageId ? { ...m, content: m.content + textDelta } : m))
       );
     }, []);
 
@@ -100,13 +100,13 @@ export const ChatWindow = forwardRef<ChatWindowHandle, ChatWindowProps>(
         setError(null);
         setInput("");
         const userMsg: ChatMessage = {
-          id: genId(),
+          id: createMessageId(),
           role: "user",
           content: q,
         };
         setMessages((prev) => [...prev, userMsg]);
 
-        const assistantId = genId();
+        const assistantId = createMessageId();
         const assistantMsg: ChatMessage = {
           id: assistantId,
           role: "assistant",
@@ -126,7 +126,7 @@ export const ChatWindow = forwardRef<ChatWindowHandle, ChatWindowProps>(
             "Đây là câu trả lời mẫu dựa trên ngữ cảnh tài liệu (chế độ mock). Khi kết nối backend, câu trả lời sẽ được stream từng token.";
           for (let i = 0; i < mockText.length; i++) {
             await new Promise((r) => setTimeout(r, 20));
-            appendToken(assistantId, mockText[i]);
+            appendTextDelta(assistantId, mockText[i]);
           }
           finishStreaming(assistantId);
           setLoading(false);
@@ -148,9 +148,9 @@ export const ChatWindow = forwardRef<ChatWindowHandle, ChatWindowProps>(
             setLoading(false);
             return;
           }
-          for await (const event of streamChatSSEParser(res.body)) {
+          for await (const event of parseChatEvents(res.body)) {
             if (event.type === "sources") setSourcesForMessage(assistantId, event.data);
-            if (event.type === "token") appendToken(assistantId, event.data);
+            if (event.type === "token") appendTextDelta(assistantId, event.data);
             if (event.type === "error") setError(event.data.message);
             if (event.type === "done") break;
           }
@@ -168,7 +168,7 @@ export const ChatWindow = forwardRef<ChatWindowHandle, ChatWindowProps>(
         docId,
         mock,
         accessToken,
-        appendToken,
+        appendTextDelta,
         setSourcesForMessage,
         finishStreaming,
       ]

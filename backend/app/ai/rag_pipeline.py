@@ -1,55 +1,55 @@
 """
-RAG Agent for document query processing.
+RAG pipeline for document question answering.
 Orchestrates document retrieval, context building, and streaming LLM responses.
 """
 import logging
-from typing import AsyncIterator, List, Optional, Any
+from typing import AsyncIterator, List, Optional
 
 from app.ai.prompts import PromptTemplates
-from app.core.config import get_config
-from app.providers.base import BaseProvider
+from app.core.config import AppConfig, get_config
+from app.providers.base import ChatProvider
 from app.providers.embeddings import get_embedder
-from app.storage.base import BaseStorage, RetrievedChunk as StorageRetrievedChunk
+from app.storage.base import VectorStore, RetrievedChunk
 
 logger = logging.getLogger(__name__)
 
 
-class RAGAgent:
+class RAGPipeline:
     def __init__(
         self,
-        provider: Optional[BaseProvider] = None,
-        storage: Optional[BaseStorage] = None,
-        config: Optional[Any] = None,
+        chat_provider: Optional[ChatProvider] = None,
+        vector_store: Optional[VectorStore] = None,
+        config: Optional[AppConfig] = None,
     ):
         self.config = config or get_config()
-        self.provider = provider
-        self.storage = storage
+        self.chat_provider = chat_provider
+        self.vector_store = vector_store
         self.embedder = get_embedder()
 
     async def initialize(self) -> None:
-        if self.provider is None:
-            from app.providers.factory import create_provider
-            self.provider = create_provider(model=self.config.model)
-            logger.info("Created OpenRouter provider")
+        if self.chat_provider is None:
+            from app.providers.factory import create_chat_provider
+            self.chat_provider = create_chat_provider(model=self.config.model)
+            logger.info("Created OpenRouter chat provider")
 
-        if self.storage is None:
-            from app.storage.factory import create_storage
-            self.storage = create_storage(storage_type=self.config.storage_type)
-            logger.info("Created Milvus storage")
+        if self.vector_store is None:
+            from app.storage.factory import create_vector_store
+            self.vector_store = create_vector_store(vector_store_type=self.config.vector_store_type)
+            logger.info("Created Milvus vector store")
 
-        await self.storage.connect()
-        logger.info("RAG Agent initialized successfully")
+        await self.vector_store.connect()
+        logger.info("RAG pipeline initialized successfully")
 
     async def shutdown(self) -> None:
-        if self.storage:
-            await self.storage.disconnect()
-        logger.info("RAG Agent shutdown complete")
+        if self.vector_store:
+            await self.vector_store.disconnect()
+        logger.info("RAG pipeline shutdown complete")
 
-    async def _retrieve_chunks(
+    async def retrieve_chunks(
         self,
         query: str,
         doc_id: Optional[str] = None,
-    ) -> List[StorageRetrievedChunk]:
+    ) -> List[RetrievedChunk]:
         query_vectors = self.embedder.embed_documents([query])
         if not query_vectors:
             logger.warning("Failed to embed query")
@@ -57,7 +57,7 @@ class RAGAgent:
 
         query_vector = query_vectors[0]
 
-        retrieved_chunks = await self.storage.search_chunks(
+        retrieved_chunks = await self.vector_store.search_chunks(
             query_vector=query_vector,
             doc_id=doc_id,
             top_k=self.config.retrieval_top_k,
@@ -67,7 +67,7 @@ class RAGAgent:
         logger.info(f"Retrieved {len(retrieved_chunks)} chunks for query: {query[:50]}...")
         return retrieved_chunks
 
-    def _build_context(self, chunks: List[StorageRetrievedChunk]) -> str:
+    def _build_context(self, chunks: List[RetrievedChunk]) -> str:
         if not chunks:
             return ""
 
@@ -86,19 +86,19 @@ class RAGAgent:
 
         return "\n\n---\n\n".join(parts) if parts else ""
 
-    async def process_query_stream(
+    async def stream_answer(
         self,
         query: str,
         doc_id: Optional[str] = None,
         language: str = "vi",
         *,
-        retrieved_chunks_override: Optional[List[StorageRetrievedChunk]] = None,
+        retrieved_chunks_override: Optional[List[RetrievedChunk]] = None,
     ) -> AsyncIterator[str]:
         try:
             retrieved_chunks = (
                 retrieved_chunks_override
                 if retrieved_chunks_override is not None
-                else await self._retrieve_chunks(query, doc_id)
+                else await self.retrieve_chunks(query, doc_id)
             )
 
             if not retrieved_chunks:
@@ -114,21 +114,22 @@ class RAGAgent:
             context = self._build_context(retrieved_chunks)
             system_prompt = PromptTemplates.get_system_prompt(language)
 
-            async for token in self.provider.stream_with_context(
+            async for text_delta in self.chat_provider.stream_with_context(
                 query=query,
                 context=context,
                 system_prompt=system_prompt,
                 temperature=self.config.temperature,
                 max_tokens=self.config.max_tokens,
             ):
-                yield token
+                yield text_delta
 
         except Exception as e:
             logger.exception(f"Error in streaming query: {e}")
             yield f"Error: {str(e)}"
 
 
-async def create_rag_agent_with_defaults() -> RAGAgent:
-    agent = RAGAgent()
-    await agent.initialize()
-    return agent
+async def create_initialized_rag_pipeline() -> RAGPipeline:
+    """Create a pipeline and connect its vector store; the caller must shut it down."""
+    pipeline = RAGPipeline()
+    await pipeline.initialize()
+    return pipeline

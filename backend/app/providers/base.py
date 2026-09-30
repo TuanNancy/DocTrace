@@ -1,21 +1,18 @@
 """
-Base provider interface for LLM operations.
+Chat provider interface for generating completions and streaming text deltas.
 """
-import logging
 from abc import ABC, abstractmethod
 from typing import AsyncIterator, Dict, List, Optional, Any
 
-logger = logging.getLogger(__name__)
 
-
-class BaseProvider(ABC):
+class ChatProvider(ABC):
     def __init__(self, api_key: str, model: str, **kwargs):
         self.api_key = api_key
         self.model = model
         self.config = kwargs
 
     @abstractmethod
-    async def process_text_messages(
+    async def generate_completion(
         self,
         messages: List[Dict[str, str]],
         max_tokens: Optional[int] = None,
@@ -25,7 +22,7 @@ class BaseProvider(ABC):
         pass
 
     @abstractmethod
-    async def stream_text_messages(
+    async def stream_completion(
         self,
         messages: List[Dict[str, str]],
         max_tokens: Optional[int] = None,
@@ -34,7 +31,7 @@ class BaseProvider(ABC):
     ) -> AsyncIterator[str]:
         pass
 
-    async def process_with_context(
+    async def generate_with_context(
         self,
         query: str,
         context: str,
@@ -50,7 +47,7 @@ class BaseProvider(ABC):
         user_content = f"Context:\n{context}\n\nQuestion: {query}" if context else query
         messages.append({"role": "user", "content": user_content})
 
-        return await self.process_text_messages(
+        return await self.generate_completion(
             messages=messages,
             max_tokens=max_tokens,
             temperature=temperature,
@@ -73,22 +70,17 @@ class BaseProvider(ABC):
         user_content = f"Context:\n{context}\n\nQuestion: {query}" if context else query
         messages.append({"role": "user", "content": user_content})
 
-        async for token in self.stream_text_messages(
+        async for text_delta in self.stream_completion(
             messages=messages,
             max_tokens=max_tokens,
             temperature=temperature,
             **kwargs
         ):
-            yield token
+            yield text_delta
 
-    def validate_api_key(self) -> bool:
-        if not self.api_key:
-            logger.warning("API key is missing or empty")
-            return False
-        if self.api_key == "test-key":
-            logger.info("Using test API key")
-            return True
-        return True
+    def has_api_key(self) -> bool:
+        """Check local key presence; this does not authenticate with the provider."""
+        return bool(self.api_key)
 
     def get_model_info(self) -> Dict[str, Any]:
         return {

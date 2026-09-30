@@ -26,6 +26,13 @@ startxref
 %%EOF"""
 
 
+@pytest.fixture(autouse=True)
+def mock_pdf_storage():
+    """Prevent router tests from uploading to real Supabase Storage."""
+    with patch("app.routers.upload.try_upload_pdf", return_value=(None, None)) as mock:
+        yield mock
+
+
 @pytest.fixture
 def mock_indexing_result():
     """Fake IndexingResult for successful upload."""
@@ -85,7 +92,7 @@ def test_upload_rejects_file_too_large(mock_get_config, client: TestClient) -> N
     assert "too large" in response.json().get("detail", "").lower()
 
 
-@patch("app.routers.upload.run_indexing_pipeline_from_upload")
+@patch("app.routers.upload.index_pdf_bytes")
 def test_upload_success_returns_doc_id_and_chunks(
     mock_pipeline,
     client: TestClient,
@@ -110,7 +117,7 @@ def test_upload_success_returns_doc_id_and_chunks(
     uuid.UUID(call_args[2])
 
 
-@patch("app.routers.upload.run_indexing_pipeline_from_upload")
+@patch("app.routers.upload.index_pdf_bytes")
 def test_upload_includes_warnings_in_response(
     mock_pipeline,
     client: TestClient,
@@ -133,7 +140,7 @@ def test_upload_includes_warnings_in_response(
     assert "Possible scanned PDF" in str(body.get("warnings", []))
 
 
-@patch("app.routers.upload.run_indexing_pipeline_from_upload")
+@patch("app.routers.upload.index_pdf_bytes")
 def test_upload_400_on_indexing_value_error(
     mock_pipeline,
     client: TestClient,
@@ -148,7 +155,7 @@ def test_upload_400_on_indexing_value_error(
     assert "corrupt" in response.json().get("detail", "").lower()
 
 
-@patch("app.routers.upload.run_indexing_pipeline_from_upload")
+@patch("app.routers.upload.index_pdf_bytes")
 def test_upload_500_on_indexing_exception(
     mock_pipeline,
     client: TestClient,
