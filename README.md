@@ -1,4 +1,4 @@
-# 🔴 Baymax — RAG PDF Chatbot
+# 🔴 DocTrace — Document Q&A with source citations
 
 Chatbot RAG (Retrieval-Augmented Generation) cho phép **upload file PDF và đặt câu hỏi trực tiếp trên nội dung tài liệu**, với câu trả lời được stream realtime kèm trích dẫn nguồn.
 
@@ -362,4 +362,4 @@ pytest -v
 
 ## 🌍 English Summary
 
-**Baymax** is a Retrieval-Augmented Generation chatbot for PDFs. The backend (FastAPI) handles PDF upload, text extraction, chunking, embedding, and vector storage in Milvus, then uses OpenRouter for streaming LLM answers over Server-Sent Events (SSE). The frontend (Next.js 14) provides a modern UI with Supabase authentication, drag-drop PDF upload, real-time streaming chat, and cited source cards with page numbers.
+**DocTrace** is a Retrieval-Augmented Generation chatbot for PDFs. The backend (FastAPI) handles PDF upload, text extraction, chunking, embedding, and vector storage in Milvus, then uses OpenRouter for streaming LLM answers over Server-Sent Events (SSE). The frontend (Next.js 14) provides a modern UI with Supabase authentication, drag-drop PDF upload, real-time streaming chat, and cited source cards with page numbers.

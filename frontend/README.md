@@ -1,4 +1,4 @@
-# RAG PDF Chatbot — Frontend
+# DocTrace — Frontend
 
 Next.js 15 (App Router) + Tailwind CSS. **Chưa kết nối backend** — chạy ở chế độ mock.
 
