@@ -8,7 +8,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { streamChatSSEParser as parseChatEvents } from "@/lib/api";
+import { streamChat, streamChatSSEParser as parseChatEvents } from "@/lib/api";
 import type { ChatMessage, ChatSource } from "@/types";
 import { SourceCardList } from "./SourceCardList";
 import { StreamingCursor } from "./StreamingCursor";
@@ -39,6 +39,21 @@ export const ChatWindow = forwardRef<ChatWindowHandle, ChatWindowProps>(
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const scrollRef = useRef<HTMLDivElement>(null);
+    const activeRequest = useRef<AbortController | null>(null);
+
+    const clearMessages = useCallback(() => {
+      activeRequest.current?.abort();
+      activeRequest.current = null;
+      setLoading(false);
+      setMessages([]);
+      setError(null);
+      setInput("");
+    }, []);
+
+    useEffect(() => {
+      clearMessages();
+      return () => { activeRequest.current?.abort(); };
+    }, [docId, clearMessages]);
 
     useEffect(() => {
       scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
@@ -47,10 +62,7 @@ export const ChatWindow = forwardRef<ChatWindowHandle, ChatWindowProps>(
     useImperativeHandle(
       ref,
       () => ({
-        clearMessages: () => {
-          setMessages([]);
-          setError(null);
-        },
+        clearMessages,
         exportTranscript: () => {
           const lines: string[] = ["=== LỊCH SỬ CHAT ===", ""];
           messages.forEach((m) => {
@@ -66,7 +78,7 @@ export const ChatWindow = forwardRef<ChatWindowHandle, ChatWindowProps>(
           URL.revokeObjectURL(url);
         },
       }),
-      [messages]
+      [messages, clearMessages]
     );
 
     const appendTextDelta = useCallback((messageId: string, textDelta: string) => {
@@ -91,11 +103,18 @@ export const ChatWindow = forwardRef<ChatWindowHandle, ChatWindowProps>(
       async (e: React.FormEvent) => {
         e.preventDefault();
         const q = input.trim();
-        if (!q || loading) return;
+        if (!q || activeRequest.current) return;
         if (!docId && !mock) {
           setError("Vui lòng tải lên một tài liệu trước.");
           return;
         }
+        if (!mock && !accessToken) {
+          setError("Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại.");
+          return;
+        }
+
+        const controller = new AbortController();
+        activeRequest.current = controller;
 
         setError(null);
         setInput("");
@@ -116,55 +135,50 @@ export const ChatWindow = forwardRef<ChatWindowHandle, ChatWindowProps>(
         setMessages((prev) => [...prev, assistantMsg]);
         setLoading(true);
 
-        if (mock) {
-          const mockSources: ChatSource[] = [
-            { page: 1, source: "document.pdf", score: 0.92 },
-            { page: 2, source: "document.pdf", score: 0.85 },
-          ];
-          setSourcesForMessage(assistantId, mockSources);
-          const mockText =
-            "Đây là câu trả lời mẫu dựa trên ngữ cảnh tài liệu (chế độ mock). Khi kết nối backend, câu trả lời sẽ được stream từng token.";
-          for (let i = 0; i < mockText.length; i++) {
-            await new Promise((r) => setTimeout(r, 20));
-            appendTextDelta(assistantId, mockText[i]);
-          }
-          finishStreaming(assistantId);
-          setLoading(false);
-          return;
-        }
-
         try {
-          const { streamChat } = await import("@/lib/api");
-          if (!accessToken) {
-            setError("Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại.");
-            finishStreaming(assistantId);
-            setLoading(false);
+          if (mock) {
+            const mockSources: ChatSource[] = [
+              { page: 1, source: "document.pdf", score: 0.92 },
+              { page: 2, source: "document.pdf", score: 0.85 },
+            ];
+            setSourcesForMessage(assistantId, mockSources);
+            const mockText =
+              "Đây là câu trả lời mẫu dựa trên ngữ cảnh tài liệu (chế độ mock). Khi kết nối backend, câu trả lời sẽ được stream từng token.";
+            for (let i = 0; i < mockText.length; i++) {
+              await new Promise((r) => setTimeout(r, 20));
+              if (controller.signal.aborted) return;
+              appendTextDelta(assistantId, mockText[i]);
+            }
             return;
           }
-          const res = await streamChat(q, docId!, accessToken);
-          if (!res || !res.body) {
-            setError("Không thể kết nối. Kiểm tra backend.");
-            finishStreaming(assistantId);
-            setLoading(false);
+
+          const res = await streamChat(q, docId!, accessToken!, controller.signal);
+          if (controller.signal.aborted) {
+            await res.body?.cancel();
             return;
           }
+          if (!res.body) throw new Error("Không thể kết nối. Kiểm tra backend.");
           for await (const event of parseChatEvents(res.body)) {
+            if (controller.signal.aborted) break;
             if (event.type === "sources") setSourcesForMessage(assistantId, event.data);
             if (event.type === "token") appendTextDelta(assistantId, event.data);
             if (event.type === "error") setError(event.data.message);
             if (event.type === "done") break;
           }
-          finishStreaming(assistantId);
         } catch (err) {
-          setError(err instanceof Error ? err.message : "Lỗi khi gửi tin nhắn.");
-          finishStreaming(assistantId);
+          if (!controller.signal.aborted) {
+            setError(err instanceof Error ? err.message : "Lỗi khi gửi tin nhắn.");
+          }
         } finally {
-          setLoading(false);
+          if (activeRequest.current === controller && !controller.signal.aborted) {
+            activeRequest.current = null;
+            finishStreaming(assistantId);
+            setLoading(false);
+          }
         }
       },
       [
         input,
-        loading,
         docId,
         mock,
         accessToken,
@@ -183,10 +197,10 @@ export const ChatWindow = forwardRef<ChatWindowHandle, ChatWindowProps>(
       "bg-[#B22222] hover:bg-[#9a1d1d] dark:bg-[#B22222] dark:hover:bg-[#9a1d1d]";
 
     const shellInputWrap =
-      "border-slate-200 bg-[#f7f7f4] focus-within:border-[#B22222]/50 focus-within:ring-2 focus-within:ring-[#B22222]/15";
+      "border-slate-200 bg-[#f7f7f4] dark:border-slate-700 dark:bg-slate-800 focus-within:border-[#B22222]/50 focus-within:ring-2 focus-within:ring-[#B22222]/15";
 
     return (
-      <div className="flex h-full min-h-0 flex-col bg-white">
+      <div className="flex h-full min-h-0 flex-col bg-white dark:bg-slate-900">
         <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto p-4 md:p-6">
           {isEmpty && (
             <div className="flex h-full min-h-[200px] flex-col items-center justify-center gap-2 text-center text-slate-500 dark:text-slate-400">
@@ -240,7 +254,7 @@ export const ChatWindow = forwardRef<ChatWindowHandle, ChatWindowProps>(
 
         <form
           onSubmit={handleSubmit}
-          className="shrink-0 border-t border-slate-200 bg-white p-4 dark:border-slate-700 md:px-6"
+          className="shrink-0 border-t border-slate-200 bg-white p-4 dark:border-slate-700 dark:bg-slate-900 md:px-6"
         >
           <div className={`flex gap-3 rounded-2xl border p-3 ${shellInputWrap}`}>
             <textarea

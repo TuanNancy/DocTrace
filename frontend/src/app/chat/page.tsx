@@ -23,7 +23,7 @@ export default function ChatPage() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [profileMenuOpen, setProfileMenuOpen] = useState(false);
   const profileMenuRef = useRef<HTMLDivElement>(null);
-  const backendUrl = process.env.NEXT_PUBLIC_API_URL as string | undefined;
+  const backendUrl = process.env.NEXT_PUBLIC_API_URL?.trim();
   const mock = !backendUrl;
   const supabase = useMemo(() => createClient(), []);
 
@@ -291,7 +291,7 @@ export default function ChatPage() {
 
           <section className="shrink-0 border-b border-slate-200 bg-[#f7f7f4] px-4 py-5 dark:border-slate-700 dark:bg-slate-900/50">
             <div className="mx-auto w-full max-w-[800px]">
-              <div className="h-[104px] w-full">
+              <div className="max-h-[35vh] min-h-[104px] w-full overflow-y-auto">
                 <UploadZone
                   onUploadComplete={handleUploadComplete}
                   mock={mock}
@@ -314,7 +314,7 @@ export default function ChatPage() {
       </div>
 
       <footer className="shrink-0 border-t border-slate-200 py-1.5 text-center text-[10px] text-slate-500 dark:border-slate-700 dark:text-slate-500">
-        {mock ? "Chưa kết nối backend — chế độ demo" : "Đã kết nối backend"}
+        {mock ? "Chưa cấu hình backend — chế độ demo" : "Chế độ API — lỗi kết nối sẽ hiển thị khi gửi yêu cầu"}
       </footer>
     </div>
   );

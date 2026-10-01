@@ -1,6 +1,7 @@
 "use server";
 
 import { headers } from "next/headers";
+import { redirect } from "next/navigation";
 import { createClient } from "@/lib/server";
 
 type AuthActionState = {
@@ -51,14 +52,15 @@ export async function loginAction(
           "Đăng nhập chưa hoàn tất (không tạo được session). Vui lòng thử lại.",
       };
     }
-
-    return { status: "success", message: "Đăng nhập thành công. Đang chuyển hướng..." };
   } catch (error) {
     return {
       status: "error",
       message: error instanceof Error ? error.message : "Đăng nhập thất bại.",
     };
   }
+  // Redirect outside the catch: Next implements navigation by throwing.
+  // The action response carries the new session cookies together with navigation.
+  redirect("/chat");
 }
 
 export async function signupAction(

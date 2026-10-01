@@ -1,9 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { useFormState } from "react-dom";
-import { useRouter } from "next/navigation";
 import { loginAction } from "@/app/auth/actions";
 import { AuthSubmitButton } from "@/components/auth/AuthSubmitButton";
 import { BrandMark } from "@/components/BrandMark";
@@ -20,7 +19,6 @@ const INITIAL_AUTH_ACTION_STATE: AuthActionState = {
 };
 
 export function LoginForms() {
-  const router = useRouter();
   const supabase = useMemo(() => createClient(), []);
   const [oauthLoading, setOauthLoading] = useState(false);
   const [oauthError, setOauthError] = useState<string | null>(null);
@@ -28,13 +26,6 @@ export function LoginForms() {
     loginAction,
     INITIAL_AUTH_ACTION_STATE
   );
-
-  useEffect(() => {
-    if (loginState.status === "success") {
-      router.replace("/chat");
-      router.refresh();
-    }
-  }, [loginState.status, router]);
 
   const handleGoogleSignIn = async () => {
     setOauthLoading(true);
