@@ -1,0 +1,22 @@
+# First issuance only: serve HTTP-01 challenges without exposing the API over HTTP.
+server {
+    listen 80;
+    server_name ${API_DOMAIN};
+    access_log /dev/stdout;
+    error_log /dev/stderr warn;
+
+    location = /nginx-health {
+        access_log off;
+        return 200 "ok\n";
+    }
+
+    location ^~ /.well-known/acme-challenge/ {
+        root /var/www/certbot;
+        default_type text/plain;
+        try_files $uri =404;
+    }
+
+    location / {
+        return 503 "HTTPS setup in progress.\n";
+    }
+}

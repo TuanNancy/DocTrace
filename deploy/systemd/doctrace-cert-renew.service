@@ -1,0 +1,10 @@
+[Unit]
+Description=Renew DocTrace TLS certificates and reload Nginx
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/DocTrace
+ExecStart=/bin/sh /opt/DocTrace/deploy/certificates.sh renew

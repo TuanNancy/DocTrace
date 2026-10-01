@@ -1,5 +1,6 @@
 services:
   api:
+    image: ${API_IMAGE:-doctrace-api:local}
     build:
       context: ./backend
     restart: unless-stopped
@@ -21,22 +22,29 @@ services:
         max-size: "10m"
         max-file: "3"
 
-  caddy:
-    image: caddy:2.10.2-alpine
+  nginx:
+    image: nginx:1.28-alpine
     restart: unless-stopped
+    entrypoint: ["/bin/sh", "/opt/doctrace/start-nginx.sh"]
     environment:
       API_DOMAIN: ${API_DOMAIN:?Set API_DOMAIN in .env.production}
-      ACME_EMAIL: ${ACME_EMAIL:?Set ACME_EMAIL in .env.production}
+      TLS_MODE: ${TLS_MODE:-https}
     ports:
-      - "80:80"
-      - "443:443"
+      - "${NGINX_BIND_ADDRESS:-0.0.0.0}:${NGINX_HTTP_PORT:-80}:80"
+      - "${NGINX_BIND_ADDRESS:-0.0.0.0}:${NGINX_HTTPS_PORT:-443}:443"
     volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy_data:/data
-      - caddy_config:/config
+      - ./deploy/nginx:/opt/doctrace:ro
+      - certificates:/etc/letsencrypt:ro
+      - acme_webroot:/var/www/certbot:ro
     depends_on:
       api:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/nginx-health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
     mem_limit: 128m
     logging:
       driver: json-file
@@ -44,6 +52,17 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  certbot:
+    image: certbot/certbot:v5.1.0
+    profiles: ["tools"]
+    environment:
+      API_DOMAIN: ${API_DOMAIN:?Set API_DOMAIN in .env.production}
+      ACME_EMAIL: ${ACME_EMAIL:-}
+    volumes:
+      - certificates:/etc/letsencrypt
+      - acme_webroot:/var/www/certbot
+      - ./deploy/certbot:/opt/doctrace:ro
+
 volumes:
-  caddy_data:
-  caddy_config:
+  certificates:
+  acme_webroot:

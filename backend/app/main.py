@@ -27,3 +27,9 @@ app.add_middleware(
 
 app.include_router(upload.router)
 app.include_router(chat.router)
+
+
+@app.get("/health", tags=["health"])
+async def health() -> dict[str, str]:
+    """Process liveness only; do not call remote/paid services from health checks."""
+    return {"status": "ok"}

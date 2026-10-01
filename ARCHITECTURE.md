@@ -197,3 +197,11 @@ Loaded by `backend/app/core/config.py` from repo root `.env` then `backend/.env`
 - `minio` — object storage
 - `milvus` — vector DB (gRPC: `localhost:19530`)
 - `attu` — web UI (`http://localhost:8001`)
+
+API deployment uses a separate `compose.production.yml`:
+
+- `api` — non-root FastAPI image built from `backend/`; port 8000 is internal.
+- `nginx` — HTTPS reverse proxy, unbuffered SSE and streaming uploads. Docker DNS re-resolves `api` after container replacement.
+- `certbot` — on-demand webroot issuance/renewal using shared certificate/ACME volumes. The host systemd timer runs renewal, validates config and reloads Nginx.
+
+Bootstrap HTTP serves only ACME and proxy liveness. HTTPS starts only after a certificate exists; the API's `/health` reports process liveness, not external service health. See `DEPLOYMENT.md` for commands and the current application prerequisites.

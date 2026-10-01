@@ -11,6 +11,9 @@
 ## Build, Test, and Development Commands
 
 - Root: `docker compose up -d` starts database infrastructure, excluding the API/frontend.
+- API deployment uses `compose.production.yml` separately. On the Linux host, initialize with `sh deploy/certificates.sh bootstrap`, then `issue`; subsequent deploys use `docker compose --env-file .env.production -f compose.production.yml up -d --build --wait api nginx`. See `DEPLOYMENT.md`.
+- Nginx templates are rendered only at startup; recreate its container after template changes. `renew` runs Certbot, `nginx -t`, then reload; the systemd timer expects `/opt/DocTrace`. Preserve the Compose project name and certificate volumes. Bootstrap is only for initial issuance.
+- Proxy verification: build `docker build -t doctrace-api:verify ./backend`, then run `python deploy/tests/verify_nginx.py --api-image doctrace-api:verify` from root. It uses isolated Docker resources and self-signed certificates, not real cloud services. `/health` is liveness only.
 - `backend/`: use Python 3.10+ (tests verified on 3.12), create/activate a virtual environment, then `pip install -r requirements.txt`.
 - `backend/`: `uvicorn app.main:app --reload --port 8000` serves the API and `/docs`.
 - `backend/`: `python -m pytest` runs tests selected by `pytest.ini`.

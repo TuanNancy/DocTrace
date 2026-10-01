@@ -1,4 +1,4 @@
-name: Verify
+name: Verify backend, frontend and deployment
 
 on:
   push:
@@ -56,24 +56,21 @@ jobs:
           path: frontend/test-results/
           retention-days: 7
 
-  container:
+  deployment:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     env:
-      BACKEND_ENV_FILE: ./backend/.env.example
+      BACKEND_ENV_FILE: ./deploy/tests/api.env
     steps:
       - uses: actions/checkout@v4
-      - run: docker compose --env-file .env.production.example -f compose.production.yml config --no-env-resolution --quiet
-      - run: docker build -t doctrace-api:ci ./backend
-      - name: API container liveness
-        run: |
-          docker run -d --name doctrace-api -p 127.0.0.1:8000:8000 doctrace-api:ci
-          for attempt in $(seq 1 30); do
-            if curl --fail http://127.0.0.1:8000/health; then exit 0; fi
-            sleep 2
-          done
-          docker logs doctrace-api
-          exit 1
-      - name: Validate Caddy
-        run: docker run --rm -e API_DOMAIN=api.example.com -e ACME_EMAIL=ci@example.com -v "$PWD/Caddyfile:/etc/caddy/Caddyfile:ro" caddy:2.10.2-alpine caddy validate --config /etc/caddy/Caddyfile
-      - if: always()
-        run: docker rm -f doctrace-api || true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Validate production Compose
+        run: docker compose --env-file .env.production.example -f compose.production.yml config --quiet
+      - name: Build API image
+        run: docker build -t doctrace-api:verify ./backend
+      - name: Verify certificate orchestration
+        run: docker run --rm -v "$PWD/deploy:/workspace/deploy:ro" doctrace-api:verify python -m unittest discover -s /workspace/deploy/tests -p test_certificates.py -v
+      - name: Verify Nginx bootstrap, TLS, forwarding and SSE
+        run: python deploy/tests/verify_nginx.py --api-image doctrace-api:verify

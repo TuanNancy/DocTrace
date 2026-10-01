@@ -18,6 +18,7 @@ Chatbot RAG (Retrieval-Augmented Generation) cho phép **upload file PDF và đ�
 | **Frontend** | Next.js 14 (App Router), React 18, TypeScript |
 | **Styling** | Tailwind CSS, dark mode |
 | **Infra** | Docker Compose (etcd, MinIO, Milvus, Attu) |
+| **API deployment** | Docker FastAPI + Nginx reverse proxy + Certbot HTTPS |
 | **Testing** | pytest, pytest-asyncio |
 
 ---
@@ -201,6 +202,19 @@ docker compose logs -f milvus
 ```
 
 Attu UI: `http://localhost:8001`
+
+### Deploy API với Nginx + Certbot
+
+`compose.production.yml` là bộ riêng cho API + Nginx; Certbot chỉ chạy khi cấp/gia hạn certificate. Xem [DEPLOYMENT.md](DEPLOYMENT.md) để cấu hình EC2, domain và env, sau đó chạy trên EC2:
+
+```sh
+sh deploy/certificates.sh bootstrap
+sh deploy/certificates.sh issue
+```
+
+Bootstrap chỉ phục vụ ACME challenge; API được mở sau khi HTTPS hoạt động. Timer systemd trong `deploy/systemd/` tự gọi renewal và reload Nginx. `GET /health` kiểm tra API process mà không gọi dịch vụ ngoài.
+
+Frontend `src/lib` đã được khôi phục. Backend hiện vẫn cần adapter URI/token trước khi chạy end-to-end trên Vercel + Zilliz; bộ Nginx không tự bổ sung khả năng đó.
 
 ---
 
