@@ -237,6 +237,11 @@ export function UploadZone({
             </p>
           </div>
         )}
+        {(status === "success" || status === "error") && (
+          <button type="button" onClick={() => setStatus("idle")} className="mt-3 text-sm font-medium text-blue-600 hover:underline">
+            Chọn PDF khác
+          </button>
+        )}
       </div>
     </div>
   );
