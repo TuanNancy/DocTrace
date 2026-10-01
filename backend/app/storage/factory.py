@@ -3,6 +3,7 @@ Factory for creating vector stores used to index and retrieve chunks.
 """
 import logging
 from typing import Optional, Dict, Any
+from anyio import CancelScope
 
 from app.core.config import get_config
 from app.storage.base import VectorStore
@@ -52,6 +53,8 @@ class VectorStoreFactory:
         backend_configs = {
             "milvus": {
                 "host": config.milvus_host,
+                "uri": config.milvus_uri,
+                "token": config.milvus_token,
                 "port": config.milvus_port,
                 "collection": config.milvus_collection,
                 "vector_dim": config.milvus_vector_dim,
@@ -88,5 +91,10 @@ async def create_connected_vector_store(
         config=config,
         **kwargs
     )
-    await vector_store.connect()
+    try:
+        await vector_store.connect()
+    except BaseException:
+        with CancelScope(shield=True):
+            await vector_store.disconnect()
+        raise
     return vector_store

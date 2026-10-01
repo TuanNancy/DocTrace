@@ -29,8 +29,14 @@ class OpenRouterEmbedder:
         self._client = openai.OpenAI(
             api_key=api_key,
             base_url=config.openrouter_base_url.rstrip("/"),
+            timeout=config.upstream_timeout_seconds,
         )
-        self._dim = self._probe_embedding_dimension()
+        self._batch_size = config.embedding_batch_size
+        try:
+            self._dim = self._probe_embedding_dimension()
+        except Exception:
+            self._client.close()
+            raise
 
     def _probe_embedding_dimension(self) -> int:
         """Probe API for vector size. Do not guess — wrong dim breaks Milvus insert."""
@@ -50,7 +56,7 @@ class OpenRouterEmbedder:
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
         if not texts:
             return []
-        batch_size = 2048
+        batch_size = self._batch_size
         out: list[list[float]] = []
         for i in range(0, len(texts), batch_size):
             chunk = texts[i : i + batch_size]

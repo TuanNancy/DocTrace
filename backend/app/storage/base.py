@@ -71,7 +71,9 @@ class VectorStore(ABC):
         doc_id: str,
         chunks: List[Dict[str, Any]],
         vectors: List[List[float]],
-        batch_size: int = 64
+        batch_size: int = 64,
+        *,
+        user_id: str,
     ) -> InsertResult:
         pass
 
@@ -81,7 +83,9 @@ class VectorStore(ABC):
         query_vector: List[float],
         doc_id: Optional[str] = None,
         top_k: int = 8,
-        min_score: Optional[float] = None
+        min_score: Optional[float] = None,
+        *,
+        user_id: str,
     ) -> List[RetrievedChunk]:
         pass
 

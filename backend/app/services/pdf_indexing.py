@@ -3,7 +3,10 @@ import logging
 import os
 import tempfile
 import time
+from starlette.concurrency import run_in_threadpool
+from anyio import CancelScope
 
+from app.core.config import get_config
 from app.models.document import DocumentStatus, IndexingResult, create_indexing_result
 from app.storage.factory import create_connected_vector_store
 
@@ -14,6 +17,8 @@ async def index_pdf_bytes(
     file_content: bytes,
     filename: str,
     doc_id: str,
+    *,
+    user_id: str,
 ) -> IndexingResult:
     """Index a PDF under an existing document ID and clean up temporary resources.
 
@@ -23,6 +28,8 @@ async def index_pdf_bytes(
     from app.processors.pdf import chunk_documents, load_pdf_pages
     from app.providers.embeddings import get_embedder
 
+    if not user_id:
+        raise ValueError("Document owner is required.")
     start_time = time.time()
     suffix = os.path.splitext(filename)[1] or ".pdf"
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as f:
@@ -30,13 +37,15 @@ async def index_pdf_bytes(
         temp_path = f.name
 
     try:
-        docs, warnings = load_pdf_pages(temp_path, original_filename=filename)
-        chunks = chunk_documents(docs)
+        docs, warnings = await run_in_threadpool(load_pdf_pages, temp_path, original_filename=filename)
+        chunks = await run_in_threadpool(chunk_documents, docs)
         if not chunks:
             raise ValueError("No text chunks produced from PDF.")
+        if len(chunks) > get_config().max_chunks_per_document:
+            raise ValueError("PDF produces too many chunks. Split it into smaller documents.")
 
-        embedder = get_embedder()
-        vectors = embedder.embed_documents([c["text"] for c in chunks])
+        embedder = await run_in_threadpool(get_embedder)
+        vectors = await run_in_threadpool(embedder.embed_documents, [c["text"] for c in chunks])
         if len(vectors) != len(chunks):
             raise RuntimeError("Embedding count does not match chunk count.")
         if not vectors or not vectors[0]:
@@ -59,9 +68,11 @@ async def index_pdf_bytes(
                 doc_id=doc_id,
                 chunks=chunks,
                 vectors=vectors,
+                user_id=user_id,
             )
         finally:
-            await vector_store.disconnect()
+            with CancelScope(shield=True):
+                await vector_store.disconnect()
 
         merged_warnings = list(warnings or [])
         merged_warnings.extend(insert_result.warnings or [])

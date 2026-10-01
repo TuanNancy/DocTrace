@@ -1,12 +1,14 @@
 """
 Pydantic request/response models for API.
 """
-from pydantic import BaseModel, Field
+from typing import Literal
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ChatRequest(BaseModel):
     """Request body for POST /api/chat."""
 
-    query: str = Field(..., min_length=1, description="User question")
-    doc_id: str = Field(..., min_length=1, description="Document ID from upload response")
-    language: str = Field(default="vi", description="Response language (vi or en)")
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    query: str = Field(..., min_length=1, max_length=8000, description="User question")
+    doc_id: str = Field(..., min_length=1, max_length=64, description="Document ID from upload response")
+    language: Literal["vi", "en"] = "vi"

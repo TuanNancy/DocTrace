@@ -22,5 +22,8 @@ async def _fake_supabase_user():
 def client() -> TestClient:
     """FastAPI TestClient for router tests."""
     app.dependency_overrides[require_supabase_user] = _fake_supabase_user
-    yield TestClient(app)
-    app.dependency_overrides.pop(require_supabase_user, None)
+    try:
+        with TestClient(app) as test_client:
+            yield test_client
+    finally:
+        app.dependency_overrides.pop(require_supabase_user, None)

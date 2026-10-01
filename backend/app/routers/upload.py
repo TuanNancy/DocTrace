@@ -1,15 +1,16 @@
 """
 POST /api/upload: multipart/form-data PDF upload → indexing pipeline → UploadResponse.
 """
-import asyncio
 import logging
 import uuid
 from typing import Annotated, Any, Dict
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from starlette.concurrency import run_in_threadpool
 
 from app.core.auth import require_supabase_user
 from app.core.config import get_config
+from app.core.limits import require_upload_slot
 from app.services.pdf_indexing import index_pdf_bytes
 from app.services.supabase_pdf_storage import try_upload_pdf
 
@@ -22,6 +23,7 @@ router = APIRouter(prefix="/api", tags=["upload"])
 async def upload_pdf(
     file: Annotated[UploadFile, File(description="PDF file to index")],
     user: dict = Depends(require_supabase_user),
+    _slot: None = Depends(require_upload_slot),
 ) -> Dict[str, Any]:
     """
     Accept a PDF via multipart/form-data, validate size/type, run indexing pipeline,
@@ -75,7 +77,7 @@ async def upload_pdf(
 
     # Store original PDF early so users can still find the file in Storage
     # even if downstream indexing (Milvus/embeddings) fails.
-    pdf_key, storage_warn = await asyncio.to_thread(
+    pdf_key, storage_warn = await run_in_threadpool(
         try_upload_pdf,
         file_content,
         uid,
@@ -84,7 +86,7 @@ async def upload_pdf(
     )
 
     try:
-        result = await index_pdf_bytes(file_content, filename, doc_id)
+        result = await index_pdf_bytes(file_content, filename, doc_id, user_id=uid)
         if storage_warn:
             result.warnings.append(storage_warn)
         if pdf_key:
@@ -97,13 +99,9 @@ async def upload_pdf(
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
         logger.exception("Indexing failed: %s", e)
-        # Surface cause for debugging (API/Milvus/dim); PDF issues usually raise ValueError → 400 above
-        msg = str(e).strip() or repr(e)
-        if len(msg) > 500:
-            msg = msg[:500] + "…"
         raise HTTPException(
             status_code=500,
-            detail=f"Indexing failed: {msg}",
+            detail="Indexing failed. Please try again or contact the administrator.",
         ) from e
 
     return result.to_dict()
