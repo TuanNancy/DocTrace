@@ -1,0 +1,13 @@
+{
+	email {$ACME_EMAIL}
+}
+
+{$API_DOMAIN} {
+	# Includes multipart overhead; FastAPI enforces the 50 MiB PDF limit.
+	request_body {
+		max_size 55MB
+	}
+	# Caddy flushes text/event-stream immediately without an override.
+	# A negative flush_interval would keep upstream work alive after client disconnects.
+	reverse_proxy api:8000
+}
