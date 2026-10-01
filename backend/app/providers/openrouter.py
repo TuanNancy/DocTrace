@@ -28,8 +28,14 @@ class OpenRouterChatProvider(ChatProvider):
             self._client = AsyncOpenAI(
                 api_key=self.api_key,
                 base_url=self.base_url.rstrip("/") or "https://openrouter.ai/api/v1",
+                timeout=self.config.get("timeout", 60.0),
             )
         return self._client
+
+    async def close(self) -> None:
+        if self._client is not None:
+            await self._client.close()
+            self._client = None
 
     async def generate_completion(
         self,
@@ -71,14 +77,24 @@ class OpenRouterChatProvider(ChatProvider):
             params["temperature"] = temperature
         params.update(kwargs)
 
+        stream = None
         try:
             stream = await client.chat.completions.create(**params)
             async for chunk in stream:
+                if getattr(chunk, "error", None):
+                    raise RuntimeError("OpenRouter returned a streaming error.")
                 if not chunk.choices:
                     continue
+                if getattr(chunk.choices[0], "finish_reason", None) == "error":
+                    raise RuntimeError("OpenRouter could not complete the response.")
                 delta = chunk.choices[0].delta
                 if delta and delta.content:
                     yield delta.content
         except Exception as e:
             logger.exception("OpenRouter streaming error: %s", e)
             raise RuntimeError(f"OpenRouter streaming error: {e}") from e
+        finally:
+            if stream is not None:
+                close = getattr(stream, "close", None) or getattr(stream, "aclose", None)
+                if close:
+                    await close()

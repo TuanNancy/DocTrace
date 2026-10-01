@@ -1,23 +1,14 @@
-"""
-Milvus vector store for indexing and retrieving document chunks.
-"""
+"""Milvus/Zilliz adapter with owner-scoped queries and request-owned connections."""
+import json
 import logging
 import uuid
-import json
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from pymilvus import (
-    Collection,
-    CollectionSchema,
-    DataType,
-    FieldSchema,
-    connections,
-    drop_collection,
-    has_collection,
-)
+from pymilvus import Collection, CollectionSchema, DataType, FieldSchema, connections, drop_collection, has_collection
+from starlette.concurrency import run_in_threadpool
 
-from app.storage.base import VectorStore, RetrievedChunk, InsertResult
+from app.storage.base import InsertResult, RetrievedChunk, VectorStore
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +16,7 @@ logger = logging.getLogger(__name__)
 class MilvusVectorStore(VectorStore):
     PK_FIELD = "id"
     DOC_ID_FIELD = "doc_id"
+    USER_ID_FIELD = "user_id"
     TEXT_FIELD = "text"
     VECTOR_FIELD = "embedding"
     PAGE_FIELD = "page"
@@ -38,44 +30,54 @@ class MilvusVectorStore(VectorStore):
         super().__init__(config)
         self.host = config.get("host", "localhost")
         self.port = config.get("port", 19530)
+        self.uri = config.get("uri")
+        self.token = config.get("token")
         self.collection_name = config.get("collection", "pdf_chunks")
         self.vector_dim = config.get("vector_dim", 1536)
-        self.index_type = config.get("index_type", "IVF_FLAT")
+        self.index_type = config.get("index_type", "AUTOINDEX" if self.uri else "IVF_FLAT")
         self.metric_type = config.get("metric_type", "COSINE")
         self.nlist = config.get("nlist", 128)
         self.nprobe = config.get("nprobe", 32)
+        self.alias = f"doctrace_{uuid.uuid4().hex}"
         self._collection: Optional[Collection] = None
 
-    async def connect(self) -> None:
+    def _connect(self) -> None:
+        if self._connected:
+            return
+        kwargs = {"alias": self.alias}
+        if self.uri:
+            kwargs.update(uri=self.uri, token=self.token or "", secure=self.uri.startswith("https://"))
+        else:
+            kwargs.update(host=self.host, port=self.port)
         try:
-            if not connections.has_connection("default"):
-                connections.connect(alias="default", host=self.host, port=self.port)
-                logger.info(f"Connected to Milvus at {self.host}:{self.port}")
+            connections.connect(**kwargs)
             self._connected = True
-        except Exception as e:
-            logger.exception(f"Failed to connect to Milvus: {e}")
-            raise RuntimeError(f"Milvus connection failed: {e}") from e
+        except Exception:
+            connections.remove_connection(self.alias)
+            raise
 
-    async def disconnect(self) -> None:
+    async def connect(self) -> None:
+        await run_in_threadpool(self._connect)
+
+    def _disconnect(self) -> None:
         try:
-            if connections.has_connection("default"):
-                connections.disconnect("default")
-                logger.info("Disconnected from Milvus")
+            # remove_connection also disconnects and removes cached alias config.
+            connections.remove_connection(self.alias)
+        finally:
             self._connected = False
             self._collection = None
-        except Exception as e:
-            logger.warning(f"Error disconnecting from Milvus: {e}")
+
+    async def disconnect(self) -> None:
+        await run_in_threadpool(self._disconnect)
 
     async def is_connected(self) -> bool:
-        try:
-            return connections.has_connection("default") and self._connected
-        except Exception:
-            return False
+        return self._connected and connections.has_connection(self.alias)
 
     def _get_collection_schema(self, vector_dim: int) -> CollectionSchema:
-        fields = [
+        return CollectionSchema(fields=[
             FieldSchema(self.PK_FIELD, DataType.VARCHAR, is_primary=True, max_length=64, auto_id=False),
             FieldSchema(self.DOC_ID_FIELD, DataType.VARCHAR, max_length=64),
+            FieldSchema(self.USER_ID_FIELD, DataType.VARCHAR, max_length=64),
             FieldSchema(self.TEXT_FIELD, DataType.VARCHAR, max_length=65535),
             FieldSchema(self.VECTOR_FIELD, DataType.FLOAT_VECTOR, dim=vector_dim),
             FieldSchema(self.PAGE_FIELD, DataType.INT64),
@@ -84,170 +86,107 @@ class MilvusVectorStore(VectorStore):
             FieldSchema(self.UPDATED_AT_FIELD, DataType.VARCHAR, max_length=32),
             FieldSchema(self.STATUS_FIELD, DataType.VARCHAR, max_length=32),
             FieldSchema(self.METADATA_FIELD, DataType.VARCHAR, max_length=65535),
-        ]
-        return CollectionSchema(fields=fields, description=f"PDF chunks with embeddings - {self.collection_name}")
+        ], description="Owner-scoped PDF chunks")
 
-    def _collection_vector_dim(self) -> Optional[int]:
-        try:
-            if not has_collection(self.collection_name):
-                return None
-            coll = Collection(self.collection_name)
-            for field in coll.schema.fields:
-                if field.name != self.VECTOR_FIELD:
-                    continue
-                params = getattr(field, "params", None) or {}
-                dim = params.get("dim")
-                if dim is not None:
-                    return int(dim)
-        except Exception as e:
-            logger.warning("Could not read collection schema dim: %s", e)
-        return None
-
-    async def ensure_collection(self, vector_dim: int) -> None:
-        """Create/load a compatible collection without deleting existing chunks."""
+    def _ensure_collection(self, vector_dim: int) -> None:
         if vector_dim <= 0:
             raise ValueError("Vector dimension must be positive.")
-        await self.connect()
-
-        if not has_collection(self.collection_name):
-            schema = self._get_collection_schema(vector_dim)
-            collection = Collection(name=self.collection_name, schema=schema)
-            logger.info(f"Created collection {self.collection_name} with dim={vector_dim}")
+        self._connect()
+        if not has_collection(self.collection_name, using=self.alias):
+            collection = Collection(
+                name=self.collection_name, schema=self._get_collection_schema(vector_dim), using=self.alias,
+            )
         else:
-            existing_dim = self._collection_vector_dim()
-            if existing_dim is None:
+            collection = Collection(self.collection_name, using=self.alias)
+            fields = {field.name: field for field in collection.schema.fields}
+            field = fields.get(self.VECTOR_FIELD)
+            dim = (getattr(field, "params", None) or {}).get("dim")
+            if dim is None:
+                raise RuntimeError(f"Could not verify vector dimension of collection {self.collection_name!r}.")
+            if int(dim) != vector_dim:
                 raise RuntimeError(
-                    f"Could not verify vector dimension of collection {self.collection_name!r}."
+                    f"Collection {self.collection_name!r} has dimension {dim}, but embeddings have dimension {vector_dim}. "
+                    "Use a compatible model or a new collection; recreate_collection() deletes existing chunks."
                 )
-            if existing_dim != vector_dim:
-                raise RuntimeError(
-                    f"Collection {self.collection_name!r} has dimension {existing_dim}, "
-                    f"but embeddings have dimension {vector_dim}. "
-                    "Use a compatible embedding model or a new collection; "
-                    "recreate_collection() explicitly deletes existing chunks."
-                )
-            collection = Collection(self.collection_name)
+            owner_field = fields.get(self.USER_ID_FIELD)
+            if owner_field is None or owner_field.dtype != DataType.VARCHAR:
+                raise RuntimeError("Collection lacks a VARCHAR user_id field. Use a new collection and re-upload PDFs.")
 
-        try:
-            if not collection.indexes:
-                index_params = {
-                    "index_type": self.index_type,
-                    "metric_type": self.metric_type,
-                    "params": {"nlist": self.nlist},
-                }
-                collection.create_index(self.VECTOR_FIELD, index_params)
-                logger.info(f"Created {self.index_type} index on {self.VECTOR_FIELD}")
-        except Exception as e:
-            if "already exist" not in str(e).lower() and "index exist" not in str(e).lower():
-                logger.warning(f"Index creation warning: {e}")
-
+        if not collection.indexes:
+            params = {"nlist": self.nlist} if self.index_type.startswith("IVF") else {}
+            collection.create_index(self.VECTOR_FIELD, {
+                "index_type": self.index_type, "metric_type": self.metric_type, "params": params,
+            })
         collection.load()
         self._collection = collection
 
-    async def recreate_collection(self, vector_dim: int) -> None:
-        """Delete all existing chunks and create a collection with the requested dimension."""
+    async def ensure_collection(self, vector_dim: int) -> None:
+        await run_in_threadpool(self._ensure_collection, vector_dim)
+
+    def _recreate_collection(self, vector_dim: int) -> None:
         if vector_dim <= 0:
             raise ValueError("Vector dimension must be positive.")
-        await self.connect()
-        if has_collection(self.collection_name):
-            drop_collection(self.collection_name)
-            logger.info("Dropped collection %s for explicit recreation", self.collection_name)
+        self._connect()
+        if has_collection(self.collection_name, using=self.alias):
+            drop_collection(self.collection_name, using=self.alias)
         self._collection = None
-        await self.ensure_collection(vector_dim)
+        self._ensure_collection(vector_dim)
+
+    async def recreate_collection(self, vector_dim: int) -> None:
+        await run_in_threadpool(self._recreate_collection, vector_dim)
+
+    def _insert_chunks(self, doc_id, chunks, vectors, batch_size, user_id) -> InsertResult:
+        if not user_id or not doc_id:
+            raise ValueError("Document owner and ID are required.")
+        if not chunks or len(chunks) != len(vectors) or not vectors[0] or batch_size <= 0:
+            raise ValueError("Chunks/vectors must be non-empty and equal in length; batch size must be positive.")
+        self._ensure_collection(len(vectors[0]))
+        collection = self._collection
+        timestamp = datetime.utcnow().isoformat()
+        for i in range(0, len(chunks), batch_size):
+            batch = chunks[i:i + batch_size]
+            count = len(batch)
+            collection.insert([
+                [str(uuid.uuid4()) for _ in batch], [doc_id] * count, [user_id] * count,
+                [chunk["text"] for chunk in batch], vectors[i:i + batch_size],
+                [chunk.get("page", 0) for chunk in batch], [chunk.get("source", "") for chunk in batch],
+                [timestamp] * count, [timestamp] * count, ["completed"] * count,
+                [json.dumps(chunk.get("metadata", {}), ensure_ascii=False) for chunk in batch],
+            ])
+        collection.flush()
+        return InsertResult(doc_id=doc_id, chunks_inserted=len(chunks), warnings=[])
 
     async def insert_chunks(
-        self,
-        doc_id: str,
-        chunks: List[Dict[str, Any]],
-        vectors: List[List[float]],
-        batch_size: int = 64
+        self, doc_id: str, chunks: List[Dict[str, Any]], vectors: List[List[float]],
+        batch_size: int = 64, *, user_id: str,
     ) -> InsertResult:
-        if not chunks or len(chunks) != len(vectors):
-            raise ValueError("Chunks and vectors must be non-empty and of equal length")
+        return await run_in_threadpool(self._insert_chunks, doc_id, chunks, vectors, batch_size, user_id)
 
-        await self.connect()
-        await self.ensure_collection(len(vectors[0]))
-
-        collection = Collection(self.collection_name)
-        total = 0
-        current_time = datetime.utcnow().isoformat()
-
-        for i in range(0, len(chunks), batch_size):
-            batch_chunks = chunks[i : i + batch_size]
-            batch_vectors = vectors[i : i + batch_size]
-
-            ids = [str(uuid.uuid4()) for _ in batch_chunks]
-            doc_ids = [doc_id] * len(batch_chunks)
-            texts = [c["text"] for c in batch_chunks]
-            pages = [c.get("page", 0) for c in batch_chunks]
-            sources = [c.get("source", "") for c in batch_chunks]
-            created_ats = [current_time] * len(batch_chunks)
-            updated_ats = [current_time] * len(batch_chunks)
-            statuses = ["completed"] * len(batch_chunks)
-            metadatas = [json.dumps(c.get("metadata", {}), ensure_ascii=False) for c in batch_chunks]
-
-            data = [ids, doc_ids, texts, batch_vectors, pages, sources, created_ats, updated_ats, statuses, metadatas]
-
-            collection.insert(data)
-            total += len(batch_chunks)
-            logger.debug(f"Inserted batch {i}-{i + len(batch_chunks)} ({len(batch_chunks)} entities)")
-
-        collection.flush()
-        collection.load()
-        logger.info(f"Inserted {total} entities for doc_id={doc_id}")
-
-        return InsertResult(doc_id=doc_id, chunks_inserted=total, warnings=[])
-
-    async def search_chunks(
-        self,
-        query_vector: List[float],
-        doc_id: Optional[str] = None,
-        top_k: int = 8,
-        min_score: Optional[float] = None
-    ) -> List[RetrievedChunk]:
+    def _search_chunks(self, query_vector, doc_id, top_k, min_score, user_id) -> List[RetrievedChunk]:
+        if not user_id:
+            raise ValueError("Document owner is required.")
         if not query_vector:
             return []
-
-        await self.connect()
-
-        try:
-            collection = Collection(self.collection_name)
-        except Exception as e:
-            logger.warning(f"Collection not available: {e}")
-            return []
-
-        expr = None
+        self._connect()
+        collection = Collection(self.collection_name, using=self.alias)
+        # JSON quoting escapes user input; ownership is always part of the filter.
+        expr = f"{self.USER_ID_FIELD} == {json.dumps(user_id)}"
         if doc_id:
-            expr = f'{self.DOC_ID_FIELD} == "{doc_id}"'
-
-        search_param = {
-            "metric_type": self.metric_type,
-            "params": {"nprobe": self.nprobe},
-        }
-
-        output_fields = [self.TEXT_FIELD, self.PAGE_FIELD, self.SOURCE_FIELD, self.DOC_ID_FIELD]
-
-        try:
-            results = collection.search(
-                data=[query_vector],
-                anns_field=self.VECTOR_FIELD,
-                param=search_param,
-                limit=top_k,
-                expr=expr,
-                output_fields=output_fields,
-            )
-        except Exception as e:
-            logger.exception(f"Search failed: {e}")
-            return []
-
-        out: List[RetrievedChunk] = []
-        if not results or len(results) == 0:
+            expr += f" and {self.DOC_ID_FIELD} == {json.dumps(doc_id)}"
+        params = {"nprobe": self.nprobe} if self.index_type.startswith("IVF") else {}
+        results = collection.search(
+            data=[query_vector], anns_field=self.VECTOR_FIELD,
+            param={"metric_type": self.metric_type, "params": params}, limit=top_k, expr=expr,
+            output_fields=[self.TEXT_FIELD, self.PAGE_FIELD, self.SOURCE_FIELD, self.DOC_ID_FIELD],
+            # Make a newly uploaded PDF searchable across request-owned connections.
+            consistency_level="Strong",
+        )
+        out = []
+        if not results:
             return out
-
         for hit in results[0]:
             entity = hit.get("entity", hit) if isinstance(hit, dict) else getattr(hit, "entity", hit)
             chunk_id = hit[self.PK_FIELD] if isinstance(hit, dict) else hit.id
-
             if isinstance(entity, dict):
                 text = entity.get(self.TEXT_FIELD) or ""
                 page = entity.get(self.PAGE_FIELD, 0) or 0
@@ -258,22 +197,13 @@ class MilvusVectorStore(VectorStore):
                 page = getattr(entity, self.PAGE_FIELD, 0) or 0
                 source = getattr(entity, self.SOURCE_FIELD, "") or ""
                 doc_id_result = getattr(entity, self.DOC_ID_FIELD, "") or ""
-
             score = float(hit.get("distance", hit.get("score", 0.0)) if isinstance(hit, dict) else hit.score)
-
-            if min_score is not None and score < min_score:
-                continue
-
-            out.append(
-                RetrievedChunk(
-                    chunk_id=str(chunk_id),
-                    doc_id=str(doc_id_result),
-                    text=str(text),
-                    page=int(page),
-                    source=str(source),
-                    score=score,
-                )
-            )
-
-        logger.info(f"Retrieval: doc_id={doc_id} top_k={top_k} -> {len(out)} hits")
+            if min_score is None or score >= min_score:
+                out.append(RetrievedChunk(str(chunk_id), str(doc_id_result), str(text), int(page), str(source), score))
         return out
+
+    async def search_chunks(
+        self, query_vector: List[float], doc_id: Optional[str] = None,
+        top_k: int = 8, min_score: Optional[float] = None, *, user_id: str,
+    ) -> List[RetrievedChunk]:
+        return await run_in_threadpool(self._search_chunks, query_vector, doc_id, top_k, min_score, user_id)

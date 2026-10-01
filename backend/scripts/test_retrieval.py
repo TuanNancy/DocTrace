@@ -1,6 +1,6 @@
 """
 Test retrieval with different queries; verify top-k results.
-Usage: python scripts/test_retrieval.py <doc_id> "câu hỏi 1" "câu hỏi 2" ...
+Usage: python scripts/test_retrieval.py <user_id> <doc_id> "câu hỏi 1" ...
 """
 import asyncio
 import logging
@@ -28,7 +28,7 @@ def build_context(chunks, max_chars=500):
     return "\n\n---\n\n".join(parts)
 
 
-async def search_chunks(query: str, doc_id: str, top_k: int = 5):
+async def search_chunks(query: str, doc_id: str, user_id: str, top_k: int = 5):
     embedder = get_embedder()
     vectors = embedder.embed_documents([query])
     if not vectors:
@@ -41,22 +41,23 @@ async def search_chunks(query: str, doc_id: str, top_k: int = 5):
             doc_id=doc_id,
             top_k=top_k,
             min_score=0.32,
+            user_id=user_id,
         )
     finally:
         await vector_store.disconnect()
 
 
 async def main():
-    if len(sys.argv) < 3:
-        print('Usage: python scripts/test_retrieval.py <doc_id> "query1" "query2" ...')
+    if len(sys.argv) < 4:
+        print('Usage: python scripts/test_retrieval.py <user_id> <doc_id> "query1" "query2" ...')
         sys.exit(1)
 
-    doc_id = sys.argv[1]
-    queries = sys.argv[2:]
+    user_id, doc_id = sys.argv[1:3]
+    queries = sys.argv[3:]
 
     for q in queries:
         print(f"\n--- Query: {q!r} ---")
-        chunks = await search_chunks(q, doc_id, top_k=5)
+        chunks = await search_chunks(q, doc_id, user_id, top_k=5)
         for i, c in enumerate(chunks, 1):
             print(f"  [{i}] page={c.page} score={c.score:.4f} source={c.source!r}")
             print(f"      text: {c.text[:120]}...")

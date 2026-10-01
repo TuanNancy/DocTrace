@@ -4,6 +4,8 @@ Orchestrates document retrieval, context building, and streaming LLM responses.
 """
 import logging
 from typing import AsyncIterator, List, Optional
+from starlette.concurrency import run_in_threadpool
+from anyio import CancelScope
 
 from app.ai.prompts import PromptTemplates
 from app.core.config import AppConfig, get_config
@@ -24,9 +26,10 @@ class RAGPipeline:
         self.config = config or get_config()
         self.chat_provider = chat_provider
         self.vector_store = vector_store
-        self.embedder = get_embedder()
+        self.embedder = None
 
     async def initialize(self) -> None:
+        self.embedder = await run_in_threadpool(get_embedder)
         if self.chat_provider is None:
             from app.providers.factory import create_chat_provider
             self.chat_provider = create_chat_provider(model=self.config.model)
@@ -41,19 +44,26 @@ class RAGPipeline:
         logger.info("RAG pipeline initialized successfully")
 
     async def shutdown(self) -> None:
-        if self.vector_store:
-            await self.vector_store.disconnect()
+        # StreamingResponse cancels its task group when the browser disconnects.
+        with CancelScope(shield=True):
+            try:
+                if self.vector_store:
+                    await self.vector_store.disconnect()
+            finally:
+                if self.chat_provider:
+                    await self.chat_provider.close()
         logger.info("RAG pipeline shutdown complete")
 
     async def retrieve_chunks(
         self,
         query: str,
         doc_id: Optional[str] = None,
+        *,
+        user_id: str,
     ) -> List[RetrievedChunk]:
-        query_vectors = self.embedder.embed_documents([query])
-        if not query_vectors:
-            logger.warning("Failed to embed query")
-            return []
+        query_vectors = await run_in_threadpool(self.embedder.embed_documents, [query])
+        if len(query_vectors) != 1 or not query_vectors[0]:
+            raise RuntimeError("Embedding API returned an invalid query vector.")
 
         query_vector = query_vectors[0]
 
@@ -62,9 +72,10 @@ class RAGPipeline:
             doc_id=doc_id,
             top_k=self.config.retrieval_top_k,
             min_score=self.config.min_relevance_score,
+            user_id=user_id,
         )
 
-        logger.info(f"Retrieved {len(retrieved_chunks)} chunks for query: {query[:50]}...")
+        logger.info("Retrieved %s chunks", len(retrieved_chunks))
         return retrieved_chunks
 
     def _build_context(self, chunks: List[RetrievedChunk]) -> str:
@@ -92,13 +103,14 @@ class RAGPipeline:
         doc_id: Optional[str] = None,
         language: str = "vi",
         *,
+        user_id: str,
         retrieved_chunks_override: Optional[List[RetrievedChunk]] = None,
     ) -> AsyncIterator[str]:
         try:
             retrieved_chunks = (
                 retrieved_chunks_override
                 if retrieved_chunks_override is not None
-                else await self.retrieve_chunks(query, doc_id)
+                else await self.retrieve_chunks(query, doc_id, user_id=user_id)
             )
 
             if not retrieved_chunks:
@@ -125,11 +137,15 @@ class RAGPipeline:
 
         except Exception as e:
             logger.exception(f"Error in streaming query: {e}")
-            yield f"Error: {str(e)}"
+            raise
 
 
 async def create_initialized_rag_pipeline() -> RAGPipeline:
     """Create a pipeline and connect its vector store; the caller must shut it down."""
     pipeline = RAGPipeline()
-    await pipeline.initialize()
+    try:
+        await pipeline.initialize()
+    except BaseException:
+        await pipeline.shutdown()
+        raise
     return pipeline
