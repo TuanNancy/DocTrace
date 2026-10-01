@@ -82,6 +82,9 @@ class ChatProvider(ABC):
         """Check local key presence; this does not authenticate with the provider."""
         return bool(self.api_key)
 
+    async def close(self) -> None:
+        """Release resources owned by this request's provider."""
+
     def get_model_info(self) -> Dict[str, Any]:
         return {
             "provider": self.__class__.__name__,

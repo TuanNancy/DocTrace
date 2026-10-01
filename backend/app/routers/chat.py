@@ -1,5 +1,5 @@
 """
-POST /api/chat: SSE stream with event types token, sources, [DONE].
+POST /api/chat: authenticated SSE with sources, token, error, and done events.
 """
 import json
 import logging
@@ -21,13 +21,13 @@ def _sse_message(event: str, data: str) -> str:
     return f"event: {event}\ndata: {data}\n\n"
 
 
-async def _stream_chat_sse(query: str, doc_id: str, language: str = "vi") -> AsyncIterator[str]:
+async def _stream_chat_sse(query: str, doc_id: str, user_id: str, language: str = "vi") -> AsyncIterator[str]:
     pipeline = None
 
     try:
         pipeline = await create_initialized_rag_pipeline()
 
-        retrieved_chunks = await pipeline.retrieve_chunks(query, doc_id)
+        retrieved_chunks = await pipeline.retrieve_chunks(query, doc_id, user_id=user_id)
         sources_payload = [
             {"page": chunk.page, "source": chunk.source, "score": round(chunk.score, 4)}
             for chunk in retrieved_chunks
@@ -51,16 +51,17 @@ async def _stream_chat_sse(query: str, doc_id: str, language: str = "vi") -> Asy
             query=query,
             doc_id=doc_id,
             language=language,
+            user_id=user_id,
             retrieved_chunks_override=retrieved_chunks,
         ):
-            safe = json.dumps(text_delta) if text_delta else ""
-            yield _sse_message("token", safe)
+            if text_delta:
+                yield _sse_message("token", json.dumps(text_delta))
 
         yield _sse_message("done", json.dumps("[DONE]"))
 
     except Exception as e:
         logger.exception("Chat stream error: %s", e)
-        yield _sse_message("error", json.dumps({"message": str(e)}))
+        yield _sse_message("error", json.dumps({"message": "Chat service unavailable. Please try again."}))
         yield _sse_message("done", json.dumps("[DONE]"))
 
     finally:
@@ -71,7 +72,7 @@ async def _stream_chat_sse(query: str, doc_id: str, language: str = "vi") -> Asy
 @router.post("/chat")
 async def chat(
     request: ChatRequest,
-    _user: dict = Depends(require_supabase_user),
+    user: dict = Depends(require_supabase_user),
 ) -> StreamingResponse:
     try:
         query = request.query.strip()
@@ -81,9 +82,12 @@ async def chat(
             raise HTTPException(status_code=400, detail="Query is required")
         if not doc_id:
             raise HTTPException(status_code=400, detail="Document ID is required")
+        user_id = str(user.get("id") or "")
+        if not user_id:
+            raise HTTPException(status_code=401, detail="Invalid user: missing id.")
 
         return StreamingResponse(
-            _stream_chat_sse(query, doc_id, language),
+            _stream_chat_sse(query, doc_id, user_id, language),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",

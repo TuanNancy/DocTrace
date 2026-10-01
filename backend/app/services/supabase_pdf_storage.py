@@ -59,7 +59,11 @@ def upload_pdf_to_supabase_storage(file_content: bytes, object_key: str) -> None
         aws_access_key_id=c.supabase_s3_access_key_id,
         aws_secret_access_key=c.supabase_s3_secret_access_key,
         region_name=c.supabase_s3_region,
-        config=Config(signature_version="s3v4", s3={"addressing_style": "path"}),
+        config=Config(
+            signature_version="s3v4", s3={"addressing_style": "path"},
+            connect_timeout=10, read_timeout=c.upstream_timeout_seconds,
+            retries={"max_attempts": 2, "mode": "standard"},
+        ),
     )
     client.put_object(
         Bucket=c.supabase_storage_bucket,
@@ -96,10 +100,10 @@ def try_upload_pdf(
         logger.info("Stored original PDF in Supabase Storage: %s", key)
         return key, None
     except (ClientError, BotoCoreError, OSError) as e:
-        msg = f"Could not upload PDF to storage: {e}"
-        logger.warning(msg)
+        msg = "Could not retain the original PDF in storage."
+        logger.warning("PDF storage failed: %s", e)
         return None, msg
     except Exception as e:
-        msg = f"Could not upload PDF to storage: {e}"
-        logger.exception(msg)
+        msg = "Could not retain the original PDF in storage."
+        logger.exception("PDF storage failed")
         return None, msg

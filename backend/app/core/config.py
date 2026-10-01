@@ -50,10 +50,14 @@ class AppConfig:
 
     # ==================== Upload Settings ====================
     upload_max_size_mb: int = 50
+    upload_max_concurrent: int = 1
+    max_chunks_per_document: int = 2000
     upload_allowed_content_types: Tuple[str, ...] = field(default_factory=lambda: ("application/pdf",))
 
     # ==================== Vector Database (Milvus) ====================
     milvus_host: str = "localhost"
+    milvus_uri: Optional[str] = None
+    milvus_token: Optional[str] = None
     milvus_port: int = 19530
     milvus_collection: str = "pdf_chunks"
     milvus_vector_dim: int = 1536
@@ -70,6 +74,8 @@ class AppConfig:
     # ==================== Embedding Settings ====================
     embedding_model: str = "text-embedding-3-small"
     embedding_dimension: int = 1536
+    embedding_batch_size: int = 64
+    upstream_timeout_seconds: float = 60.0
 
     # ==================== RAG Settings ====================
     retrieval_top_k: int = 8
@@ -104,13 +110,17 @@ class AppConfig:
 
         # Upload Settings
         self.upload_max_size_mb = _int("UPLOAD_MAX_SIZE_MB", self.upload_max_size_mb)
+        self.upload_max_concurrent = _int("UPLOAD_MAX_CONCURRENT", self.upload_max_concurrent)
+        self.max_chunks_per_document = _int("MAX_CHUNKS_PER_DOCUMENT", self.max_chunks_per_document)
 
         # Vector Database
         self.milvus_host = _str("MILVUS_HOST", self.milvus_host)
+        self.milvus_uri = _optional_str("MILVUS_URI", self.milvus_uri)
+        self.milvus_token = _optional_str("MILVUS_TOKEN", self.milvus_token)
         self.milvus_port = _int("MILVUS_PORT", self.milvus_port)
         self.milvus_collection = _str("MILVUS_COLLECTION", self.milvus_collection)
         self.milvus_vector_dim = _int("MILVUS_VECTOR_DIM", self.milvus_vector_dim)
-        self.milvus_index_type = _str("MILVUS_INDEX_TYPE", self.milvus_index_type)
+        self.milvus_index_type = _str("MILVUS_INDEX_TYPE", "AUTOINDEX" if self.milvus_uri else self.milvus_index_type)
         self.milvus_metric_type = _str("MILVUS_METRIC_TYPE", self.milvus_metric_type)
         self.milvus_nlist = _int("MILVUS_NLIST", self.milvus_nlist)
         self.milvus_nprobe = _int("MILVUS_NPROBE", self.milvus_nprobe)
@@ -123,6 +133,10 @@ class AppConfig:
         # Embedding
         self.embedding_model = _str("EMBEDDING_MODEL", self.embedding_model)
         self.embedding_dimension = _int("EMBEDDING_DIMENSION", self.embedding_dimension)
+        self.embedding_batch_size = _int("EMBEDDING_BATCH_SIZE", self.embedding_batch_size)
+        self.upstream_timeout_seconds = _float("UPSTREAM_TIMEOUT_SECONDS", self.upstream_timeout_seconds)
+        if min(self.upload_max_concurrent, self.max_chunks_per_document, self.embedding_batch_size, self.upstream_timeout_seconds) <= 0:
+            raise ValueError("Concurrency, chunk/batch limits and upstream timeout must be positive.")
 
         # RAG Settings
         self.retrieval_top_k = _int("RETRIEVAL_TOP_K", self.retrieval_top_k)
@@ -165,6 +179,7 @@ class AppConfig:
             "api_key": self.openrouter_api_key,
             "base_url": self.openrouter_base_url,
             "model": self.model,
+            "timeout": self.upstream_timeout_seconds,
         }
 
     def validate(self) -> list[str]:
