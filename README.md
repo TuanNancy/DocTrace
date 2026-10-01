@@ -1,381 +1,114 @@
-# 🔴 DocTrace — Document Q&A with source citations
+# DocTrace — PDF Q&A with source citations
 
-Chatbot RAG (Retrieval-Augmented Generation) cho phép **upload file PDF và đặt câu hỏi trực tiếp trên nội dung tài liệu**, với câu trả lời được stream realtime kèm trích dẫn nguồn.
+Project học tập/portfolio: đăng nhập, upload PDF, đặt câu hỏi và nhận câu trả lời stream kèm nguồn theo trang.
 
----
+## Kiến trúc triển khai
 
-## 🚀 Tech Stack
-
-| Layer | Technology |
-|-------|-----------|
-| **Backend** | Python, FastAPI, Uvicorn |
-| **LLM** | OpenRouter (chat completions, streaming) |
-| **Embeddings** | OpenRouter (`/v1/embeddings`) |
-| **Vector DB** | Milvus Standalone (pymilvus) |
-| **PDF Processing** | LangChain (PyPDFLoader + RecursiveCharacterTextSplitter) |
-| **Auth** | Supabase Auth (JWT verification) |
-| **PDF Storage** | Supabase Storage (S3-compatible, boto3) |
-| **Frontend** | Next.js 14 (App Router), React 18, TypeScript |
-| **Styling** | Tailwind CSS, dark mode |
-| **Infra** | Docker Compose (etcd, MinIO, Milvus, Attu) |
-| **Testing** | pytest, pytest-asyncio |
-
----
-
-## 📁 Cấu trúc thư mục
-
-```
-RAG-PDF-chatbot/
-├── .env                          # Environment config (API keys, Milvus, Supabase)
-├── docker-compose.yml            # Milvus stack (etcd, minio, milvus, attu)
-├── README.md                     # Tài liệu này
-│
-├── backend/
-│   ├── .env                      # Backend env (override root .env)
-│   ├── requirements.txt          # Python dependencies
-│   ├── pytest.ini                # Pytest config
-│   │
-│   ├── app/
-│   │   ├── main.py               # FastAPI entrypoint, CORS, mount routers
-│   │   ├── schemas.py            # Pydantic request models (ChatRequest)
-│   │   │
-│   │   ├── core/
-│   │   │   ├── config.py         # AppConfig dataclass + env loading + singleton
-│   │   │   └── auth.py           # Supabase JWT verification (Bearer token)
-│   │   │
-│   │   ├── routers/
-│   │   │   ├── upload.py         # POST /api/upload — auth, validation, gọi indexing service
-│   │   │   └── chat.py           # POST /api/chat — SSE streaming chat
-│   │   │
-│   │   ├── processors/
-│   │   │   └── pdf.py            # PDF loading (PyPDFLoader) + chunking
-│   │   │
-│   │   ├── providers/
-│   │   │   ├── base.py           # ChatProvider: generate/stream chat completions
-│   │   │   ├── openrouter.py     # OpenRouterChatProvider (AsyncOpenAI SDK)
-│   │   │   ├── embeddings.py     # OpenRouterEmbedder: text → vectors
-│   │   │   └── factory.py        # create_chat_provider()
-│   │   │
-│   │   ├── storage/
-│   │   │   ├── base.py           # VectorStore + RetrievedChunk/InsertResult
-│   │   │   ├── milvus_vector_store.py # MilvusVectorStore (pymilvus)
-│   │   │   └── factory.py        # VectorStoreFactory + connection helpers
-│   │   │
-│   │   ├── ai/
-│   │   │   ├── prompts.py        # System prompts (VI + EN) + PromptTemplates
-│   │   │   └── rag_pipeline.py   # RAGPipeline: retrieve → build context → stream answer
-│   │   │
-│   │   ├── models/
-│   │   │   └── document.py       # DocumentStatus, IndexingResult
-│   │   │
-│   │   └── services/
-│   │       ├── pdf_indexing.py  # index_pdf_bytes(): extract → chunk → embed → insert
-│   │       └── supabase_pdf_storage.py  # PDF backup to Supabase S3 (boto3)
-│   │
-│   ├── tests/
-│   │   ├── conftest.py           # Pytest fixtures (TestClient, auth override)
-│   │   ├── test_upload.py        # Upload validation; indexing và S3 được mock
-│   │   ├── test_chat.py          # Pipeline/SSE thật; external services được mock
-│   │   ├── test_pdf_indexing.py  # Metadata, dimensions, cleanup khi indexing lỗi
-│   │   └── test_vector_store.py  # Bảo toàn collection, stable chunk IDs
-│   │
-│   └── scripts/
-│       ├── test_chunking.py      # Manual chunking test
-│       └── test_retrieval.py     # Manual retrieval test
-│
-├── frontend/
-│   ├── .env.local                # Frontend env (API URL, Supabase)
-│   ├── package.json              # Next.js 14 + React 18 + Supabase + Tailwind
-│   ├── tsconfig.json             # TypeScript config (paths: @/* → src/*)
-│   ├── tailwind.config.ts        # Tailwind config (darkMode: "class")
-│   │
-│   └── src/
-│       ├── middleware.ts          # Next.js edge middleware (auth redirect)
-│       │
-│       ├── types/
-│       │   └── index.ts           # TypeScript types (UploadResponse, ChatSource, ChatMessage, SSEEvent)
-│       │
-│       ├── lib/                   # Các module được import nhưng hiện thiếu trong checkout
-│       │   ├── api.ts             # streamChat(), uploadPDF(), streamChatSSEParser()
-│       │   ├── client.ts          # Supabase browser client
-│       │   ├── server.ts          # Supabase server client (cookie-based)
-│       │   ├── middleware.ts      # updateSession() for auth redirect
-│       │   └── utils.ts           # cn() — clsx + tailwind-merge
-│       │
-│       ├── app/
-│       │   ├── layout.tsx         # Root layout (Inter font, metadata)
-│       │   ├── globals.css        # Tailwind + CSS variables
-│       │   ├── page.tsx           # Landing page (hero, features, how-it-works)
-│       │   ├── loading.tsx        # Global loading spinner
-│       │   ├── error.tsx          # Global error boundary
-│       │   │
-│       │   ├── chat/
-│       │   │   └── page.tsx       # Main chat page (sidebar, upload, chat window)
-│       │   │
-│       │   ├── auth/
-│       │   │   ├── actions.ts     # Server actions: loginAction, signupAction
-│       │   │   ├── login/page.tsx        # Login page
-│       │   │   ├── signup/page.tsx       # Signup page
-│       │   │   ├── callback/route.ts     # OAuth callback handler
-│       │   │   └── auth-code-error/page.tsx
-│       │   │
-│       │   └── brand/logo/route.ts       # GET /brand/logo — serves logo image
-│       │
-│       └── components/
-│           ├── BrandMark.tsx             # Logo + branding
-│           ├── ThemeToggle.tsx           # Dark/light mode toggle
-│           ├── UploadZone.tsx            # PDF drag-drop upload
-│           ├── ChatWindow.tsx            # Chat UI with SSE streaming
-│           ├── SourceCard.tsx            # Single citation card
-│           ├── SourceCardList.tsx        # List of source cards
-│           ├── StreamingCursor.tsx       # Blinking cursor animation
-│           └── auth/
-│               ├── LoginForms.tsx        # Email/password + Google OAuth
-│               ├── SignupForm.tsx        # Full name + email/password
-│               └── AuthSubmitButton.tsx  # Submit button with pending state
+```text
+Browser ──→ Next.js / Vercel ──→ Supabase Auth (cookie session)
+   │
+   └── Bearer token + PDF / chat ──→ Caddy HTTPS / FastAPI / EC2
+                                       ├── Supabase Auth: xác thực user
+                                       ├── Supabase S3: PDF gốc
+                                       ├── Zilliz Cloud: chunks + embeddings + user_id
+                                       └── OpenRouter: embeddings + chat completion
 ```
 
----
+- Frontend: Next.js 15, React, TypeScript, Tailwind 3, Supabase SSR.
+- Backend: FastAPI, PyPDFLoader, text splitter, OpenAI-compatible SDK trỏ tới OpenRouter.
+- Vector DB: Milvus local hoặc Zilliz managed, dùng cùng adapter PyMilvus.
+- Test: pytest, Vitest và Playwright với external services được mock.
 
-## 🔧 Cấu hình môi trường
+Giới hạn hiện tại: PDF có text (chưa có OCR), mỗi câu hỏi chỉ dùng một tài liệu, transcript/doc_id nằm trong state của browser. Reload giữ phiên đăng nhập nhưng không khôi phục tài liệu đã chọn hay lịch sử chat.
 
-### Backend `.env`
+## Chạy local
 
-Tạo file `.env` tại **root** project:
+### 1. Backend
 
-```bash
-# OpenRouter (chat + embeddings)
-OPENROUTER_API_KEY=sk-or-...
-OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
-RAG_MODEL=google/gemini-2.0-flash-lite-001
-EMBEDDING_MODEL=qwen/qwen3-embedding-8b
-EMBEDDING_DIMENSION=4096
+Dùng Python 3.12 cho cùng phiên bản với Docker/CI. Trong `backend/`:
 
-# Milvus
-MILVUS_HOST=localhost
-MILVUS_PORT=19530
-MILVUS_COLLECTION=pdf_chunks
-MILVUS_VECTOR_DIM=4096
-
-# Upload
-UPLOAD_MAX_SIZE_MB=50
-
-# Supabase Auth
-SUPABASE_URL=https://your-project.supabase.co
-SUPABASE_PUBLISHABLE_KEY=eyJ...
-
-# Supabase Storage (S3-compatible) — PDF backup
-SUPABASE_S3_ENDPOINT=https://your-project.storage.supabase.co/storage/v1/s3
-SUPABASE_S3_REGION=ap-southeast-2
-SUPABASE_S3_ACCESS_KEY_ID=...
-SUPABASE_S3_SECRET_ACCESS_KEY=...
-SUPABASE_STORAGE_BUCKET=pdfs
-
-# Chunking
-CHUNK_SIZE=1000
-CHUNK_OVERLAP=150
-```
-
-### Frontend `.env.local`
-
-```bash
-NEXT_PUBLIC_API_URL=http://localhost:8000
-NEXT_PUBLIC_SUPABASE_URL=https://your-project.supabase.co
-NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY=eyJ...
-```
-
----
-
-## 🐳 Chạy Milvus stack bằng Docker
-
-```bash
-# Tạo thư mục dữ liệu
-mkdir -p volumes/etcd volumes/minio volumes/milvus
-
-# Khởi động
-docker compose up -d
-
-# Kiểm tra
-docker compose ps
-docker compose logs -f milvus
-```
-
-Attu UI: `http://localhost:8001`
-
----
-
-## ▶️ Chạy project
-
-### Backend
-
-Sử dụng Python 3.10+; bộ test đã được kiểm tra với Python 3.12.
-
-```bash
-cd backend
+```powershell
 python -m venv .venv
-.venv\Scripts\activate        # Windows
-# source .venv/bin/activate   # Linux/macOS
-pip install -r requirements.txt
-
-uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
 ```
 
-API docs: `http://localhost:8000/docs`
+Trên Linux/macOS, activate bằng `source .venv/bin/activate`.
 
-### Frontend
+Tạo `backend/.env` từ [`backend/.env.example`](backend/.env.example), điền OpenRouter và Supabase. Nếu lưu PDF gốc, tạo private bucket và cấu hình đủ S3 endpoint, region, access key, secret và bucket.
 
-```bash
-cd frontend
+Chọn một cách chạy vector DB:
+
+- **Milvus local:** để `MILVUS_URI` và `MILVUS_TOKEN` trống, chạy `docker compose up -d` từ repo root. Compose này chỉ khởi động Milvus, etcd, MinIO và Attu (`http://localhost:8001`).
+- **Zilliz:** đặt `MILVUS_URI=https://...` và `MILVUS_TOKEN=...`; không cần chạy stack Milvus local. Adapter tự chọn `AUTOINDEX` khi có URI.
+
+Sau đó trong `backend/`:
+
+```text
+uvicorn app.main:app --reload --port 8000
+```
+
+API docs: `http://localhost:8000/docs`. Liveness: `GET /health`; endpoint này không kiểm tra dịch vụ cloud.
+
+**Dữ liệu cũ:** schema mới có `user_id`. Dùng collection mới, ví dụ `pdf_chunks_owned_v1`, và upload lại PDF. Không dùng `recreate_collection()` để sửa lỗi dimension; hàm này xoá dữ liệu.
+
+### 2. Frontend
+
+Dùng Node.js 22.18+; trong `frontend/`:
+
+```text
 npm ci
+```
+
+Tạo `frontend/.env.local` từ [`frontend/.env.example`](frontend/.env.example), điền các giá trị public của Supabase, API URL và site URL. Sau đó:
+
+```text
 npm run dev
 ```
 
-Mở `http://localhost:3000`
+Mở `http://localhost:3000`. Thiết lập Supabase Site URL/Redirect URLs theo [hướng dẫn deployment](DEPLOYMENT.md#supabase).
 
-**Checkout hiện tại:** `frontend/src/lib/{api,client,server,middleware,utils}.ts` đang thiếu nên frontend chưa build được. Pattern `lib/` trong `.gitignore` cũng bỏ qua thư mục này; cần sửa rule khi khôi phục module. `ChatWindow` dùng tên local `parseChatEvents` cho import `streamChatSSEParser` từ API client.
+`NEXT_PUBLIC_DEMO_MODE=true` chỉ bật upload/chat giả trong development; vẫn cần đăng nhập. Production luôn dùng backend thật. API URL là origin, ví dụ `https://api.example.com`, không thêm `/api`.
 
----
+## Kiểm chứng
 
-## 🔄 Luồng xử lý
+Trong `backend/`:
 
-### Upload Pipeline
-
-```
-User upload PDF → POST /api/upload → services/pdf_indexing.py:index_pdf_bytes()
-  │
-  ├─ 1. Xác thực Supabase JWT (Bearer token)
-  ├─ 2. Validate: content-type, extension, size ≤ 50MB
-  ├─ 3. Upload PDF gốc lên Supabase S3 (boto3, non-blocking)
-  ├─ 4. load_pdf_pages() → PyPDFLoader (phát hiện scanned PDF)
-  ├─ 5. chunk_documents() → RecursiveCharacterTextSplitter (1000/150)
-  ├─ 6. Embed chunks → OpenRouter embeddings (batch 2048)
-  ├─ 7. ensure_collection() → Tạo nếu chưa có; báo lỗi khi dimension không tương thích
-  └─ 8. insert_chunks() → Batch insert vào Milvus (64/batch)
-
-Response: { doc_id, chunks_count, processing_time, warnings, pdf_storage_key }
-```
-
-### Chat Pipeline (SSE Streaming)
-
-```
-User gửi câu hỏi → POST /api/chat
-  │
-  ├─ 1. Xác thực Supabase JWT
-  ├─ 2. Validate query + doc_id
-  ├─ 3. RAGPipeline.retrieve_chunks()
-  │     ├─ Embed query → OpenRouter
-  │     └─ search_chunks() → Milvus (top_k=8, min_score=0.32)
-  │
-  ├─ 4. SSE "sources" → [{page, source, score}, ...]
-  ├─ 5. Nếu không có chunks → Fallback message (VI/EN)
-  ├─ 6. _build_context() → "[Trang X] (độ liên quan: Y)\n{nội dung}"
-  ├─ 7. RAGPipeline.stream_answer() → chat_provider.stream_with_context() → OpenRouter
-  ├─ 8. SSE "token" → từng token từ LLM
-  └─ 9. SSE "done" → hoàn thành
-```
-
----
-
-## 🔌 API Endpoints
-
-### `POST /api/upload`
-
-- **Content-Type**: `multipart/form-data`
-- **Headers**: `Authorization: Bearer <supabase_access_token>`
-- **Field**: `file` (PDF, max 50MB)
-- **Response**:
-
-```json
-{
-  "doc_id": "uuid",
-  "name": "document.pdf",
-  "chunks_count": 123,
-  "status": "completed",
-  "processing_time": 5.432,
-  "created_at": "2024-01-01T00:00:00",
-  "warnings": ["Possible scanned PDF..."],
-  "pdf_storage_key": "user_id/doc_id/document.pdf"
-}
-```
-
-### `POST /api/chat`
-
-- **Content-Type**: `application/json`
-- **Headers**: `Authorization: Bearer <supabase_access_token>`
-- **Body**:
-
-```json
-{
-  "query": "Câu hỏi của bạn?",
-  "doc_id": "uuid",
-  "language": "vi"
-}
-```
-
-- **Response**: `text/event-stream` với các event:
-  - `sources` — JSON array `{page, source, score}`
-  - `token` — từng token từ LLM
-  - `error` — `{ "message": "..." }`
-  - `done` — `[DONE]`
-
----
-
-## 🏗️ Kiến trúc
-
-### Design Patterns
-
-| Pattern | Áp dụng |
-|---------|---------|
-| **Factory** | `create_chat_provider()`, `VectorStoreFactory`, `create_initialized_rag_pipeline()` |
-| **Strategy** | `ChatProvider` → `OpenRouterChatProvider`, `VectorStore` → `MilvusVectorStore` |
-| **Singleton** | `get_config()`, `get_embedder()` (@lru_cache) |
-| **Dependency Injection** | FastAPI `Depends(require_supabase_user)` |
-| **Streaming/Generator** | SSE events, LLM token streaming, SSE parser |
-| **Observer** | Supabase `onAuthStateChange` subscription |
-
-### Phân lớp Backend
-
-```
-routers/ (API endpoints, auth, validation)
-    │
-    ├── ai/rag_pipeline.py (retrieve → context → stream answer)
-    │       ├── providers/ (LLM + embeddings)
-    │       └── storage/ (vector DB)
-    │
-    └── services/pdf_indexing.py (extract → chunk → embed → insert)
-            ├── processors/ (PDF extraction + chunking)
-            ├── providers/embeddings.py (OpenRouterEmbedder)
-            └── storage/ (VectorStore)
-```
-
----
-
-## 🧪 Testing
-
-```bash
-cd backend
-python -m pytest -v
-
-# Chạy tập trung một luồng hoặc một test
+```text
+python -m pytest
 python -m pytest tests/test_vector_store.py
 python -m pytest tests/test_chat.py::test_chat_sse_stream
 ```
 
-Tests mock các API bên ngoài; không cần Milvus, OpenRouter hay Supabase đang chạy. Fixture `client` bypass authentication. Test chat đi qua `RAGPipeline`, chat provider và SSE thật; test indexing kiểm tra cleanup; test vector store kiểm tra dimension mismatch và ID chunk. Test upload mock cả indexing service và S3.
+Trong `frontend/`:
 
----
+```text
+npm run lint
+npm run typecheck
+npm test
+npx playwright install chromium
+npm run test:e2e
+npm run build
+```
 
-## 📌 Ghi chú
+- Typecheck/build cần bốn biến `NEXT_PUBLIC_API_URL`, `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY`, `NEXT_PUBLIC_SITE_URL`. Typecheck tự sinh route types trước khi chạy `tsc`. CI dùng giá trị giả hợp lệ, không gọi Auth thật.
+- Playwright tự khởi động Next dev trên `127.0.0.1:3005` và HTTP fixtures trên `127.0.0.1:8999`; không cần cloud credentials. Nó kiểm tra cookie login/reload/logout, upload, stream và xử lý mất kết nối.
+- Backend tests mock dịch vụ ngoài; fixture `client` bypass auth. `test_auth_and_limits.py` kiểm tra riêng dependency auth thật với HTTP Supabase được mock.
+- `backend/scripts/test_*.py` là diagnostic chạy thủ công. Retrieval: `python scripts/test_retrieval.py <user_id> <doc_id> "query"` — gọi dịch vụ thật.
 
-- **Không commit `.env`** — chứa API keys thực
-- **CORS** — đang cho phép `localhost:3000/3001`, cần giới hạn khi deploy
-- **Single-turn chat** — mỗi query độc lập, không lưu lịch sử hội thoại
-- **Single-document** — chỉ hỗ trợ 1 `doc_id` mỗi phiên chat
-- **Collection dimensions** — `ensure_collection()` không xoá collection hiện có. Đổi model sang dimension khác cần collection mới hoặc gọi rõ `recreate_collection()` sau khi bảo toàn dữ liệu; hàm này xoá toàn bộ chunks cũ.
-- **Connection status** — `get_connection_status()` chỉ báo trạng thái connection local, không phải health check đến server.
+## Những điểm kỹ thuật quan trọng
 
----
+- **Auth vs ownership:** token được xác thực ở API; `user_id` lấy từ token, không lấy từ body. Vector search luôn lọc owner và document.
+- **SSE:** event `sources`, `token`, `error`, `done`. Dữ liệu token và `"[DONE]"` là JSON string; lỗi giữa stream vẫn có thể đi kèm HTTP 200.
+- **Indexing:** giữ PDF gốc trước khi index; lỗi index không rollback file đã lưu. Không cấu hình S3 thì retention được bỏ qua; storage failure có warning.
+- **Dimension:** lấy từ vector trả về thực tế. Đổi embedding model cần index lại, kể cả model mới có cùng số chiều.
+- **Concurrency:** SDK đồng bộ chạy trong worker thread. Mỗi vector-store instance có connection alias riêng; mặc định chỉ một upload đang xử lý mỗi API process.
+- **Env:** backend nạp root `.env`, sau đó `backend/.env` với override. Frontend public env được đóng vào bundle lúc build.
 
-## 🌍 English Summary
+## Tài liệu
 
-**DocTrace** is a Retrieval-Augmented Generation chatbot for PDFs. The backend (FastAPI) handles PDF upload, text extraction, chunking, embedding, and vector storage in Milvus, then uses OpenRouter for streaming LLM answers over Server-Sent Events (SSE). The frontend (Next.js 14) provides a modern UI with Supabase authentication, drag-drop PDF upload, real-time streaming chat, and cited source cards with page numbers.
+- [ARCHITECTURE.md](ARCHITECTURE.md): luồng xử lý, ranh giới trách nhiệm và trade-off.
+- [DEPLOYMENT.md](DEPLOYMENT.md): Vercel + EC2/Caddy + Zilliz + Supabase, smoke test và rollback.
+- [AGENTS.md](AGENTS.md): hướng dẫn ngắn cho coding agent.
+
+Workflow [Verify](.github/workflows/verify.yml) chạy tests/build và kiểm tra container; không tự tạo tài nguyên cloud hoặc deploy.

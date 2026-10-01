@@ -1,29 +1,42 @@
-# DocTrace — Frontend
+# DocTrace frontend
 
-Next.js 14.2.21 (App Router) + Tailwind CSS. Trang chat chọn chế độ demo khi `NEXT_PUBLIC_API_URL` chưa được đặt.
+Next.js 15 App Router + React + Tailwind 3, deployed on Vercel. Node.js 22.18+.
 
-**Checkout hiện tại:** thiếu `src/lib/{api,client,server,middleware,utils}.ts`, nên chưa thể build/chạy hoàn chỉnh. Root `.gitignore` có pattern `lib/` bỏ qua cả thư mục source này; cần sửa rule khi khôi phục các module.
+## Setup
 
-## Chạy
+From `frontend/`, run `npm ci`, create `.env.local` from `.env.example`, then `npm run dev`.
 
-```bash
-cd frontend
-npm ci
-npm run dev
+Required public settings:
+
+- `NEXT_PUBLIC_API_URL`: backend origin, without `/api`.
+- `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY`: public project credentials, never service-role/S3/OpenRouter keys.
+- `NEXT_PUBLIC_SITE_URL`: frontend origin used for email confirmation callbacks.
+
+Typecheck/build require all four variables. Typecheck runs `next typegen` before `tsc` so a clean checkout has generated route types. Production build embeds `NEXT_PUBLIC_*` values; changing them on Vercel requires a rebuild. `NEXT_PUBLIC_DEMO_MODE=true` only enables fake upload/chat in development; Supabase login is still required.
+
+## Verification
+
+```text
+npm run lint
+npm run typecheck
+npm test
+npx playwright install chromium
+npm run test:e2e
+npm run build
 ```
 
-Mở [http://localhost:3000](http://localhost:3000).
+Playwright owns ports 3005 (Next dev) and 8999 (mock Supabase/API). It tests actual cookie-based Server Actions and browser streaming without cloud credentials. Stop other processes using those ports first. Traces/screenshots for failures are ignored under `test-results/`.
 
-## Tính năng
+The build uses `next/font/google`, which needs access to Google Fonts on a cold build. `npm start` serves the completed production build.
 
-- **UploadZone**: Kéo thả / chọn file PDF, progress khi index, hiển thị filename + số chunks, xử lý lỗi.
-- **ChatWindow**: Gửi câu hỏi, nhận sự kiện SSE, dùng `appendTextDelta()` để nối nội dung. `parseChatEvents` là tên local của import `streamChatSSEParser` từ API client đang thiếu.
-- **SourceCard**: Hiển thị trang, nguồn và điểm liên quan của đoạn được truy xuất.
-- **clearMessages()**: Xoá tin nhắn hiển thị; tài liệu đang chọn vẫn giữ nguyên. Chưa có thao tác tạo hội thoại được lưu trên server.
-- **Layout**: Responsive, dark mode (Tailwind `dark:`), scroll lịch sử chat, auto-scroll xuống, empty/loading/error.
+## Integration notes
 
-## Cấu hình sau khi khôi phục module còn thiếu
+- `src/lib/api.ts`: upload uses multipart, chat uses POST fetch + a ReadableStream parser. Both send a bearer token directly to FastAPI.
+- `src/lib/{client,server,middleware}.ts`: Supabase browser singleton, per-request server client and session-refresh middleware. The server helper is for cookie-writing Actions/Route Handlers, not read-only Server Components.
+- `/auth/callback`: exchanges OAuth/email confirmation codes; redirects remain on the app origin.
+- Missing backend URL is an error; it no longer silently switches to demo mode.
+- `clearMessages()` clears the displayed transcript; document selection remains. Selecting another document resets the chat. Reload clears document/transcript state but retains auth.
+- Branding is bundled from `public/logo1.png`; the root logo is not a runtime dependency.
+- `tailwind-merge` stays on 2.6 for Tailwind 3. The PostCSS override selects the patched 8.5 line for Next's transitive dependency; validate with `npm audit` and a production build when updating it.
 
-1. Tạo `.env.local` với `NEXT_PUBLIC_API_URL=http://localhost:8000` (hoặc URL backend).
-2. `src/app/chat/page.tsx` tự truyền `mock={!backendUrl}` cho upload/chat; nhánh thật gửi access token cùng request.
-3. Kiểm tra với `npx tsc --noEmit --incremental false` và `npm run build`.
+For Supabase setup, Vercel settings, EC2/Caddy and live smoke tests, see [DEPLOYMENT.md](../DEPLOYMENT.md).

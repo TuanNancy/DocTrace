@@ -1,38 +1,63 @@
 # Repository Guidelines
 
-## Project Structure & Module Organization
+## Commands and Verification
 
-- `backend/app/`: FastAPI `routers/` handles upload/chat; `processors/` extracts and chunks PDF text; `ai/` orchestrates retrieval/streaming; `providers/`, `storage/`, and `services/` integrate OpenRouter, Milvus, and Supabase. `core/` configures authentication and environment settings.
-- PDF indexing lives in `services/pdf_indexing.py:index_pdf_bytes()`. Chat uses `ai/rag_pipeline.py:RAGPipeline`; its public `retrieve_chunks()` supplies sources and `stream_answer()` reuses them. `storage/` is for vector chunks; `services/supabase_pdf_storage.py` retains original PDFs.
-- `backend/tests/` contains automated tests; `backend/scripts/` contains manual chunking/retrieval diagnostics.
-- `frontend/src/app/` contains Next.js App Router pages/routes; `frontend/src/components/` holds React UI; `frontend/src/types/` defines shared types. Styling uses Tailwind and `app/globals.css`; `logo1.png` supplies branding.
-- `docker-compose.yml` defines Milvus, etcd, MinIO, and Attu. Cross-check `README.md` and `ARCHITECTURE.md` against source; some documented modules are absent.
+- Run backend commands from `backend/`, frontend commands from `frontend/`; there is no root task runner.
+- Root: `docker compose up -d` starts Milvus, etcd, MinIO, and Attu only; start API/frontend separately. Data uses bind mounts under `volumes/`, despite the unused named-volume declarations.
+- Backend setup: `python -m venv .venv`, activate it, then `python -m pip install -r requirements.txt`. Serve with `uvicorn app.main:app --reload --port 8000`.
+- Backend tests: `python -m pytest`. Focused: `python -m pytest tests/test_vector_store.py` or `python -m pytest tests/test_chat.py::test_chat_sse_stream`. `pytest.ini` selects `tests/`; `scripts/test_*.py` are manual diagnostics — never `pytest scripts/`, `scripts/test_chunking.py` has a `test_pdf(path)` function that pytest would try to collect.
+- Frontend (Node 22.18+): `npm ci`, then `npm run dev`. Verify in CI order: `npm run lint`, `npm run typecheck`, `npm test`, `npm run build`, `npm run test:e2e`.
+- `npx playwright install chromium` once before `npm run test:e2e`. Playwright starts Next dev on 3005 and mock services on 8999; it needs free ports, not cloud credentials, and does not verify live OAuth.
+- No `lint`, `typecheck`, `build`, or e2e gate existed before this work landed; `main` was unbuildable because `.gitignore`'s `lib/` rule hid `frontend/src/lib/`, which committed code already imported. Check `git log` on those paths before assuming a green baseline.
 
-## Build, Test, and Development Commands
+## CI Contract (`.github/workflows/verify.yml`)
 
-- Root: `docker compose up -d` starts database infrastructure, excluding the API/frontend.
-- `backend/`: use Python 3.10+ (tests verified on 3.12), create/activate a virtual environment, then `pip install -r requirements.txt`.
-- `backend/`: `uvicorn app.main:app --reload --port 8000` serves the API and `/docs`.
-- `backend/`: `python -m pytest` runs tests selected by `pytest.ini`.
-- `frontend/`: `npm ci` installs locked dependencies; `npm run dev` starts development on port 3000 by default.
-- `frontend/`: `npm run build` creates production output; `npm start` serves it. `npm run lint` invokes Next.js ESLint, but no ESLint configuration is checked in.
+Three jobs, all `ubuntu-latest`: `backend` (Python 3.12, `pytest`), `frontend` (Node 22, lint → typecheck → test → build → e2e), `container`.
+- The `container` job builds `./backend` and polls `/health` with **zero environment variables**. Nothing may touch OpenRouter, Supabase, or Milvus at import or startup; `get_embedder()`'s network probe must stay inside a worker thread. `AppConfig` must survive on dataclass defaults alone.
+- That job also runs `docker compose ... config --no-env-resolution` (needs Compose v2.24+) with `BACKEND_ENV_FILE=./backend/.env.example`, and `caddy validate` on `Caddyfile`.
+- CI sets no backend env vars, so `get_config()` emits a `Configuration validation errors` warning on every pytest run. That warning is expected, not a failure.
 
-## Current Checkout Limitations
+## Frontend Gotchas
 
-Frontend imports require missing `frontend/src/lib/{api,client,server,middleware,utils}.ts` modules, blocking builds. The root `.gitignore` pattern `lib/` also ignores this directory; address it when restoring modules.
+- `next.config.mjs` throws during `PHASE_PRODUCTION_BUILD` unless four vars are set: `NEXT_PUBLIC_API_URL`, `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY`, `NEXT_PUBLIC_SITE_URL`. `frontend/.env.example` lists five — `NEXT_PUBLIC_DEMO_MODE` is optional. Because `next typegen` also loads the production-build phase, `npm run typecheck` needs them too; `npm test` does not.
+- `NEXT_PUBLIC_API_URL` is the API origin without `/api`; `src/lib/api.ts` appends `/api/upload` and `/api/chat`. Missing value throws rather than falling back to mocks. Demo mode requires `NODE_ENV=development` **and** `NEXT_PUBLIC_DEMO_MODE=true`.
+- Supabase middleware validates with `getUser()` and must preserve refreshed cookies on request, on the replacement response, and on redirects. Every matcher-matched response sets `Cache-Control: private, no-store`. `tests/middleware.test.ts` guards this.
+- `lib/server.ts` is for cookie-writing Actions and Route Handlers, not read-only Server Components. Email confirmation goes through `/auth/callback`; never sign out a pending signup or you erase the PKCE verifier.
+- Lint is ESLint 8 with legacy `frontend/.eslintrc.json`. The `--ext` flag in the `lint` script was removed in ESLint 9, so the `^8` range must not float upward. Lint covers `src` and `tests`.
+- Vitest runs `environment: "node"` over `tests/**/*.test.ts` only — no jsdom, e2e specs excluded. Playwright uses `reporter: "list"`, so no `playwright-report/` is produced; `frontend/test-results/` is the artifact CI uploads.
+- Tailwind is v3; keep `tailwind-merge` on 2.6. The postcss pin is an npm `overrides` entry in `package.json`, and `package-lock.json` does **not** record that field — a lockfile regenerated by a different npm can silently restore Next's postcss 8.4.31. Verify `npm ls postcss` after any lock change.
+- Root `.gitignore` explicitly unignores `frontend/src/lib/`; do not re-add a bare `lib/` rule. Root `logo1.png` and `test.pdf` are unreferenced leftovers.
 
-## Coding Style & Naming Conventions
+## Backend Boundaries
 
-Follow existing Python style: four spaces, `snake_case` functions/modules, `PascalCase` classes, and type annotations. TypeScript uses two spaces, double quotes, semicolons, `PascalCase` component filenames, and `camelCase` functions. Strict mode and the `@/*` alias are configured. No Python formatter/linter is configured.
+Paths below are relative to `backend/app/`.
 
-## Testing Guidelines
+- `AppConfig` in `core/config.py` is a stdlib `@dataclass` reading `os.getenv` by hand — not pydantic-settings. Pydantic only types request models in `schemas.py`. Four values raise `ValueError` from `__post_init__` if `<= 0`: `UPLOAD_MAX_CONCURRENT`, `MAX_CHUNKS_PER_DOCUMENT`, `EMBEDDING_BATCH_SIZE`, `UPSTREAM_TIMEOUT_SECONDS`.
+- `config.py` loads root `.env`, then `backend/.env` with `override=True`, overriding even real process env, at import time. `get_config()` caches and never invalidates. Keep OpenRouter and S3 secrets backend-only, outside `NEXT_PUBLIC_*`.
+- `CORS_ALLOW_ORIGINS` bypasses `AppConfig` entirely — it is `os.getenv` in `main.py`. It only sees `.env` values because routers are imported before it is read, so do not reorder those imports. The code default includes the 3001 origin pair that `backend/.env.example` omits.
+- `MILVUS_VECTOR_DIM` and `EMBEDDING_DIMENSION` are parsed and never read; `MilvusVectorStore.vector_dim` is assigned and unused. `upload_allowed_content_types` is hardcoded to `("application/pdf",)` with no env override.
+- `routers/upload.py` owns auth, validation, document IDs, and original-PDF retention in Supabase S3. It retains before `services/pdf_indexing.py:index_pdf_bytes()`; indexing failure does not remove the retained PDF. `ValueError` maps to 400, everything else to a generic 500 — note that empty embeddings raise `RuntimeError`, so they surface as 500.
+- `routers/chat.py` calls `ai/rag_pipeline.py:RAGPipeline.retrieve_chunks()` once for sources, then passes `retrieved_chunks_override` to `stream_answer()` to avoid duplicate retrieval. Preserve `shutdown()` in `finally`.
+- Index and search take keyword-only `user_id` from verified auth, never request JSON; `ChatRequest` sets `extra="forbid"`. New collections carry a VARCHAR `user_id`; legacy unowned collections require a new name and PDF re-upload.
+- Each vector-store instance owns a unique connection alias; pass it to every SDK operation and remove only that alias during cleanup. Blocking SDK, PDF, and embedding work runs in worker threads. Searches use `consistency_level="Strong"` because every request opens a new alias. Upload concurrency is per process; production runs one worker.
+- `MILVUS_URI`/`MILVUS_TOKEN` select Zilliz HTTPS and default AUTOINDEX; host/port mode defaults IVF_FLAT. Do not send IVF-only `nlist`/`nprobe` parameters to AUTOINDEX.
+- Indexing takes vector dimensions from the actual embedding response. `ensure_collection()` rejects incompatible or unreadable dimensions and missing `user_id` without deleting data; only `recreate_collection()` deletes. Changing dimension env vars never resizes model output.
+- SSE uses `sources`, `token`, `error`, and `done` events. Text deltas and the `"[DONE]"` sentinel are JSON-encoded strings; `done` is the event name. Mid-stream failures emit `error` + `done` under HTTP 200 with a generic message. `backend/tests/test_chat.py` is the wire contract.
+- `providers/embeddings.py:get_embedder()` is `lru_cache`d and probes OpenRouter over the network on first construction. Chat and embeddings both use OpenRouter despite the OpenAI SDK.
+- `get_connection_status()` is local state only and has **no HTTP route** — do not look for one. `/health` is liveness. Neither probes remote services. There is no logging configuration in `backend/app`, so `logger.info` calls are dropped by uvicorn and there is no `LOG_LEVEL`.
+- `pytest` and `pytest-asyncio` live in the runtime `requirements.txt`, so the production image ships them. `asyncio_mode = auto` means async tests need no marker.
 
-Use pytest/pytest-asyncio with `test_*.py` files and `test_*` functions. The TestClient fixture bypasses authentication; it does not test real auth. Upload tests mock `app.routers.upload.index_pdf_bytes` and `app.routers.upload.try_upload_pdf`; preserve both boundaries to avoid real external calls. Chat tests exercise the real pipeline/provider/SSE with external services mocked. Focused verification from `backend/`: `python -m pytest tests/test_vector_store.py` or `python -m pytest tests/test_chat.py::test_chat_sse_stream`. No frontend test runner exists; manually verify UI changes.
+## Deployment
 
-## Commit & Pull Request Guidelines
+- Production: `docker compose --env-file .env.production -f compose.production.yml up -d --build` for API + Caddy only. See `DEPLOYMENT.md`; `backend/.env` holds runtime secrets.
+- `--env-file .env.production` replaces the default `.env` for interpolation, so a root `.env` value for `BACKEND_ENV_FILE` is ignored; the compose default is `./backend/.env`.
+- `backend/.dockerignore` is an allowlist: only `requirements.txt` and `app/` enter the build context, so tests, scripts, and `.env` never reach the daemon. The container is `read_only: true` with `tmpfs /tmp:size=256m`, which is load-bearing for `index_pdf_bytes`'s `NamedTemporaryFile`.
+- The `api` service uses `expose` with no host port; only Caddy reaches it. `caddy_data` and `caddy_config` hold ACME certificates and must survive `docker compose down` without `-v`.
+- CI and the Dockerfile both require `/health` and `backend/.env.example`, both of which arrive with the backend refactor. Merge that branch before this one.
 
-History uses imperative subjects such as `Update`, `Add`, and `Refactor`, without mandatory prefixes. Recommended PR content: purpose, relevant issues, validation results/blockers, and UI screenshots.
+## Test Isolation
 
-## Security & Configuration
-
-Use ignored environment files: root `.env`, overriding `backend/.env`, and `frontend/.env.local`. Never place OpenRouter/S3 secrets in `NEXT_PUBLIC_*`. `MilvusVectorStore.ensure_collection()` rejects dimension mismatches without deleting data; only explicit `recreate_collection()` deletes existing chunks. `get_connection_status()` checks local connection state, not server health.
+- Backend tests mock external services; running Milvus, OpenRouter, or Supabase is unnecessary. The `client` fixture overrides auth and uses `TestClient` as a context manager so lifespan initializes upload admission. `test_auth_and_limits.py` exercises the real auth dependency with mocked HTTP.
+- Patch the module that *defines* the symbol, not the one that consumes it. `rag_pipeline.initialize` and `pdf_indexing` use function-local imports, so tests patch `app.storage.factory`, `app.providers.factory`, `app.processors.pdf`, and `app.providers.embeddings`. `routers/upload.py` imports at module top, so `@patch("app.routers.upload.index_pdf_bytes")` and `...try_upload_pdf` are correct.
+- Chat tests keep the real pipeline, provider, and SSE framing and mock only embeddings, vector store, and completion calls. `test_chat.py` stubs `rag_pipeline.get_config` with a `SimpleNamespace`, so any new config attribute read on that path must be added there.
+- Playwright needs ports 3005 and 8999 free. In e2e, `NEXT_PUBLIC_API_URL` and `NEXT_PUBLIC_SUPABASE_URL` deliberately point at the same mock origin.
