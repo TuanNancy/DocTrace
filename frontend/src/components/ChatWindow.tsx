@@ -39,6 +39,9 @@ export const ChatWindow = forwardRef<ChatWindowHandle, ChatWindowProps>(
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const scrollRef = useRef<HTMLDivElement>(null);
+    const activeRequest = useRef<AbortController | null>(null);
+
+    useEffect(() => () => activeRequest.current?.abort(), []);
 
     useEffect(() => {
       scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
@@ -48,6 +51,7 @@ export const ChatWindow = forwardRef<ChatWindowHandle, ChatWindowProps>(
       ref,
       () => ({
         clearMessages: () => {
+          activeRequest.current?.abort();
           setMessages([]);
           setError(null);
         },
@@ -133,6 +137,8 @@ export const ChatWindow = forwardRef<ChatWindowHandle, ChatWindowProps>(
           return;
         }
 
+        const controller = new AbortController();
+        activeRequest.current = controller;
         try {
           const { streamChat } = await import("@/lib/api");
           if (!accessToken) {
@@ -141,7 +147,7 @@ export const ChatWindow = forwardRef<ChatWindowHandle, ChatWindowProps>(
             setLoading(false);
             return;
           }
-          const res = await streamChat(q, docId!, accessToken);
+          const res = await streamChat(q, docId!, accessToken, controller.signal);
           if (!res || !res.body) {
             setError("Không thể kết nối. Kiểm tra backend.");
             finishStreaming(assistantId);
@@ -156,9 +162,12 @@ export const ChatWindow = forwardRef<ChatWindowHandle, ChatWindowProps>(
           }
           finishStreaming(assistantId);
         } catch (err) {
-          setError(err instanceof Error ? err.message : "Lỗi khi gửi tin nhắn.");
+          if (!controller.signal.aborted) {
+            setError(err instanceof Error ? err.message : "Lỗi khi gửi tin nhắn.");
+          }
           finishStreaming(assistantId);
         } finally {
+          activeRequest.current = null;
           setLoading(false);
         }
       },

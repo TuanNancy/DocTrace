@@ -1,6 +1,5 @@
 "use server";
 
-import { headers } from "next/headers";
 import { createClient } from "@/lib/server";
 
 type AuthActionState = {
@@ -8,21 +7,9 @@ type AuthActionState = {
   message: string;
 };
 
-function normalizeOriginValue(value: string | null): string {
-  if (!value) return "http://localhost:3000";
-  const first = value.split(",")[0].trim();
-  if (first.startsWith("http://") || first.startsWith("https://")) return first;
-  return `https://${first}`;
-}
-
 async function resolveRedirectUrl(path: string): Promise<string> {
-  const h = await headers();
-  const originHeader = h.get("origin");
-  const hostHeader = h.get("x-forwarded-host") ?? h.get("host");
-  const envSiteUrl = process.env.NEXT_PUBLIC_SITE_URL;
-  const origin = envSiteUrl || originHeader || hostHeader || "http://localhost:3000";
-  const resolvedOrigin = normalizeOriginValue(origin);
-  return `${resolvedOrigin}${path}`;
+  const origin = process.env.NEXT_PUBLIC_SITE_URL || "http://localhost:3000";
+  return new URL(path, origin).toString();
 }
 
 export async function loginAction(
@@ -78,8 +65,8 @@ export async function signupAction(
   }
 
   const supabase = await createClient();
-  const emailRedirectTo = await resolveRedirectUrl("/auth/login");
-  const { error } = await supabase.auth.signUp({
+  const emailRedirectTo = await resolveRedirectUrl("/auth/callback?next=/chat");
+  const { data, error } = await supabase.auth.signUp({
     email,
     password,
     options: {
@@ -93,7 +80,8 @@ export async function signupAction(
   }
 
   // Keep signup flow deterministic: always continue from login screen.
-  await supabase.auth.signOut();
+  // Keep the PKCE verifier for the email callback when confirmation is required.
+  if (data.session) await supabase.auth.signOut();
 
   return {
     status: "success",

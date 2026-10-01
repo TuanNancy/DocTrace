@@ -1,6 +1,8 @@
 "use client";
 
 import Link from "next/link";
+import Image from "next/image";
+import logo from "../../../public/logo1.png";
 import { useEffect, useMemo, useState } from "react";
 import { useFormState } from "react-dom";
 import { useRouter } from "next/navigation";
@@ -24,6 +26,8 @@ export function LoginForms() {
   const supabase = useMemo(() => createClient(), []);
   const [oauthLoading, setOauthLoading] = useState(false);
   const [oauthError, setOauthError] = useState<string | null>(null);
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [loginState, loginFormAction] = useFormState(
     loginAction,
     INITIAL_AUTH_ACTION_STATE
@@ -72,6 +76,8 @@ export function LoginForms() {
           <form action={loginFormAction} className="mt-5 space-y-3">
             <input
               name="email"
+              value={email}
+              onChange={(event) => setEmail(event.target.value)}
               type="email"
               placeholder="Email"
               required
@@ -79,6 +85,8 @@ export function LoginForms() {
             />
             <input
               name="password"
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
               type="password"
               placeholder="Password"
               required
@@ -127,8 +135,9 @@ export function LoginForms() {
         </section>
 
         <section className="flex items-end justify-center border-t border-[#8f1b1b] bg-[#B22222] p-0 md:border-l md:border-t-0">
-          <img
-            src="/brand/logo"
+          <Image
+            src={logo}
+            sizes="(max-width: 768px) 100vw, 520px"
             alt="Baymax logo"
             className="h-auto max-h-[640px] w-full max-w-[520px] object-contain object-bottom"
           />

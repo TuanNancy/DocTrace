@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import Image from "next/image";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { User } from "@supabase/supabase-js";
@@ -23,8 +24,7 @@ export default function ChatPage() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [profileMenuOpen, setProfileMenuOpen] = useState(false);
   const profileMenuRef = useRef<HTMLDivElement>(null);
-  const backendUrl = process.env.NEXT_PUBLIC_API_URL as string | undefined;
-  const mock = !backendUrl;
+  const mock = process.env.NODE_ENV === "development" && process.env.NEXT_PUBLIC_DEMO_MODE === "true";
   const supabase = useMemo(() => createClient(), []);
 
   const handleUploadComplete = (res: UploadResponse) => {
@@ -216,7 +216,7 @@ export default function ChatPage() {
                 aria-haspopup="true"
               >
                 {avatarUrl ? (
-                  <img src={avatarUrl} alt="" className="h-10 w-10 shrink-0 rounded-full object-cover" />
+                  <Image src={avatarUrl} alt="" width={40} height={40} unoptimized className="h-10 w-10 shrink-0 rounded-full object-cover" />
                 ) : (
                   <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-[#B22222] to-[#7a1818] text-sm font-semibold text-white">
                     {initials}
@@ -304,6 +304,7 @@ export default function ChatPage() {
 
           <div className="flex min-h-0 flex-1 flex-col">
             <ChatWindow
+              key={docId ?? "no-document"}
               ref={chatRef}
               docId={docId}
               mock={mock}
