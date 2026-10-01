@@ -88,7 +88,7 @@ backend/app/
 
 ## Frontend Structure
 
-The `lib/` modules below are expected by imports but missing from the current checkout, blocking typecheck/build. The root `.gitignore` pattern `lib/` also ignores them.
+The shared `lib/` modules are tracked via an exception to the root Python `lib/` ignore rule. Frontend verification includes typecheck, ESLint, Vitest and a Chromium journey with loopback Auth/API fixtures.
 
 ```
 frontend/src/
@@ -97,11 +97,12 @@ frontend/src/
 ├── types/
 │   └── index.ts               # TypeScript types
 │
-├── lib/                       # Missing modules expected by callers
+├── lib/                       # Shared API and auth adapters
 │   ├── api.ts                 # streamChat(), uploadPDF(), SSE parser
 │   ├── client.ts              # Supabase browser client
 │   ├── server.ts              # Supabase server client
 │   ├── middleware.ts          # updateSession() for auth redirect
+│   ├── supabase-config.ts     # Public project URL and key validation
 │   └── utils.ts               # cn() — clsx + tailwind-merge
 │
 ├── app/
@@ -133,7 +134,9 @@ frontend/src/
         └── AuthSubmitButton.tsx
 ```
 
-`ChatWindow` uses `createMessageId()`, `appendTextDelta()`, and the local parser alias `parseChatEvents` (imported as `streamChatSSEParser` from the missing API client). The wire event name remains `token`. `clearMessages()` only clears the displayed transcript; it does not create a persistent conversation or change the selected document. Auth actions use `normalizeOriginValue()` for the selected env/header URL value.
+`ChatWindow` uses `createMessageId()`, `appendTextDelta()`, and the local parser alias `parseChatEvents` (imported as `streamChatSSEParser`). The wire event name remains `token`. `clearMessages()` aborts the request, clears transcript/draft/error and unlocks input without changing the selected document. Changing documents resets chat and aborts old requests. `UploadZone` serializes uploads and ignores late results after unmount. API requests forward Supabase Bearer tokens and AbortSignals.
+
+Password login redirects from the server action after session cookies are written. Middleware validates with `getUser()`, propagates refreshed cookies to both request and response, and disables shared caching. Auth actions use `normalizeOriginValue()` for the selected env/header URL value.
 
 ## Key Configuration
 

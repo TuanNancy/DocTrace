@@ -14,6 +14,9 @@ downloads/
 eggs/
 .eggs/
 lib/
+# Frontend source is not a Python library directory.
+!frontend/src/lib/
+!frontend/src/lib/**
 lib64/
 parts/
 sdist/
@@ -56,6 +59,8 @@ frontend/.next/
 frontend/out/
 frontend/node_modules/
 frontend/tsconfig.tsbuildinfo
+frontend/test-results/
+frontend/playwright-report/
 
 # Optional
 *.bak

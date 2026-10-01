@@ -1,10 +1,10 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { uploadPDF } from "@/lib/api";
 import type { UploadResponse } from "@/types";
 
-type Status = "idle" | "dragging" | "uploading" | "success" | "error";
+type Status = "idle" | "uploading" | "success" | "error";
 
 interface UploadZoneProps {
   onUploadComplete?: (res: UploadResponse) => void;
@@ -25,119 +25,98 @@ export function UploadZone({
   const [result, setResult] = useState<UploadResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [filename, setFilename] = useState<string | null>(null);
+  const [dragging, setDragging] = useState(false);
+  const activeUpload = useRef<AbortController | null>(null);
+
+  useEffect(() => () => { activeUpload.current?.abort(); }, []);
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    setStatus("dragging");
+    if (!activeUpload.current) setDragging(true);
   }, []);
 
   const handleDragLeave = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    setStatus("idle");
+    setDragging(false);
   }, []);
 
-  const simulateUpload = useCallback(
-    (file: File) => {
+  const uploadFile = useCallback(
+    async (file: File) => {
+      // A ref guards the request immediately, before React renders the busy state.
+      if (activeUpload.current) return;
+      if (file.type !== "application/pdf") {
+        setError("Chỉ chấp nhận file PDF.");
+        setStatus("error");
+        return;
+      }
+      const controller = new AbortController();
+      activeUpload.current = controller;
       setStatus("uploading");
       setError(null);
       setResult(null);
       setFilename(file.name);
-      setProgress(0);
-      const step = 100 / 20;
-      let n = 0;
-      const t = setInterval(() => {
-        n += 1;
-        setProgress(Math.min(n * step, 100));
-        if (n >= 20) {
-          clearInterval(t);
-          const res: UploadResponse = {
+      setProgress(mock ? 0 : 30);
+
+      try {
+        let res: UploadResponse;
+        if (mock) {
+          for (let n = 1; n <= 20; n++) {
+            await new Promise((resolve) => setTimeout(resolve, 120));
+            if (controller.signal.aborted) return;
+            setProgress(n * 5);
+          }
+          res = {
             doc_id: `mock-${Date.now()}`,
             chunks_count: Math.max(3, Math.floor(Math.random() * 15)),
             message: "Upload and indexing completed (mock).",
           };
-          setResult(res);
-          setStatus("success");
-          onUploadComplete?.(res);
-        }
-      }, 120);
-    },
-    [onUploadComplete]
-  );
-
-  const uploadToBackend = useCallback(
-    async (file: File) => {
-      setStatus("uploading");
-      setError(null);
-      setResult(null);
-      setFilename(file.name);
-      setProgress(30);
-
-      try {
-        if (!accessToken) {
-          throw new Error("Thiếu phiên đăng nhập. Vui lòng đăng nhập lại.");
-        }
-        const res = await uploadPDF(file, accessToken);
-        if (!res) {
-          throw new Error(
-            "Không thể kết nối backend. Hãy kiểm tra `NEXT_PUBLIC_API_URL`."
-          );
+        } else {
+          if (!accessToken) throw new Error("Thiếu phiên đăng nhập. Vui lòng đăng nhập lại.");
+          res = await uploadPDF(file, accessToken, controller.signal);
         }
 
+        if (controller.signal.aborted) return;
         setResult(res);
         setProgress(100);
         setStatus("success");
         onUploadComplete?.(res);
       } catch (err) {
-        setError(err instanceof Error ? err.message : "Upload failed.");
-        setStatus("error");
+        if (!controller.signal.aborted) {
+          setError(err instanceof Error ? err.message : "Upload failed.");
+          setStatus("error");
+        }
+      } finally {
+        if (activeUpload.current === controller) activeUpload.current = null;
       }
     },
-    [accessToken, onUploadComplete]
+    [mock, accessToken, onUploadComplete]
   );
 
   const handleDrop = useCallback(
     async (e: React.DragEvent) => {
       e.preventDefault();
       e.stopPropagation();
-      setStatus("idle");
+      setDragging(false);
       const file = e.dataTransfer.files?.[0];
       if (!file) return;
-      if (file.type !== "application/pdf") {
-        setError("Chỉ chấp nhận file PDF.");
-        setStatus("error");
-        return;
-      }
-      if (mock) {
-        simulateUpload(file);
-      } else {
-        await uploadToBackend(file);
-      }
+      await uploadFile(file);
     },
-    [mock, simulateUpload, uploadToBackend]
+    [uploadFile]
   );
 
   const handleFileInput = useCallback(
     async (e: React.ChangeEvent<HTMLInputElement>) => {
       const file = e.target.files?.[0];
-      if (!file) return;
-      if (file.type !== "application/pdf") {
-        setError("Chỉ chấp nhận file PDF.");
-        setStatus("error");
-        return;
-      }
-      if (mock) {
-        simulateUpload(file);
-      } else {
-        await uploadToBackend(file);
-      }
       e.target.value = "";
+      if (!file) return;
+      await uploadFile(file);
     },
-    [mock, simulateUpload, uploadToBackend]
+    [uploadFile]
   );
 
-  const isActive = status === "dragging" || status === "uploading";
+  const isActive = dragging || status === "uploading";
 
   return (
     <div
@@ -158,19 +137,10 @@ export function UploadZone({
             <p className="text-center text-slate-600 dark:text-slate-400">
               Kéo thả file PDF vào đây hoặc nhấn để chọn
             </p>
-            <label className="cursor-pointer rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600">
-              Chọn file
-              <input
-                type="file"
-                accept="application/pdf"
-                className="sr-only"
-                onChange={handleFileInput}
-              />
-            </label>
           </>
         )}
 
-        {status === "dragging" && (
+        {dragging && (
           <p className="text-blue-600 dark:text-blue-400">Thả file để tải lên</p>
         )}
 
@@ -237,6 +207,16 @@ export function UploadZone({
             </p>
           </div>
         )}
+        <label className={`rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white focus-within:ring-2 focus-within:ring-blue-400 dark:bg-blue-500 ${status === "uploading" ? "cursor-not-allowed opacity-50" : "cursor-pointer hover:bg-blue-700 dark:hover:bg-blue-600"}`}>
+          {status === "success" ? "Chọn file khác" : status === "error" ? "Thử lại" : "Chọn file"}
+          <input
+            type="file"
+            accept="application/pdf"
+            className="sr-only"
+            onChange={handleFileInput}
+            disabled={status === "uploading"}
+          />
+        </label>
       </div>
     </div>
   );

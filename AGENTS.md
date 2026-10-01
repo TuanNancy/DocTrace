@@ -15,11 +15,12 @@
 - `backend/`: `uvicorn app.main:app --reload --port 8000` serves the API and `/docs`.
 - `backend/`: `python -m pytest` runs tests selected by `pytest.ini`.
 - `frontend/`: `npm ci` installs locked dependencies; `npm run dev` starts development on port 3000 by default.
-- `frontend/`: `npm run build` creates production output; `npm start` serves it. `npm run lint` invokes Next.js ESLint, but no ESLint configuration is checked in.
+- `frontend/`: `npm run build` creates production output; `npm start` serves it. `npm run lint` uses `.eslintrc.json`; `npm run typecheck` checks TypeScript; `npm test` runs Vitest.
+- `frontend/`: install Chromium with `npx playwright install chromium`, then `npm run test:e2e`. It starts Next dev and loopback Auth/API fixtures on ports 4310/4311 and cleans up afterward. CI uses Node 22 and installs Chromium with OS dependencies.
 
 ## Current Checkout Limitations
 
-Frontend imports require missing `frontend/src/lib/{api,client,server,middleware,utils}.ts` modules, blocking builds. The root `.gitignore` pattern `lib/` also ignores this directory; address it when restoring modules.
+Frontend `src/lib/` is restored and explicitly unignored. Use `frontend/.env.example` for Supabase public settings and API URL; build-time `NEXT_PUBLIC_*` changes require a rebuild. The backend still uses Milvus host/port rather than a Zilliz URI/token adapter.
 
 ## Coding Style & Naming Conventions
 
@@ -27,7 +28,7 @@ Follow existing Python style: four spaces, `snake_case` functions/modules, `Pasc
 
 ## Testing Guidelines
 
-Use pytest/pytest-asyncio with `test_*.py` files and `test_*` functions. The TestClient fixture bypasses authentication; it does not test real auth. Upload tests mock `app.routers.upload.index_pdf_bytes` and `app.routers.upload.try_upload_pdf`; preserve both boundaries to avoid real external calls. Chat tests exercise the real pipeline/provider/SSE with external services mocked. Focused verification from `backend/`: `python -m pytest tests/test_vector_store.py` or `python -m pytest tests/test_chat.py::test_chat_sse_stream`. No frontend test runner exists; manually verify UI changes.
+Use pytest/pytest-asyncio with `test_*.py` files and `test_*` functions. The TestClient fixture bypasses authentication; it does not test real auth. Upload tests mock `app.routers.upload.index_pdf_bytes` and `app.routers.upload.try_upload_pdf`; preserve both boundaries to avoid real external calls. Chat tests exercise the real pipeline/provider/SSE with external services mocked. Focused verification from `backend/`: `python -m pytest tests/test_vector_store.py` or `python -m pytest tests/test_chat.py::test_chat_sse_stream`. Frontend regression tests live in `frontend/tests/`; Vitest mocks service boundaries and Playwright exercises real UI/cookies with fake local services. Neither validates real cloud OAuth or RAG.
 
 ## Commit & Pull Request Guidelines
 

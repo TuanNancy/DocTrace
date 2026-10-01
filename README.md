@@ -232,7 +232,9 @@ npm run dev
 
 Mở `http://localhost:3000`
 
-**Checkout hiện tại:** `frontend/src/lib/{api,client,server,middleware,utils}.ts` đang thiếu nên frontend chưa build được. Pattern `lib/` trong `.gitignore` cũng bỏ qua thư mục này; cần sửa rule khi khôi phục module. `ChatWindow` dùng tên local `parseChatEvents` cho import `streamChatSSEParser` từ API client.
+Trước khi chạy, tạo `frontend/.env.local` theo `frontend/.env.example`, điền URL/public key Supabase, Site URL và API URL. Các module `frontend/src/lib/` đã được khôi phục và có ngoại lệ Git ignore. `ChatWindow` dùng tên local `parseChatEvents` cho `streamChatSSEParser`.
+
+Kiểm tra trong `frontend/`: `npm run typecheck`, `npm run lint`, `npm test`, `npm run build`. Browser test: `npx playwright install chromium` rồi `npm run test:e2e`. Xem [frontend/README.md](frontend/README.md) cho cấu hình Vercel/Supabase và phạm vi fixtures.
 
 ---
 
