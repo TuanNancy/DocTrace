@@ -14,6 +14,8 @@ downloads/
 eggs/
 .eggs/
 lib/
+!frontend/src/lib/
+!frontend/src/lib/**
 lib64/
 parts/
 sdist/
@@ -25,6 +27,9 @@ wheels/
 
 # Environment & secrets
 .env
+.env.*
+!.env.example
+!.env.*.example
 .env.local
 .env.*.local
 
@@ -56,6 +61,8 @@ frontend/.next/
 frontend/out/
 frontend/node_modules/
 frontend/tsconfig.tsbuildinfo
+frontend/playwright-report/
+frontend/test-results/
 
 # Optional
 *.bak
