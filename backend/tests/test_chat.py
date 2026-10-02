@@ -18,16 +18,19 @@ from app.storage.base import RetrievedChunk, VectorStore
 @pytest.fixture
 def chat_dependencies(monkeypatch):
     config = SimpleNamespace(
-        model="test-model", vector_store_type="milvus", retrieval_top_k=8,
+        model="test-model", retrieval_top_k=8,
         min_relevance_score=0.32, context_max_chars=6000, temperature=0.7, max_tokens=4096,
     )
     monkeypatch.setattr(rag_pipeline, "get_config", lambda: config)
     embedder = MagicMock()
     embedder.embed_documents.return_value = [[0.1, 0.2, 0.3]]
-    monkeypatch.setattr(rag_pipeline, "get_embedder", lambda: embedder)
+    monkeypatch.setattr(rag_pipeline, "get_embedder", lambda **kwargs: embedder)
     vector_store = AsyncMock(spec=VectorStore)
     vector_store.search_chunks.return_value = [
         RetrievedChunk("chunk-1", "test-doc-id", "Twelve days of annual leave.", 2, "policy.pdf", 0.9)
+    ]
+    vector_store.get_document_chunks.return_value = [
+        RetrievedChunk("chunk-1", "test-doc-id", "Twelve days of annual leave.", 2, "policy.pdf", None)
     ]
     monkeypatch.setattr(vector_store_factory, "create_vector_store", lambda **kwargs: vector_store)
 
@@ -37,7 +40,7 @@ def chat_dependencies(monkeypatch):
 
     create_completion = AsyncMock(return_value=completion_stream())
     client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create_completion)))
-    provider = OpenRouterChatProvider(api_key="test-key", model="test-model")
+    provider = OpenRouterChatProvider(api_key="test-key", model="test-model", base_url="https://example.test/v1", timeout=10)
     monkeypatch.setattr(provider, "_get_client", lambda: client)
     monkeypatch.setattr(provider_factory, "create_chat_provider", lambda **kwargs: provider)
     return SimpleNamespace(
@@ -187,4 +190,88 @@ def test_chat_without_sources_skips_completion(chat_dependencies, client: TestCl
     assert "No sufficiently relevant passages" in events[1][1]
     assert events[2] == ("done", "[DONE]")
     deps.create_completion.assert_not_awaited()
+    deps.vector_store.disconnect.assert_awaited_once()
+
+
+@pytest.mark.parametrize("query", [
+    "hãy tóm tắt file pdf này cho tôi", "file này viết về cái gì vậy",
+    "Tài liệu này nói về điều gì?", "Nội dung chính của PDF là gì?",
+    "tom tat tai lieu nay", "Summarize this PDF", "What is this document about?",
+])
+def test_document_overview_uses_owned_content_without_embeddings(chat_dependencies, client, monkeypatch, query):
+    deps = chat_dependencies
+    get_embedder = MagicMock(side_effect=RuntimeError("embedding service unavailable"))
+    monkeypatch.setattr(rag_pipeline, "get_embedder", get_embedder)
+    response = client.post("/api/chat", json={"query": query, "doc_id": "test-doc-id"})
+    events = parse_sse_events(response)
+    assert [event[0] for event in events] == ["sources", "token", "token", "done"]
+    assert events[0][1] == [{"page": 2, "source": "policy.pdf", "score": None}]
+    deps.vector_store.get_document_chunks.assert_awaited_once_with(
+        "test-doc-id", user_id="00000000-0000-0000-0000-000000000001",
+    )
+    get_embedder.assert_not_called()
+    deps.vector_store.search_chunks.assert_not_awaited()
+    assert "Twelve days of annual leave." in deps.create_completion.call_args.kwargs["messages"][1]["content"]
+    assert deps.create_completion.call_args.kwargs["extra_body"] == {"reasoning": {"enabled": False}}
+    deps.vector_store.disconnect.assert_awaited_once()
+
+
+def test_summary_of_other_users_document_does_not_generate(chat_dependencies, client):
+    deps = chat_dependencies
+
+    async def owned_document(doc_id, *, user_id):
+        assert user_id == "00000000-0000-0000-0000-000000000001"
+        assert doc_id == "someone-elses-doc"
+        return []
+
+    deps.vector_store.get_document_chunks.side_effect = owned_document
+    response = client.post("/api/chat", json={"query": "Tóm tắt PDF này", "doc_id": "someone-elses-doc"})
+    events = parse_sse_events(response)
+    assert events[0] == ("sources", [])
+    assert "Không tìm thấy nội dung" in events[1][1]
+    assert events[-1] == ("done", "[DONE]")
+    deps.create_completion.assert_not_awaited()
+    deps.vector_store.search_chunks.assert_not_awaited()
+
+
+def test_long_summary_covers_all_chunks_including_document_end(chat_dependencies, client):
+    deps = chat_dependencies
+    deps.vector_store.get_document_chunks.return_value = [
+        RetrievedChunk(str(i), "doc", f"SECTION-{i} " + "x" * 4000, i, "long.pdf", None)
+        for i in range(3)
+    ]
+
+    async def final_stream():
+        yield SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content="Summary."))])
+
+    async def completion(**params):
+        if params.get("stream"):
+            return final_stream()
+        content = params["messages"][1]["content"]
+        section = next(i for i in range(3) if f"SECTION-{i}" in content)
+        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=f"Notes-{section} (trang {section})"))])
+
+    deps.create_completion.side_effect = completion
+    events = parse_sse_events(client.post("/api/chat", json={"query": "Tóm tắt tài liệu", "doc_id": "doc"}))
+    assert [event[0] for event in events] == ["sources", "token", "done"]
+    calls = deps.create_completion.call_args_list
+    assert len(calls) == 4
+    for call in calls[:-1]:
+        assert call.kwargs["extra_body"] == {"reasoning": {"enabled": False}}
+        context = call.kwargs["messages"][1]["content"].split("\n\nQuestion:")[0].removeprefix("Context:\n")
+        assert len(context) <= 6000
+    final_context = calls[-1].kwargs["messages"][1]["content"]
+    assert all(f"Notes-{i}" in final_context for i in range(3))
+    assert [source["page"] for source in events[0][1]] == [0, 1, 2]
+    deps.embedder.embed_documents.assert_not_called()
+
+
+def test_summary_stage_failure_emits_error_and_cleans_up(chat_dependencies, client):
+    deps = chat_dependencies
+    deps.vector_store.get_document_chunks.return_value = [
+        RetrievedChunk("1", "doc", "x" * 8000, 1, "long.pdf", None),
+    ]
+    deps.create_completion.side_effect = RuntimeError("upstream failed")
+    events = parse_sse_events(client.post("/api/chat", json={"query": "Summarize this PDF", "doc_id": "doc"}))
+    assert [event[0] for event in events] == ["sources", "error", "done"]
     deps.vector_store.disconnect.assert_awaited_once()

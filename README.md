@@ -60,7 +60,7 @@ RAG-PDF-chatbot/
 │   │   ├── storage/
 │   │   │   ├── base.py           # VectorStore + RetrievedChunk/InsertResult
 │   │   │   ├── milvus_vector_store.py # MilvusVectorStore (pymilvus)
-│   │   │   └── factory.py        # VectorStoreFactory + connection helpers
+│   │   │   └── factory.py        # Milvus adapter construction + connection helpers
 │   │   │
 │   │   ├── ai/
 │   │   │   ├── prompts.py        # System prompts (VI + EN) + PromptTemplates
@@ -142,7 +142,7 @@ RAG-PDF-chatbot/
 
 ### Backend `.env`
 
-Tạo file `.env` tại **root** project:
+Copy `backend/.env.example` thành `backend/.env`, rồi điền key và chọn model. `AppConfig` giữ các mặc định; biến trong `.env` ghi đè chúng. Root `.env` vẫn được hỗ trợ, sau đó `backend/.env` ghi đè. Khởi động lại backend sau khi sửa cấu hình.
 
 ```bash
 # OpenRouter (chat + embeddings)
@@ -150,13 +150,11 @@ OPENROUTER_API_KEY=sk-or-...
 OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
 RAG_MODEL=google/gemini-2.0-flash-lite-001
 EMBEDDING_MODEL=qwen/qwen3-embedding-8b
-EMBEDDING_DIMENSION=4096
 
 # Milvus
 MILVUS_HOST=localhost
 MILVUS_PORT=19530
 MILVUS_COLLECTION=pdf_chunks
-MILVUS_VECTOR_DIM=4096
 
 # Upload
 UPLOAD_MAX_SIZE_MB=50
@@ -175,7 +173,16 @@ SUPABASE_STORAGE_BUCKET=pdfs
 # Chunking
 CHUNK_SIZE=1000
 CHUNK_OVERLAP=150
+RETRIEVAL_TOP_K=8
+CONTEXT_MAX_CHARS=12000
+RAG_MAX_TOKENS=2048
 ```
+
+`RAG_MODEL` và `EMBEDDING_MODEL` không có model dự phòng ngầm: cần khai báo model cho luồng tương ứng. Dimension được lấy từ vector thực tế. PDF Storage là tùy chọn: để trống endpoint và hai S3 key để tắt; khi bật phải điền đủ endpoint, region, hai key và bucket. Cấu hình thiếu/sai sẽ báo tên biến cần sửa.
+
+`CONTEXT_MAX_CHARS` giới hạn ký tự tài liệu cho mỗi lượt tóm tắt/ngữ cảnh hỏi đáp; `RAG_MAX_TOKENS` giới hạn token sinh. Tóm tắt trung gian dùng ngân sách `min(RAG_MAX_TOKENS, max(64, CONTEXT_MAX_CHARS // 8))`, không phải quy đổi ký tự sang token.
+
+Chẩn đoán retrieval từ `backend/`: `python scripts/test_retrieval.py <user_id> <doc_id> "câu hỏi"`. Script đọc cùng config với ứng dụng; dùng `--top-k 12 --min-score 0.2` để chủ động ghi đè.
 
 ### Frontend `.env.local`
 
@@ -342,7 +349,7 @@ User gửi câu hỏi → POST /api/chat
 
 | Pattern | Áp dụng |
 |---------|---------|
-| **Factory** | `create_chat_provider()`, `VectorStoreFactory`, `create_initialized_rag_pipeline()` |
+| **Factory** | `create_chat_provider()`, `create_vector_store()`, `create_initialized_rag_pipeline()` |
 | **Strategy** | `ChatProvider` → `OpenRouterChatProvider`, `VectorStore` → `MilvusVectorStore` |
 | **Singleton** | `get_config()`, `get_embedder()` (@lru_cache) |
 | **Dependency Injection** | FastAPI `Depends(require_supabase_user)` |
@@ -386,6 +393,8 @@ Tests mock các API bên ngoài; không cần Milvus, OpenRouter hay Supabase đ
 - **Không commit `.env`** — chứa API keys thực
 - **CORS** — đang cho phép `localhost:3000/3001`, cần giới hạn khi deploy
 - **Single-turn chat** — mỗi query độc lập, không lưu lịch sử hội thoại
+- **Tóm tắt/tổng quan** — các câu như “hãy tóm tắt file PDF này” hoặc “file này viết về cái gì” đọc các chunks theo `user_id` + `doc_id`, không dùng embedding hay ngưỡng similarity. Tài liệu dài được tóm tắt từng phần rồi tổng hợp trong giới hạn `CONTEXT_MAX_CHARS`; các lời gọi tóm tắt tắt reasoning để dành token cho nội dung trả lời.
+- **Nguồn tóm tắt** — SSE `sources` trả `score: null` vì không có điểm similarity; frontend hiển thị “Nội dung tài liệu”. Câu hỏi chi tiết vẫn dùng vector search và `MIN_RELEVANCE_SCORE`.
 - **Single-document** — chỉ hỗ trợ 1 `doc_id` mỗi phiên chat
 - **Collection dimensions** — `ensure_collection()` không xoá collection hiện có. Đổi model sang dimension khác cần collection mới hoặc gọi rõ `recreate_collection()` sau khi bảo toàn dữ liệu; hàm này xoá toàn bộ chunks cũ.
 - **Connection status** — `get_connection_status()` chỉ báo trạng thái connection local, không phải health check đến server.

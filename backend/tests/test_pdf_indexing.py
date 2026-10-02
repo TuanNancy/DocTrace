@@ -27,7 +27,7 @@ def indexing_dependencies(monkeypatch):
     embedder = MagicMock()
     embedder.dimension = 1536  # The real response dimension must take precedence.
     embedder.embed_documents.return_value = [[0.1, 0.2, 0.3]]
-    monkeypatch.setattr(embeddings, "get_embedder", lambda: embedder)
+    monkeypatch.setattr(embeddings, "get_embedder", lambda **kwargs: embedder)
     vector_store = AsyncMock(spec=VectorStore)
     vector_store.insert_chunks.return_value = InsertResult("doc-1", 1, ["Store warning"])
     factory = AsyncMock(return_value=vector_store)

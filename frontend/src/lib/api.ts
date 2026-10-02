@@ -69,7 +69,8 @@ export async function streamChat(
 function isSource(value: unknown): value is ChatSource {
   if (!value || typeof value !== "object") return false;
   const source = value as Record<string, unknown>;
-  return typeof source.page === "number" && typeof source.source === "string" && typeof source.score === "number";
+  return typeof source.page === "number" && typeof source.source === "string"
+    && (typeof source.score === "number" || source.score === null);
 }
 
 function parseEvent(block: string): SSEEvent | null {

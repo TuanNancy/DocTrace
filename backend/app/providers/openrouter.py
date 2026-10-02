@@ -15,20 +15,22 @@ class OpenRouterChatProvider(ChatProvider):
     def __init__(
         self,
         api_key: str,
-        model: str = "openai/gpt-4o-mini",
-        base_url: Optional[str] = None,
+        model: str,
+        base_url: str,
+        timeout: float,
         **kwargs
     ):
         super().__init__(api_key=api_key, model=model, **kwargs)
-        self.base_url = base_url or "https://openrouter.ai/api/v1"
+        self.base_url = base_url
+        self.timeout = timeout
         self._client: Optional[AsyncOpenAI] = None
 
     def _get_client(self) -> AsyncOpenAI:
         if self._client is None:
             self._client = AsyncOpenAI(
                 api_key=self.api_key,
-                base_url=self.base_url.rstrip("/") or "https://openrouter.ai/api/v1",
-                timeout=self.config.get("timeout", 60.0),
+                base_url=self.base_url,
+                timeout=self.timeout,
             )
         return self._client
 

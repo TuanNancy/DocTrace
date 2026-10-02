@@ -5,6 +5,7 @@ import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
+from app.core.config import AppConfig
 
 logger = logging.getLogger(__name__)
 
@@ -16,7 +17,7 @@ class RetrievedChunk:
     text: str
     page: int
     source: str
-    score: float
+    score: Optional[float]
     metadata: Dict[str, Any] = None
 
     def __post_init__(self):
@@ -36,7 +37,7 @@ class InsertResult:
 
 
 class VectorStore(ABC):
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(self, config: AppConfig):
         self.config = config
         self._connected = False
 
@@ -82,11 +83,16 @@ class VectorStore(ABC):
         self,
         query_vector: List[float],
         doc_id: Optional[str] = None,
-        top_k: int = 8,
-        min_score: Optional[float] = None,
         *,
+        top_k: int,
+        min_score: Optional[float],
         user_id: str,
     ) -> List[RetrievedChunk]:
+        pass
+
+    @abstractmethod
+    async def get_document_chunks(self, doc_id: str, *, user_id: str) -> List[RetrievedChunk]:
+        """Read an owner's document for summaries, without a similarity threshold."""
         pass
 
     async def get_connection_status(self) -> Dict[str, Any]:

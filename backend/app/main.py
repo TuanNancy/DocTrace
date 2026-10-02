@@ -1,7 +1,6 @@
 """
 FastAPI entry point, CORS, and routers.
 """
-import os
 from contextlib import asynccontextmanager
 from anyio import CapacityLimiter
 
@@ -24,8 +23,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-raw_origins = os.getenv("CORS_ALLOW_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000,http://localhost:3001,http://127.0.0.1:3001")
-allowed_origins = [o.strip() for o in raw_origins.split(",") if o.strip()]
+allowed_origins = list(get_config().cors_allow_origins)
 
 app.add_middleware(
     CORSMiddleware,

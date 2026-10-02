@@ -3,7 +3,9 @@ Test retrieval with different queries; verify top-k results.
 Usage: python scripts/test_retrieval.py <user_id> <doc_id> "câu hỏi 1" ...
 """
 import asyncio
+import argparse
 import logging
+import math
 import sys
 from pathlib import Path
 
@@ -28,36 +30,49 @@ def build_context(chunks, max_chars=500):
     return "\n\n---\n\n".join(parts)
 
 
-async def search_chunks(query: str, doc_id: str, user_id: str, top_k: int = 5):
-    embedder = get_embedder()
+async def search_chunks(query: str, doc_id: str, user_id: str, *, config, top_k: int, min_score: float):
+    embedder = get_embedder(config=config)
     vectors = embedder.embed_documents([query])
     if not vectors:
         return []
 
-    vector_store = await create_connected_vector_store()
+    vector_store = await create_connected_vector_store(config=config)
     try:
         return await vector_store.search_chunks(
             query_vector=vectors[0],
             doc_id=doc_id,
             top_k=top_k,
-            min_score=0.32,
+            min_score=min_score,
             user_id=user_id,
         )
     finally:
         await vector_store.disconnect()
 
 
+def parse_args(argv=None, *, config=None):
+    config = config if config is not None else get_config()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("user_id")
+    parser.add_argument("doc_id")
+    parser.add_argument("queries", nargs="+")
+    parser.add_argument("--top-k", type=int, default=config.retrieval_top_k)
+    parser.add_argument("--min-score", type=float, default=config.min_relevance_score)
+    args = parser.parse_args(argv)
+    if args.top_k <= 0:
+        parser.error("--top-k must be positive")
+    if not math.isfinite(args.min_score):
+        parser.error("--min-score must be finite")
+    return args
+
+
 async def main():
-    if len(sys.argv) < 4:
-        print('Usage: python scripts/test_retrieval.py <user_id> <doc_id> "query1" "query2" ...')
-        sys.exit(1)
-
-    user_id, doc_id = sys.argv[1:3]
-    queries = sys.argv[3:]
-
-    for q in queries:
+    config = get_config()
+    args = parse_args(config=config)
+    print(f"Retrieval settings: top_k={args.top_k}, min_score={args.min_score}")
+    for q in args.queries:
         print(f"\n--- Query: {q!r} ---")
-        chunks = await search_chunks(q, doc_id, user_id, top_k=5)
+        chunks = await search_chunks(q, args.doc_id, args.user_id, config=config,
+                                     top_k=args.top_k, min_score=args.min_score)
         for i, c in enumerate(chunks, 1):
             print(f"  [{i}] page={c.page} score={c.score:.4f} source={c.source!r}")
             print(f"      text: {c.text[:120]}...")

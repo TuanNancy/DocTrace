@@ -56,7 +56,7 @@ backend/app/
 ├── storage/
 │   ├── base.py              # VectorStore + RetrievedChunk/InsertResult
 │   ├── milvus_vector_store.py # MilvusVectorStore (pymilvus)
-│   └── factory.py           # VectorStoreFactory + connection helpers
+│   └── factory.py           # Milvus adapter construction + connection helpers
 │
 ├── ai/
 │   ├── prompts.py           # System prompts (VI + EN)
@@ -140,26 +140,28 @@ Password login redirects from the server action after session cookies are writte
 
 ## Key Configuration
 
-Loaded by `backend/app/core/config.py` from repo root `.env` then `backend/.env` (override).
+`AppConfig(...)` is environment-independent. `AppConfig.from_env()` parses the process environment (or an explicit mapping), normalizes and validates it. `get_config()` loads repo root `.env` then `backend/.env` (override, including process variables), builds and caches the settings once. Restart after changes. Pipelines pass the same config to provider/store factories and the embedder; lower layers have no competing model/connection/retrieval defaults.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `OPENROUTER_API_KEY` | — | API key for OpenRouter |
 | `OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` | OpenRouter endpoint |
-| `RAG_MODEL` | `openai/gpt-4o-mini` | LLM model for chat |
-| `EMBEDDING_MODEL` | `text-embedding-3-small` | Embedding model |
-| `EMBEDDING_DIMENSION` | `1536` | Configured hint; actual embedding response determines indexing dimension |
+| `RAG_MODEL` | — | Required when calling chat; choose explicitly |
+| `EMBEDDING_MODEL` | — | Required when creating embeddings; choose explicitly |
+| `RAG_MAX_TOKENS` | `2048` | Maximum generated tokens per final answer |
+| `CONTEXT_MAX_CHARS` | `12000` | Document context character budget |
 | `MILVUS_HOST` | `localhost` | Milvus server |
 | `MILVUS_PORT` | `19530` | Milvus gRPC port |
 | `MILVUS_COLLECTION` | `pdf_chunks` | Collection name |
-| `MILVUS_VECTOR_DIM` | `1536` | Configured hint; collection schema must match actual vectors |
 | `RETRIEVAL_TOP_K` | `8` | Number of chunks to retrieve |
 | `MIN_RELEVANCE_SCORE` | `0.32` | Min cosine similarity threshold |
 | `CHUNK_SIZE` | `1000` | Text chunk size |
 | `CHUNK_OVERLAP` | `150` | Chunk overlap |
 | `UPLOAD_MAX_SIZE_MB` | `50` | Max PDF upload size |
 
-**Note:** Upload indexing uses `len(vectors[0])` to validate the collection schema. A dimension mismatch raises an error instead of recreating the collection. Changing these environment hints does not resize model output. `OPENAI_API_KEY` is accepted as a legacy alias for OpenRouter key.
+**Note:** Upload indexing uses `len(vectors[0])` to validate the collection schema. A dimension mismatch raises an error instead of recreating the collection. The unused `EMBEDDING_DIMENSION` and `MILVUS_VECTOR_DIM` settings were removed. `OPENAI_API_KEY` is accepted as a legacy alias for the OpenRouter key. Service credentials/models are checked when the corresponding service is used, so liveness and isolated tests need no cloud credentials. S3 is disabled when endpoint and credentials are absent; partially configured S3 fails validation.
+
+The retrieval diagnostic script shares `RETRIEVAL_TOP_K` and `MIN_RELEVANCE_SCORE` with the application, with explicit `--top-k` / `--min-score` overrides. Document summaries bypass vector similarity retrieval. Their intermediate output budget is `min(max_tokens, max(64, context_max_chars // 8))`; this is a budgeting rule, not a tokenizer conversion.
 
 ## API Contract
 
@@ -183,9 +185,9 @@ Loaded by `backend/app/core/config.py` from repo root `.env` then `backend/.env`
 
 | Pattern | Usage |
 |---------|-------|
-| **Factory** | `create_chat_provider()`, `VectorStoreFactory`, `create_initialized_rag_pipeline()` |
+| **Factory** | `create_chat_provider()`, `create_vector_store()`, `create_initialized_rag_pipeline()` |
 | **Strategy** | `ChatProvider` → `OpenRouterChatProvider`, `VectorStore` → `MilvusVectorStore` |
-| **Singleton** | `get_config()`, `get_embedder()` (@lru_cache) |
+| **Caching** | `get_config()` caches resolved settings; `get_embedder()` caches by model, key, endpoint, timeout and batch size |
 | **Dependency Injection** | FastAPI `Depends(require_supabase_user)` |
 | **Streaming/Generator** | SSE events, LLM token streaming, SSE parser |
 

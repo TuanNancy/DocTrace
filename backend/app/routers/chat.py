@@ -8,6 +8,7 @@ from typing import AsyncIterator
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 
+from app.ai.document_summary import is_document_overview
 from app.ai.rag_pipeline import create_initialized_rag_pipeline
 from app.core.auth import require_supabase_user
 from app.schemas import ChatRequest
@@ -29,7 +30,8 @@ async def _stream_chat_sse(query: str, doc_id: str, user_id: str, language: str 
 
         retrieved_chunks = await pipeline.retrieve_chunks(query, doc_id, user_id=user_id)
         sources_payload = [
-            {"page": chunk.page, "source": chunk.source, "score": round(chunk.score, 4)}
+            {"page": chunk.page, "source": chunk.source,
+             "score": round(chunk.score, 4) if chunk.score is not None else None}
             for chunk in retrieved_chunks
         ]
         yield _sse_message("sources", json.dumps(sources_payload))
@@ -37,12 +39,17 @@ async def _stream_chat_sse(query: str, doc_id: str, user_id: str, language: str 
         if not retrieved_chunks:
             fallback = (
                 "Không tìm thấy đoạn văn nào trong tài liệu đủ liên quan với câu hỏi "
-                "(có thể do ngưỡng MIN_RELEVANCE_SCORE quá cao hoặc câu hỏi quá khác nội dung đã index). "
-                "Hãy thử hạ MIN_RELEVANCE_SCORE trong .env (ví dụ 0.25) hoặc đặt câu hỏi gần với nội dung file hơn."
+                "đang hỏi. Hãy thử hỏi cụ thể hơn hoặc yêu cầu tóm tắt tài liệu."
                 if language == "vi"
                 else "No sufficiently relevant passages were retrieved from this document. "
-                "Try lowering MIN_RELEVANCE_SCORE in .env or rephrasing your question."
+                "Try a more specific question or request a document summary."
             )
+            if is_document_overview(query):
+                fallback = (
+                    "Không tìm thấy nội dung của tài liệu đang chọn. Hãy chọn lại hoặc tải lên lại PDF."
+                    if language == "vi"
+                    else "No content was found for the selected document. Select or upload the PDF again."
+                )
             yield _sse_message("token", json.dumps(fallback))
             yield _sse_message("done", json.dumps("[DONE]"))
             return

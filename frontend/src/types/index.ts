@@ -16,7 +16,8 @@ export interface UploadResponse {
 export interface ChatSource {
   page: number;
   source: string;
-  score: number;
+  /** Similarity score; null for document summaries retrieved without vector search. */
+  score: number | null;
 }
 
 /** Parsed SSE event types for streamChat() */
