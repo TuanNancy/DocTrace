@@ -5,19 +5,14 @@ Requires bucket + S3 access keys from the Supabase dashboard (Storage → S3 cre
 """
 from __future__ import annotations
 
-import logging
+from contextlib import closing
 import os
 import re
-from typing import Optional
 
 import boto3
 from botocore.config import Config
-from botocore.exceptions import BotoCoreError, ClientError
 
 from app.core.config import get_config
-
-logger = logging.getLogger(__name__)
-
 
 def _safe_pdf_basename(filename: str) -> str:
     base = os.path.basename(filename) or "document.pdf"
@@ -43,17 +38,12 @@ def is_pdf_storage_configured() -> bool:
     )
 
 
-def upload_pdf_to_supabase_storage(file_content: bytes, object_key: str) -> None:
-    """
-    Put PDF object into the configured bucket. Raises on failure.
-
-    Uses synchronous boto3; call from asyncio via asyncio.to_thread().
-    """
+def _storage_client():
     if not is_pdf_storage_configured():
         raise RuntimeError("Supabase S3 storage is not fully configured.")
 
     c = get_config()
-    client = boto3.client(
+    return boto3.client(
         "s3",
         endpoint_url=c.supabase_s3_endpoint.rstrip("/"),
         aws_access_key_id=c.supabase_s3_access_key_id,
@@ -65,45 +55,32 @@ def upload_pdf_to_supabase_storage(file_content: bytes, object_key: str) -> None
             retries={"max_attempts": 2, "mode": "standard"},
         ),
     )
-    client.put_object(
-        Bucket=c.supabase_storage_bucket,
-        Key=object_key,
-        Body=file_content,
-        ContentType="application/pdf",
-    )
 
 
-def try_upload_pdf(
-    file_content: bytes,
-    user_id: str,
-    doc_id: str,
-    filename: str,
-) -> tuple[Optional[str], Optional[str]]:
-    """
-    Upload PDF if S3 env is configured.
+def upload_pdf_to_supabase_storage(file_content: bytes, object_key: str) -> None:
+    """Synchronous S3 operations must run in a threadpool."""
+    with closing(_storage_client()) as client:
+        client.put_object(Bucket=get_config().supabase_storage_bucket, Key=object_key,
+                          Body=file_content, ContentType="application/pdf")
 
-    Returns:
-        (object_key, None) on success
-        (None, warning_message) on skip or failure (indexing should still succeed)
-    """
-    if not is_pdf_storage_configured():
-        logger.info(
-            "Supabase PDF storage skipped: set SUPABASE_S3_ACCESS_KEY_ID, "
-            "SUPABASE_S3_SECRET_ACCESS_KEY, and SUPABASE_STORAGE_BUCKET (and optionally "
-            "SUPABASE_S3_ENDPOINT / SUPABASE_S3_REGION)."
-        )
-        return None, None
 
-    key = build_pdf_object_key(user_id, doc_id, filename)
-    try:
-        upload_pdf_to_supabase_storage(file_content, key)
-        logger.info("Stored original PDF in Supabase Storage: %s", key)
-        return key, None
-    except (ClientError, BotoCoreError, OSError) as e:
-        msg = "Could not retain the original PDF in storage."
-        logger.warning("PDF storage failed: %s", e)
-        return None, msg
-    except Exception as e:
-        msg = "Could not retain the original PDF in storage."
-        logger.exception("PDF storage failed")
-        return None, msg
+def download_pdf(object_key: str) -> bytes:
+    with closing(_storage_client()) as client:
+        response = client.get_object(Bucket=get_config().supabase_storage_bucket, Key=object_key)
+        try:
+            return response["Body"].read()
+        finally:
+            response["Body"].close()
+
+
+def delete_pdf(object_key: str) -> None:
+    with closing(_storage_client()) as client:
+        client.delete_object(Bucket=get_config().supabase_storage_bucket, Key=object_key)
+
+
+def signed_pdf_url(object_key: str) -> str:
+    with closing(_storage_client()) as client:
+        return client.generate_presigned_url("get_object", Params={
+            "Bucket": get_config().supabase_storage_bucket, "Key": object_key,
+            "ResponseContentType": "application/pdf", "ResponseContentDisposition": "inline",
+        }, ExpiresIn=300)

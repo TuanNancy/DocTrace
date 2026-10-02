@@ -1,209 +1,70 @@
-# DocTrace — Architecture
+# DocTrace / Baymax — Architecture
 
-## Scope
+## Boundaries
 
-- Standard text-based RAG flow for PDF
-- No OCR/computer vision in the main pipeline
-- No multi-agent task planner
-- Single LLM provider: OpenRouter (chat + embeddings)
-- Vector store: Milvus; original PDF storage: Supabase S3
-- Auth: Supabase Auth (JWT)
+- `backend/app/main.py` mounts upload, documents and chat routers. Authentication resolves the user through Supabase; clients cannot select another owner.
+- `services/document_repository.py` accesses Supabase PostgREST using a backend service-role key. Every user-facing read is owner-scoped. All lifecycle transitions are transactional SQL RPCs in `backend/migrations/001_document_library.sql`.
+- `services/supabase_pdf_storage.py` owns original PDF operations. Synchronous boto3 and Milvus calls run in threadpools.
+- `services/pdf_indexing.py:index_pdf_bytes()` extracts text, chunks, embeds and inserts into Milvus. Temporary-file and vector-connection cleanup stays here.
+- `app.worker` claims durable jobs; the API does not run indexing or deletion in request-local background tasks.
+- `frontend/src/app/(workspace)/layout.tsx` owns the shared provider and shell for `/chat` and `/documents`. `WorkspaceProvider` keeps authentication, catalog, upload and transient chat state across client navigation. Reload discards chat; documents remain server-side.
 
-## Runtime Flow
+## Upload and indexing
 
-```
-Upload PDF
-  → validate request and retain original PDF in Supabase Storage (upload router)
-  → index_pdf_bytes() (PDF indexing service)
-  → extract text by page (PyPDFLoader)
-  → split into chunks (RecursiveCharacterTextSplitter)
-  → generate embeddings (OpenRouter /v1/embeddings)
-  → insert vectors + metadata into Milvus
+```text
+POST /api/upload
+  → authenticate, enforce upload capacity, validate MIME/extension/header/size
+  → create owner-scoped documents row (uploading)
+  → retain original PDF in private Storage
+  → queue_document_job(index) → 202, status queued
 
-Chat query (with doc_id)
-  → create_initialized_rag_pipeline()
-  → embed query (OpenRouter)
-  → search top-k chunks from Milvus (COSINE, filter by doc_id)
-  → build bounded context with page citations
-  → call chat model via OpenRouter (stream)
-  → stream SSE events: sources → token → done
+python -m app.worker
+  → claim_document_job: SKIP LOCKED, attempts, lease + unique generation token
+  → download PDF → index_pdf_bytes(..., doc_id=generation_token, user_id=owner)
+  → finish_document_job: publish active_index_id only if lease is still valid
+  → clean obsolete generations
 ```
 
-## Backend Structure
+The public document UUID and the Milvus generation UUID are different. A retry never writes into another attempt's index. The router resolves `documents.active_index_id` before retrieval; citation payloads retain the public document UUID.
 
-```
-backend/app/
-├── main.py                  # FastAPI app + CORS + mount routers
-├── schemas.py               # Pydantic request models (ChatRequest)
-│
-├── core/
-│   ├── config.py            # AppConfig: AI, auth, upload, and storage settings
-│   └── auth.py              # Supabase JWT verification
-│
-├── routers/
-│   ├── upload.py            # POST /api/upload — validation + indexing service call
-│   └── chat.py              # POST /api/chat — SSE streaming
-│
-├── processors/
-│   └── pdf.py               # PDF loading + chunking (LangChain)
-│
-├── providers/
-│   ├── base.py              # Abstract ChatProvider interface
-│   ├── openrouter.py        # OpenRouterChatProvider (AsyncOpenAI SDK)
-│   ├── embeddings.py        # OpenRouterEmbedder
-│   └── factory.py           # create_chat_provider()
-│
-├── storage/
-│   ├── base.py              # VectorStore + RetrievedChunk/InsertResult
-│   ├── milvus_vector_store.py # MilvusVectorStore (pymilvus)
-│   └── factory.py           # Milvus adapter construction + connection helpers
-│
-├── ai/
-│   ├── prompts.py           # System prompts (VI + EN)
-│   └── rag_pipeline.py      # RAGPipeline: retrieve → context → stream answer
-│
-├── models/
-│   └── document.py          # DocumentStatus, IndexingResult
-│
-└── services/
-    ├── pdf_indexing.py      # index_pdf_bytes(): extract → chunk → embed → insert
-    └── supabase_pdf_storage.py  # PDF backup to Supabase S3 (boto3)
-```
+Workers renew leases while processing. Expired jobs are claimable after a restart; three interrupted claims become an actionable error. Failed indexing records a safe error and cleans partial chunks. Stale `uploading` rows become errors after 15 minutes. All generation IDs remain registered for retry/deletion cleanup.
 
-## Responsibilities and Naming
+A lost HTTP response from `finish_document_job` can still mean the transaction committed. Cleanup rereads the active generation before deleting an unpublished attempt.
 
-| Component | Responsibility |
-|-----------|----------------|
-| `RAGPipeline` | Fixed retrieval/context/generation flow. `retrieve_chunks()` is public because the router also needs sources; `stream_answer()` can reuse those chunks to avoid a second search. |
-| `ChatProvider` | `generate_completion()` returns complete text; `stream_completion()` yields text deltas. `generate_with_context()` and `stream_with_context()` construct messages with retrieved context. |
-| `OpenRouterEmbedder` | Embeddings use the OpenAI-compatible SDK but are sent to OpenRouter. `_probe_embedding_dimension()` makes an API call when the cached embedder is first created. |
-| `VectorStore` | Stores chunk text/vectors/metadata; `RetrievedChunk.chunk_id` is the persisted primary key returned by search. |
-| `index_pdf_bytes()` | Handles temporary PDF files, extraction, chunking, embedding, insertion, and cleanup. The router owns auth, HTTP validation, and original-PDF retention. |
-| `AppConfig` | Application-wide settings, including auth and PDF storage as well as RAG. |
+## Deletion
 
-- `create_vector_store()` constructs an object; `create_connected_vector_store()` also connects it. Its caller must disconnect it.
-- `create_initialized_rag_pipeline()` constructs and initializes the pipeline. The chat router calls `shutdown()` in `finally`.
-- `has_api_key()` checks local key presence only. `get_connection_status()` reports local connection state only; neither verifies remote service health.
-- `ensure_collection()` creates/loads a compatible collection and rejects mismatched or unreadable dimensions. Only `recreate_collection()` explicitly deletes existing chunks.
+`DELETE /api/documents/{id}` installs `deleting` and clears `active_index_id` immediately. New chat/source reads are rejected. A delete job waits for a live indexing lease, deletes all recorded vector generations and the original PDF, then records `deleted`. A worker finishing an index after deletion was requested cannot publish it.
 
-## Frontend Structure
+Cleanup operations are idempotent. Partial failure becomes `delete_error`; retry preserves the deletion intent. Deleted rows are tombstones excluded from library/RLS reads, retaining generation metadata for cleanup rather than erasing the audit of unfinished external operations.
 
-The shared `lib/` modules are tracked via an exception to the root Python `lib/` ignore rule. Frontend verification includes typecheck, ESLint, Vitest and a Chromium journey with loopback Auth/API fixtures.
+Workers also sweep due tombstones (first after five minutes, then hourly). This catches remote writes that finish after cancellation/lease expiry; Python cannot forcibly stop a synchronous S3/Milvus thread already in flight.
 
-```
-frontend/src/
-├── middleware.ts              # Next.js edge middleware (auth redirect)
-│
-├── types/
-│   └── index.ts               # TypeScript types
-│
-├── lib/                       # Shared API and auth adapters
-│   ├── api.ts                 # streamChat(), uploadPDF(), SSE parser
-│   ├── client.ts              # Supabase browser client
-│   ├── server.ts              # Supabase server client
-│   ├── middleware.ts          # updateSession() for auth redirect
-│   ├── supabase-config.ts     # Public project URL and key validation
-│   └── utils.ts               # cn() — clsx + tailwind-merge
-│
-├── app/
-│   ├── layout.tsx             # Root layout (Inter font, metadata)
-│   ├── globals.css            # Tailwind + CSS variables
-│   ├── page.tsx               # Landing page
-│   │
-│   ├── chat/
-│   │   └── page.tsx           # Main chat page (sidebar + upload + chat)
-│   │
-│   └── auth/
-│       ├── actions.ts         # Server actions: loginAction, signupAction
-│       ├── login/page.tsx
-│       ├── signup/page.tsx
-│       ├── callback/route.ts  # OAuth callback
-│       └── auth-code-error/page.tsx
-│
-└── components/
-    ├── BrandMark.tsx
-    ├── ThemeToggle.tsx
-    ├── UploadZone.tsx
-    ├── ChatWindow.tsx
-    ├── SourceCard.tsx
-    ├── SourceCardList.tsx
-    ├── StreamingCursor.tsx
-    └── auth/
-        ├── LoginForms.tsx
-        ├── SignupForm.tsx
-        └── AuthSubmitButton.tsx
-```
+## RAG and citation contract
 
-`ChatWindow` uses `createMessageId()`, `appendTextDelta()`, and the local parser alias `parseChatEvents` (imported as `streamChatSSEParser`). The wire event name remains `token`. `clearMessages()` aborts the request, clears transcript/draft/error and unlocks input without changing the selected document. Changing documents resets chat and aborts old requests. `UploadZone` serializes uploads and ignores late results after unmount. API requests forward Supabase Bearer tokens and AbortSignals.
+1. Validate the owned document is ready and resolve its published index.
+2. `RAGPipeline.retrieve_chunks()` uses owner-scoped vector search for specific questions. Summaries use every document chunk in original page/chunk order, bypassing query embeddings and similarity thresholds.
+3. Ordinary retrieval is trimmed to the context budget **before** assigning citation numbers. The router emits the same numbered chunks that `stream_answer()` receives.
+4. Context labels include stable `[n]` IDs and page numbers. Long summaries preserve those IDs through bounded reduction steps.
+5. Emit `sources`, streamed `token`, optional `error`, then `done` with the JSON string `"[DONE]"`.
 
-Password login redirects from the server action after session cookies are written. Middleware validates with `getUser()`, propagates refreshed cookies to both request and response, and disables shared caching. Auth actions use `normalizeOriginValue()` for the selected env/header URL value.
+Source payload: `{citation_id, chunk_id, doc_id, page, source, score}`. Summary scores are `null`, not a confidence percentage. Original text is fetched on demand from `/api/documents/{id}/chunks/{chunk_id}` using both owner and active-generation filters. `/file` returns a 300-second signed URL; the UI adds `#page=N`.
 
-## Key Configuration
+`load_pdf_pages()` converts PyPDFLoader's zero-based page index to a one-based physical PDF page and replaces its temporary source path with the original filename. Downstream chunking preserves those values.
 
-`AppConfig(...)` is environment-independent. `AppConfig.from_env()` parses the process environment (or an explicit mapping), normalizes and validates it. `get_config()` loads repo root `.env` then `backend/.env` (override, including process variables), builds and caches the settings once. Restart after changes. Pipelines pass the same config to provider/store factories and the embedder; lower layers have no competing model/connection/retrieval defaults.
+ReactMarkdown + GFM render assistant messages without raw HTML. The citation plugin transforms text nodes, leaving code and existing links intact, and makes only known IDs interactive. Clear/document changes cancel streams; stopping retains a partial answer. Backend queries remain single-turn.
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `OPENROUTER_API_KEY` | — | API key for OpenRouter |
-| `OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` | OpenRouter endpoint |
-| `RAG_MODEL` | — | Required when calling chat; choose explicitly |
-| `EMBEDDING_MODEL` | — | Required when creating embeddings; choose explicitly |
-| `RAG_MAX_TOKENS` | `2048` | Maximum generated tokens per final answer |
-| `CONTEXT_MAX_CHARS` | `12000` | Document context character budget |
-| `MILVUS_HOST` | `localhost` | Milvus server |
-| `MILVUS_PORT` | `19530` | Milvus gRPC port |
-| `MILVUS_COLLECTION` | `pdf_chunks` | Collection name |
-| `RETRIEVAL_TOP_K` | `8` | Number of chunks to retrieve |
-| `MIN_RELEVANCE_SCORE` | `0.32` | Min cosine similarity threshold |
-| `CHUNK_SIZE` | `1000` | Text chunk size |
-| `CHUNK_OVERLAP` | `150` | Chunk overlap |
-| `UPLOAD_MAX_SIZE_MB` | `50` | Max PDF upload size |
+## Configuration and storage invariants
 
-**Note:** Upload indexing uses `len(vectors[0])` to validate the collection schema. A dimension mismatch raises an error instead of recreating the collection. The unused `EMBEDDING_DIMENSION` and `MILVUS_VECTOR_DIM` settings were removed. `OPENAI_API_KEY` is accepted as a legacy alias for the OpenRouter key. Service credentials/models are checked when the corresponding service is used, so liveness and isolated tests need no cloud credentials. S3 is disabled when endpoint and credentials are absent; partially configured S3 fails validation.
+- `AppConfig(...)` is environment-independent. `from_env()` parses a mapping/environment. `get_config()` loads root `.env`, then overriding `backend/.env`, once per process.
+- `RAG_MODEL` and `EMBEDDING_MODEL` have no implicit model fallback. Embedding dimensions come from API vectors; constructing an embedder also probes the API.
+- Milvus supports host/port and URI/token. URI defaults to AUTOINDEX. Requests own their connection alias; reads use Strong consistency so newly published uploads are immediately queryable.
+- `ensure_collection()` rejects incompatible dimensions/owner schemas. Only explicit `recreate_collection()` deletes a collection.
+- Postgres RLS allows authenticated users to read their own live documents. Mutations and job RPCs are service-role-only. No service-role/S3/LLM secret belongs in frontend env.
+- Frontend middleware protects both `/chat` and `/documents`. API URL is an origin without `/api`; no API URL means demo upload/chat, while Auth still uses Supabase.
 
-The retrieval diagnostic script shares `RETRIEVAL_TOP_K` and `MIN_RELEVANCE_SCORE` with the application, with explicit `--top-k` / `--min-score` overrides. Document summaries bypass vector similarity retrieval. Their intermediate output budget is `min(max_tokens, max(64, context_max_chars // 8))`; this is a budgeting rule, not a tokenizer conversion.
+## Verification and deployment
 
-## API Contract
-
-### `POST /api/upload`
-
-- **Input**: `multipart/form-data`, field `file` (PDF)
-- **Auth**: `Authorization: Bearer <supabase_token>`
-- **Output**: JSON with `doc_id`, `chunks_count`, `status`, `warnings`
-
-### `POST /api/chat`
-
-- **Input**: JSON `{ query, doc_id, language? }`
-- **Auth**: `Authorization: Bearer <supabase_token>`
-- **Output**: `text/event-stream`
-  - `event: sources` — `[{page, source, score}]`
-  - `event: token` — JSON-encoded text delta (not necessarily one model token)
-  - `event: error` — JSON object `{"message": "..."}`
-  - `event: done` — JSON string `"[DONE]"`
-
-## Design Patterns
-
-| Pattern | Usage |
-|---------|-------|
-| **Factory** | `create_chat_provider()`, `create_vector_store()`, `create_initialized_rag_pipeline()` |
-| **Strategy** | `ChatProvider` → `OpenRouterChatProvider`, `VectorStore` → `MilvusVectorStore` |
-| **Caching** | `get_config()` caches resolved settings; `get_embedder()` caches by model, key, endpoint, timeout and batch size |
-| **Dependency Injection** | FastAPI `Depends(require_supabase_user)` |
-| **Streaming/Generator** | SSE events, LLM token streaming, SSE parser |
-
-## Infra
-
-`docker-compose.yml` provides:
-
-- `etcd` — metadata store
-- `minio` — object storage
-- `milvus` — vector DB (gRPC: `localhost:19530`)
-- `attu` — web UI (`http://localhost:8001`)
-
-API deployment uses a separate `compose.production.yml`:
-
-- `api` — non-root FastAPI image built from `backend/`; port 8000 is internal.
-- `nginx` — HTTPS reverse proxy, unbuffered SSE and streaming uploads. Docker DNS re-resolves `api` after container replacement.
-- `certbot` — on-demand webroot issuance/renewal using shared certificate/ACME volumes. The host systemd timer runs renewal, validates config and reloads Nginx.
-
-Bootstrap HTTP serves only ACME and proxy liveness. HTTPS starts only after a certificate exists; the API's `/health` reports process liveness, not external service health. See `DEPLOYMENT.md` for commands and the current application prerequisites.
+- pytest mocks database/storage/provider boundaries; chat tests exercise the real pipeline/provider/SSE. TestClient overrides Auth, while dedicated tests exercise the real auth dependency with mocked HTTP.
+- `python scripts/verify_document_queue.py` from `backend/` applies real SQL to disposable PostgreSQL and checks RLS, recovery and fencing.
+- Vitest covers transport, cancellation, Markdown and auth. Playwright runs real UI/cookies with loopback Auth/API fixtures; it does not validate real cloud services.
+- Root Compose runs vector infrastructure. Production Compose runs API, worker, Nginx and on-demand Certbot; frontend deploys separately. `/health` is API process liveness only. See `DEPLOYMENT.md`.

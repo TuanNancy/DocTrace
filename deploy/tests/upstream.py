@@ -8,6 +8,7 @@ from fastapi import HTTPException, Request
 from app.core.auth import require_supabase_user
 from app.main import app
 from app.routers import chat
+from app.services.document_repository import get_document_repository
 
 pipelines = []
 
@@ -24,7 +25,10 @@ class TestPipeline:
         self.active = True
 
     async def retrieve_chunks(self, *args, **kwargs):
-        return [SimpleNamespace(page=1, source="fixture.pdf", score=0.9)]
+        return [SimpleNamespace(chunk_id="chunk", page=1, source="fixture.pdf", score=0.9)]
+
+    def select_context_chunks(self, chunks):
+        return chunks
 
     async def stream_answer(self, **kwargs):
         yield "first"
@@ -44,6 +48,14 @@ async def create_pipeline():
 
 
 app.dependency_overrides[require_supabase_user] = test_user
+
+
+class TestDocuments:
+    async def get(self, user_id, doc_id):
+        return {"status": "ready", "active_index_id": doc_id}
+
+
+app.dependency_overrides[get_document_repository] = TestDocuments
 chat.create_initialized_rag_pipeline = create_pipeline
 
 

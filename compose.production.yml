@@ -22,6 +22,31 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  worker:
+    image: ${API_IMAGE:-doctrace-api:local}
+    build:
+      context: ./backend
+    command: ["python", "-m", "app.worker"]
+    restart: unless-stopped
+    env_file:
+      - ${BACKEND_ENV_FILE:-./backend/.env}
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m,mode=1777
+    mem_limit: 1400m
+    healthcheck:
+      disable: true
+    stop_grace_period: 30s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
   nginx:
     image: nginx:1.28-alpine
     restart: unless-stopped

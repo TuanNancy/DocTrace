@@ -1,26 +1,16 @@
 "use client";
 
-import { SourceCard } from "./SourceCard";
+import { useState } from "react";
 import type { ChatSource } from "@/types";
+import { SourceCard } from "./SourceCard";
 
-interface SourceCardListProps {
-  sources: ChatSource[];
-}
-
-export function SourceCardList({ sources }: SourceCardListProps) {
-  return (
-    <div className="mt-2 space-y-2">
-      <p className="text-xs font-medium text-slate-500 dark:text-slate-400">
-        Nguồn trích dẫn
-      </p>
-      <div className="flex flex-col gap-2">
-        {sources.map((s, i) => (
-          <SourceCard
-            key={`${s.page}-${s.source}-${i}`}
-            source={s}
-          />
-        ))}
-      </div>
+export function SourceCardList({ sources, onSelectSource }: { sources: ChatSource[]; onSelectSource?: (source: ChatSource) => void }) {
+  const [expanded, setExpanded] = useState(false);
+  return <div className="mt-4">
+    <p className="mb-2 text-[10px] font-medium uppercase tracking-wider text-slate-400">Nguồn tham khảo</p>
+    <div className="flex flex-wrap gap-2">{(expanded ? sources : sources.slice(0, 3)).map((source, index) =>
+      <SourceCard key={source.chunk_id ?? index} source={source} onSelect={onSelectSource} />)}
+      {sources.length > 3 && <button className="suggestion-chip text-[11px]" onClick={() => setExpanded(!expanded)}>{expanded ? "Thu gọn" : `+${sources.length - 3} nguồn`}</button>}
     </div>
-  );
+  </div>;
 }

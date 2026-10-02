@@ -54,3 +54,22 @@ it("aborts on unmount and ignores a late upload result", async () => {
   expect(signal?.aborted).toBe(true);
   expect(onUploadComplete).not.toHaveBeenCalled();
 });
+
+it("recovers after a token change and ignores late progress and results", async () => {
+  let resolve!: (value: UploadResponse) => void;
+  uploadMock.mockReturnValueOnce(new Promise((r) => { resolve = r; })).mockResolvedValue(result);
+  const onUploadComplete = vi.fn();
+  const { rerender } = render(<UploadZone mock={false} accessToken="old-token" onUploadComplete={onUploadComplete} />);
+  fireEvent.change(screen.getByLabelText("Chọn file"), { target: { files: [pdf()] } });
+  const [, , signal, progress] = uploadMock.mock.calls[0];
+  rerender(<UploadZone mock={false} accessToken="new-token" onUploadComplete={onUploadComplete} />);
+  expect(signal?.aborted).toBe(true);
+  expect(screen.getByLabelText("Chọn file")).toBeEnabled();
+  await act(async () => { progress?.(99); resolve(result); });
+  expect(onUploadComplete).not.toHaveBeenCalled();
+  expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
+  fireEvent.change(screen.getByLabelText("Chọn file"), { target: { files: [pdf("b.pdf")] } });
+  await screen.findByText("Tải lên thành công");
+  expect(uploadMock.mock.calls[1][1]).toBe("new-token");
+  expect(onUploadComplete).toHaveBeenCalledOnce();
+});

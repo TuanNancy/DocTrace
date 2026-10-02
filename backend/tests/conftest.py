@@ -3,6 +3,7 @@ Pytest fixtures: FastAPI TestClient and app.
 """
 import sys
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -19,6 +20,7 @@ config_module._config = config_module.AppConfig(
 
 from app.core.auth import require_supabase_user
 from app.main import app
+from app.services.document_repository import DocumentRepository, get_document_repository
 
 
 async def _fake_supabase_user():
@@ -26,11 +28,30 @@ async def _fake_supabase_user():
 
 
 @pytest.fixture
-def client() -> TestClient:
+def repository():
+    """Only the persistent database boundary is mocked; no developer cloud calls."""
+    fake = AsyncMock(spec=DocumentRepository)
+    fake.get.side_effect = lambda uid, doc_id: {
+        "doc_id": doc_id, "user_id": uid, "name": "sample.pdf", "status": "ready",
+        "active_index_id": doc_id, "storage_key": f"{uid}/{doc_id}/sample.pdf",
+    }
+    fake.create.side_effect = lambda document: document
+    fake.queue.side_effect = lambda uid, doc_id, kind: {
+        "doc_id": doc_id, "name": "sample.pdf", "status": "queued" if kind == "index" else "deleting",
+        "chunks_count": 0, "size_bytes": 100, "warnings": [], "user_id": uid,
+    }
+    fake.list.return_value = {"items": [], "has_more": False}
+    return fake
+
+
+@pytest.fixture
+def client(repository) -> TestClient:
     """FastAPI TestClient for router tests."""
     app.dependency_overrides[require_supabase_user] = _fake_supabase_user
+    app.dependency_overrides[get_document_repository] = lambda: repository
     try:
         with TestClient(app) as test_client:
             yield test_client
     finally:
         app.dependency_overrides.pop(require_supabase_user, None)
+        app.dependency_overrides.pop(get_document_repository, None)

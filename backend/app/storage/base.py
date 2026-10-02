@@ -95,6 +95,15 @@ class VectorStore(ABC):
         """Read an owner's document for summaries, without a similarity threshold."""
         pass
 
+    @abstractmethod
+    async def get_chunk(self, doc_id: str, chunk_id: str, *, user_id: str) -> Optional[RetrievedChunk]:
+        pass
+
+    @abstractmethod
+    async def delete_document(self, doc_id: str, *, user_id: str) -> None:
+        """Idempotently delete only this owner's indexed generation."""
+        pass
+
     async def get_connection_status(self) -> Dict[str, Any]:
         """Report local connection state without probing server health."""
         try:

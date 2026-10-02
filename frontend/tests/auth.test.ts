@@ -69,6 +69,12 @@ it("keeps cookie updates on an auth redirect", async () => {
   expect(response.cookies.get("session")?.value).toBe("refreshed");
 });
 
+it("protects the document library using the same verified session", async () => {
+  const response = await updateSession(new NextRequest("https://app.example.test/documents"));
+  expect(response.status).toBe(307);
+  expect(response.headers.get("location")).toBe("https://app.example.test/auth/login");
+});
+
 it("allows visitors to reach the public login page", async () => {
   const response = await updateSession(new NextRequest("https://app.example.test/auth/login"));
   expect(response.status).toBe(200);

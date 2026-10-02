@@ -1,291 +1,100 @@
 "use client";
 
-import {
-  forwardRef,
-  useCallback,
-  useEffect,
-  useImperativeHandle,
-  useRef,
-  useState,
-} from "react";
-import { streamChat, streamChatSSEParser as parseChatEvents } from "@/lib/api";
-import type { ChatMessage, ChatSource } from "@/types";
+import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
+import { ArrowUp, Check, Copy, FileText, Sparkles, Square } from "lucide-react";
+import Link from "next/link";
+import type { ChatSource } from "@/types";
+import { useChatSession, type ChatSession } from "@/lib/use-chat-session";
+import { MessageMarkdown } from "./MessageMarkdown";
 import { SourceCardList } from "./SourceCardList";
-import { StreamingCursor } from "./StreamingCursor";
 
-export type ChatWindowHandle = {
-  clearMessages: () => void;
-  exportTranscript: () => void;
-};
-
+export type ChatWindowHandle = { clearMessages: () => void; exportTranscript: () => void };
 interface ChatWindowProps {
   docId: string | null;
-  /** When true, simulate SSE stream (no backend). */
   mock?: boolean;
   accessToken?: string | null;
+  session?: ChatSession;
+  onSelectSource?: (source: ChatSource) => void;
 }
 
-function createMessageId() {
-  return `msg-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+function CopyMessage({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    if (!copied) return;
+    const timer = setTimeout(() => setCopied(false), 2000);
+    return () => clearTimeout(timer);
+  }, [copied]);
+  return <button className="message-action" onClick={async () => {
+    try { await navigator.clipboard.writeText(text); setCopied(true); setFailed(false); }
+    catch { setFailed(true); }
+  }} aria-label="Sao chép câu trả lời">{copied ? <Check size={13} /> : <Copy size={13} />}{copied ? "Đã sao chép" : failed ? "Không thể sao chép" : "Sao chép"}</button>;
 }
 
-export const ChatWindow = forwardRef<ChatWindowHandle, ChatWindowProps>(
-  function ChatWindow(
-    { docId, mock = true, accessToken },
-    ref
-  ) {
-    const [messages, setMessages] = useState<ChatMessage[]>([]);
-    const [input, setInput] = useState("");
-    const [loading, setLoading] = useState(false);
-    const [error, setError] = useState<string | null>(null);
-    const scrollRef = useRef<HTMLDivElement>(null);
-    const activeRequest = useRef<AbortController | null>(null);
-
-    const clearMessages = useCallback(() => {
-      activeRequest.current?.abort();
-      activeRequest.current = null;
-      setLoading(false);
-      setMessages([]);
-      setError(null);
-      setInput("");
-    }, []);
-
-    useEffect(() => {
-      clearMessages();
-      return () => { activeRequest.current?.abort(); };
-    }, [docId, clearMessages]);
-
-    useEffect(() => {
-      scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
-    }, [messages]);
-
-    useImperativeHandle(
-      ref,
-      () => ({
-        clearMessages,
-        exportTranscript: () => {
-          const lines: string[] = ["=== LỊCH SỬ CHAT ===", ""];
-          messages.forEach((m) => {
-            const who = m.role === "user" ? "Bạn" : "AI";
-            lines.push(`[${who}]`, m.content, "");
-          });
-          const blob = new Blob([lines.join("\n")], { type: "text/plain;charset=utf-8" });
-          const url = URL.createObjectURL(blob);
-          const a = document.createElement("a");
-          a.href = url;
-          a.download = `chat-${new Date().toISOString().split("T")[0]}.txt`;
-          a.click();
-          URL.revokeObjectURL(url);
-        },
-      }),
-      [messages, clearMessages]
-    );
-
-    const appendTextDelta = useCallback((messageId: string, textDelta: string) => {
-      setMessages((prev) =>
-        prev.map((m) => (m.id === messageId ? { ...m, content: m.content + textDelta } : m))
-      );
-    }, []);
-
-    const setSourcesForMessage = useCallback((messageId: string, sources: ChatSource[]) => {
-      setMessages((prev) =>
-        prev.map((m) => (m.id === messageId ? { ...m, sources } : m))
-      );
-    }, []);
-
-    const finishStreaming = useCallback((messageId: string) => {
-      setMessages((prev) =>
-        prev.map((m) => (m.id === messageId ? { ...m, isStreaming: false } : m))
-      );
-    }, []);
-
-    const handleSubmit = useCallback(
-      async (e: React.FormEvent) => {
-        e.preventDefault();
-        const q = input.trim();
-        if (!q || activeRequest.current) return;
-        if (!docId && !mock) {
-          setError("Vui lòng tải lên một tài liệu trước.");
-          return;
-        }
-        if (!mock && !accessToken) {
-          setError("Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại.");
-          return;
-        }
-
-        const controller = new AbortController();
-        activeRequest.current = controller;
-
-        setError(null);
-        setInput("");
-        const userMsg: ChatMessage = {
-          id: createMessageId(),
-          role: "user",
-          content: q,
-        };
-        setMessages((prev) => [...prev, userMsg]);
-
-        const assistantId = createMessageId();
-        const assistantMsg: ChatMessage = {
-          id: assistantId,
-          role: "assistant",
-          content: "",
-          isStreaming: true,
-        };
-        setMessages((prev) => [...prev, assistantMsg]);
-        setLoading(true);
-
-        try {
-          if (mock) {
-            const mockSources: ChatSource[] = [
-              { page: 1, source: "document.pdf", score: 0.92 },
-              { page: 2, source: "document.pdf", score: 0.85 },
-            ];
-            setSourcesForMessage(assistantId, mockSources);
-            const mockText =
-              "Đây là câu trả lời mẫu dựa trên ngữ cảnh tài liệu (chế độ mock). Khi kết nối backend, câu trả lời sẽ được stream từng token.";
-            for (let i = 0; i < mockText.length; i++) {
-              await new Promise((r) => setTimeout(r, 20));
-              if (controller.signal.aborted) return;
-              appendTextDelta(assistantId, mockText[i]);
-            }
-            return;
-          }
-
-          const res = await streamChat(q, docId!, accessToken!, controller.signal);
-          if (controller.signal.aborted) {
-            await res.body?.cancel();
-            return;
-          }
-          if (!res.body) throw new Error("Không thể kết nối. Kiểm tra backend.");
-          for await (const event of parseChatEvents(res.body)) {
-            if (controller.signal.aborted) break;
-            if (event.type === "sources") setSourcesForMessage(assistantId, event.data);
-            if (event.type === "token") appendTextDelta(assistantId, event.data);
-            if (event.type === "error") setError(event.data.message);
-            if (event.type === "done") break;
-          }
-        } catch (err) {
-          if (!controller.signal.aborted) {
-            setError(err instanceof Error ? err.message : "Lỗi khi gửi tin nhắn.");
-          }
-        } finally {
-          if (activeRequest.current === controller && !controller.signal.aborted) {
-            activeRequest.current = null;
-            finishStreaming(assistantId);
-            setLoading(false);
-          }
-        }
-      },
-      [
-        input,
-        docId,
-        mock,
-        accessToken,
-        appendTextDelta,
-        setSourcesForMessage,
-        finishStreaming,
-      ]
-    );
-
-    const isEmpty = messages.length === 0;
-    const hasDoc = !!docId || mock;
-
-    const userBubble =
-      "bg-[#B22222] text-white dark:bg-[#B22222] dark:text-white";
-    const sendBtn =
-      "bg-[#B22222] hover:bg-[#9a1d1d] dark:bg-[#B22222] dark:hover:bg-[#9a1d1d]";
-
-    const shellInputWrap =
-      "border-slate-200 bg-[#f7f7f4] dark:border-slate-700 dark:bg-slate-800 focus-within:border-[#B22222]/50 focus-within:ring-2 focus-within:ring-[#B22222]/15";
-
-    return (
-      <div className="flex h-full min-h-0 flex-col bg-white dark:bg-slate-900">
-        <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto p-4 md:p-6">
-          {isEmpty && (
-            <div className="flex h-full min-h-[200px] flex-col items-center justify-center gap-2 text-center text-slate-500 dark:text-slate-400">
-              {!hasDoc ? (
-                <>
-                  <p>Chưa có tài liệu nào.</p>
-                  <p className="text-sm">Tải lên PDF ở trên để bắt đầu hỏi đáp.</p>
-                </>
-              ) : (
-                <>
-                  <p>Chưa có tin nhắn.</p>
-                  <p className="text-sm">Nhập câu hỏi và nhấn Gửi.</p>
-                </>
-              )}
-            </div>
-          )}
-
-          {!isEmpty && (
-            <ul className="space-y-4">
-              {messages.map((m) => (
-                <li
-                  key={m.id}
-                  className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}
-                >
-                  <div
-                    className={`max-w-[85%] rounded-2xl px-4 py-2 shadow-sm ${
-                      m.role === "user"
-                        ? userBubble
-                        : "bg-slate-100 text-slate-800 dark:bg-slate-700 dark:text-slate-200"
-                    }`}
-                  >
-                    <div className="whitespace-pre-wrap break-words">
-                      {m.content}
-                      {m.isStreaming && <StreamingCursor />}
-                    </div>
-                    {m.role === "assistant" && m.sources && m.sources.length > 0 && (
-                      <SourceCardList sources={m.sources} />
-                    )}
-                  </div>
-                </li>
-              ))}
-            </ul>
-          )}
-
-          {error && (
-            <div className="mt-2 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-900/30 dark:text-red-300">
-              {error}
-            </div>
-          )}
+export const ChatWindow = forwardRef<ChatWindowHandle, ChatWindowProps>(function ChatWindow(
+  { docId, mock = true, accessToken, session, onSelectSource }, ref
+) {
+  const local = useChatSession({ docId, mock, accessToken, enabled: !session });
+  const chat = session ?? local;
+  const scroll = useRef<HTMLDivElement>(null);
+  const stickToBottom = useRef(true);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  useImperativeHandle(ref, () => ({ clearMessages: chat.clearMessages, exportTranscript: chat.exportTranscript }), [chat.clearMessages, chat.exportTranscript]);
+  useEffect(() => {
+    if (stickToBottom.current) scroll.current?.scrollTo({ top: scroll.current.scrollHeight, behavior: "smooth" });
+  }, [chat.messages]);
+  useEffect(() => {
+    if (!inputRef.current) return;
+    inputRef.current.style.height = "auto";
+    inputRef.current.style.height = `${Math.min(inputRef.current.scrollHeight, 150)}px`;
+  }, [chat.input]);
+  const hasDoc = !!docId || mock;
+  return <div className="flex min-h-0 flex-1 flex-col">
+    <div ref={scroll} onScroll={() => {
+      const element = scroll.current;
+      if (element) stickToBottom.current = element.scrollHeight - element.scrollTop - element.clientHeight < 100;
+    }} className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 sm:px-8">
+      {chat.messages.length === 0 ? <div className="mx-auto flex h-full min-h-[310px] max-w-lg flex-col items-center justify-center py-10 text-center">
+        <div className="mb-6 flex h-16 w-16 items-center justify-center rounded-[22px] border border-white bg-gradient-to-br from-blue-50 to-white text-blue-500 shadow-[0_8px_30px_-10px_#93baff]"><Sparkles size={28} strokeWidth={1.4} /></div>
+        <span className="mb-3 text-[10px] font-semibold uppercase tracking-[0.23em] text-blue-500">Một câu hỏi, nhiều khám phá</span>
+        <h2 className="font-sans text-[27px] font-semibold leading-tight tracking-tight sm:text-[32px]">Bạn muốn tìm hiểu điều gì?</h2>
+        <p className="mt-4 max-w-sm text-sm leading-6 text-slate-500">{hasDoc ? "Cùng tìm những ý chính, làm rõ thông tin và khám phá tài liệu — luôn có nguồn để đối chiếu." : "Tải lên một tệp PDF và đặt câu hỏi. Baymax sẽ giúp bạn tìm câu trả lời kèm trích dẫn nguồn."}</p>
+        {!hasDoc && <Link href="/documents" className="secondary-button mt-5 text-xs"><FileText size={15} /> Chọn tài liệu từ thư viện</Link>}
+        <div className="mt-7 flex flex-wrap justify-center gap-2">
+          {["Tóm tắt tài liệu", "Các điểm quan trọng là gì?", "Liệt kê các mốc thời gian"].map((question) =>
+            <button key={question} className="suggestion-chip" disabled={!hasDoc} onClick={() => { chat.setInput(question); inputRef.current?.focus(); }}>{question}</button>)}
         </div>
-
-        <form
-          onSubmit={handleSubmit}
-          className="shrink-0 border-t border-slate-200 bg-white p-4 dark:border-slate-700 dark:bg-slate-900 md:px-6"
-        >
-          <div className={`flex gap-3 rounded-2xl border p-3 ${shellInputWrap}`}>
-            <textarea
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) {
-                  e.preventDefault();
-                  if (!loading && input.trim()) {
-                    e.currentTarget.form?.requestSubmit();
-                  }
-                }
-              }}
-              placeholder="Nhập tin nhắn của bạn..."
-              rows={1}
-              className="max-h-36 min-h-[44px] flex-1 resize-none border-0 bg-transparent px-2 py-2 text-slate-900 placeholder-slate-400 focus:outline-none dark:text-slate-100"
-              disabled={loading}
-            />
-            <button
-              type="submit"
-              disabled={loading || !input.trim()}
-              className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-xl text-white disabled:opacity-40 ${sendBtn}`}
-              aria-label="Gửi"
-            >
-              {loading ? "…" : "➤"}
-            </button>
-          </div>
-        </form>
-      </div>
-    );
-  }
-);
+      </div> : <ol className="mx-auto max-w-3xl space-y-7 py-7" aria-label="Tin nhắn hội thoại">
+        {chat.messages.map((message) => <li key={message.id} className={message.role === "user" ? "flex justify-end" : ""}>
+          {message.role === "user" ? <div className="max-w-[88%] whitespace-pre-wrap break-words rounded-[20px] rounded-br-md border border-blue-100/70 bg-[#eaf2ff] px-5 py-3 text-sm leading-6 text-slate-700">{message.content}</div>
+            : <div className="min-w-0">
+              <div className="mb-3 flex items-center gap-2 text-xs font-semibold text-slate-700"><span className="flex h-6 w-6 items-center justify-center rounded-lg bg-blue-500 text-white"><Sparkles size={13} /></span>Baymax
+                {message.isStreaming && <span className="ml-1 text-[10px] font-normal text-blue-500">Đang đọc tài liệu…</span>}</div>
+              {message.content ? <MessageMarkdown content={message.content} sources={message.sources} onSelectSource={onSelectSource} />
+                : message.isStreaming ? <div className="flex gap-1 py-2" aria-label="Đang tạo câu trả lời">{[0, 1, 2].map((dot) => <span key={dot} className="h-1.5 w-1.5 animate-pulse rounded-full bg-blue-300" style={{ animationDelay: `${dot * 150}ms` }} />)}</div> : null}
+              {!!message.sources?.length && <SourceCardList sources={message.sources} onSelectSource={onSelectSource} />}
+              {!message.isStreaming && message.content && <div className="mt-3 flex items-center gap-3"><CopyMessage text={message.content} />{message.interrupted && <span className="text-[10px] text-slate-400">Câu trả lời đã dừng</span>}</div>}
+            </div>}
+        </li>)}
+      </ol>}
+    </div>
+    <div className="shrink-0 px-3 pb-3 pt-2 sm:px-6 sm:pb-4">
+      {chat.error && <div role="alert" className="mb-3 rounded-xl bg-red-50 p-3 text-xs text-red-700">{chat.error}</div>}
+      <form onSubmit={(event) => { event.preventDefault(); stickToBottom.current = true; void chat.submit(); }} className="composer">
+        <textarea ref={inputRef} value={chat.input} onChange={(event) => chat.setInput(event.target.value)} rows={1} maxLength={8000}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+              event.preventDefault();
+              if (!chat.loading) event.currentTarget.form?.requestSubmit();
+            }
+          }} aria-label="Câu hỏi của bạn" placeholder={hasDoc ? "Nhập câu hỏi của bạn…" : "Chọn một PDF để bắt đầu…"}
+          disabled={chat.loading || !hasDoc} className="max-h-[150px] min-h-11 flex-1 resize-none bg-transparent px-2 py-3 text-sm leading-5 text-slate-800 outline-none placeholder:text-slate-400 disabled:opacity-60" />
+        {chat.loading ? <button type="button" onClick={chat.stop} className="send-button" aria-label="Dừng trả lời"><Square size={16} fill="currentColor" /></button>
+          : <button type="submit" className="send-button" disabled={!hasDoc || !chat.input.trim()} aria-label="Gửi"><ArrowUp size={19} /></button>}
+      </form>
+      <p className="mt-2.5 text-center text-[10px] leading-4 text-slate-400">Câu trả lời dựa trên tài liệu của bạn · Bấm vào trích dẫn để xem nguồn</p>
+    </div>
+  </div>;
+});
 
 ChatWindow.displayName = "ChatWindow";

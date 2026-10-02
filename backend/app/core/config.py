@@ -53,6 +53,9 @@ class AppConfig:
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
     supabase_url: Optional[str] = None
     supabase_publishable_key: Optional[str] = None
+    supabase_service_role_key: Optional[str] = None
+    document_job_lease_seconds: int = 120
+    document_worker_poll_seconds: float = 2.0
     supabase_s3_endpoint: Optional[str] = None
     supabase_s3_region: str = "ap-southeast-2"
     supabase_s3_access_key_id: Optional[str] = None
@@ -115,6 +118,8 @@ class AppConfig:
             ("embedding_batch_size", "EMBEDDING_BATCH_SIZE"), ("upstream_timeout_seconds", "UPSTREAM_TIMEOUT_SECONDS"),
             ("retrieval_top_k", "RETRIEVAL_TOP_K"), ("context_max_chars", "CONTEXT_MAX_CHARS"),
             ("milvus_nlist", "MILVUS_NLIST"), ("milvus_nprobe", "MILVUS_NPROBE"),
+            ("document_job_lease_seconds", "DOCUMENT_JOB_LEASE_SECONDS"),
+            ("document_worker_poll_seconds", "DOCUMENT_WORKER_POLL_SECONDS"),
         ):
             value = getattr(self, attr)
             if not math.isfinite(value) or value <= 0:

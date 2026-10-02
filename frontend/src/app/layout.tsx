@@ -3,11 +3,11 @@ import "./globals.css";
 import { Inter } from "next/font/google";
 import { cn } from "@/lib/utils";
 
-const inter = Inter({ subsets: ["latin"], variable: "--font-sans" });
+const inter = Inter({ subsets: ["latin", "vietnamese"], variable: "--font-sans" });
 
 export const metadata: Metadata = {
-  title: "RAG PDF Chatbot",
-  description: "Upload PDFs and chat with your documents",
+  title: "Baymax · Hỏi đáp tài liệu",
+  description: "Khám phá tài liệu PDF cùng Baymax — câu trả lời rõ ràng, trích dẫn nguồn có thể kiểm chứng.",
 };
 
 export default function RootLayout({

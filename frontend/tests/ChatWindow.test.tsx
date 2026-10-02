@@ -9,7 +9,7 @@ vi.mock("@/lib/api", async (importOriginal) => ({
   streamChat: vi.fn(),
 }));
 const streamMock = vi.mocked(streamChat);
-const input = () => screen.getByPlaceholderText("Nhập tin nhắn của bạn...");
+const input = () => screen.getByLabelText("Câu hỏi của bạn");
 function send(question = "Question A") {
   fireEvent.change(input(), { target: { value: question } });
   fireEvent.click(screen.getByRole("button", { name: "Gửi" }));
@@ -26,7 +26,7 @@ it("renders summary sources without inventing a similarity percentage", async ()
   render(<ChatWindow docId="a" mock={false} accessToken="token" />);
   send("Tóm tắt PDF này");
   await screen.findByText("Summary A");
-  expect(screen.getByText("Nội dung tài liệu")).toBeInTheDocument();
+  expect(screen.getByText(/Nội dung tài liệu/)).toBeInTheDocument();
   expect(screen.queryByText(/Độ liên quan/)).not.toBeInTheDocument();
 });
 
@@ -91,7 +91,7 @@ it("stops demo output when chat is cleared", async () => {
     expect(input()).toBeEnabled();
     await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
     expect(screen.queryByText("Question A")).not.toBeInTheDocument();
-    expect(screen.getByText("Chưa có tin nhắn.")).toBeInTheDocument();
+    expect(screen.getByText("Bạn muốn tìm hiểu điều gì?")).toBeInTheDocument();
   } finally {
     vi.useRealTimers();
   }

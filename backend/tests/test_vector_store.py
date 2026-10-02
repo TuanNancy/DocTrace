@@ -45,6 +45,13 @@ async def test_ensure_collection_preserves_compatible_collection(milvus_backend)
     backend.collection.load.assert_called_once()
 
 
+async def test_deletion_filters_owner_and_generation_without_dropping_collection(milvus_backend):
+    backend = milvus_backend
+    await backend.store.delete_document("generation", user_id="owner")
+    backend.collection.delete.assert_called_once_with(expr='user_id == "owner" and doc_id == "generation"')
+    backend.drop_collection.assert_not_called()
+
+
 @pytest.mark.parametrize("operation", ["ensure", "insert"])
 async def test_dimension_mismatch_never_drops_or_inserts(milvus_backend, operation):
     backend = milvus_backend

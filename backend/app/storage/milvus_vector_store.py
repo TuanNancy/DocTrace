@@ -199,6 +199,38 @@ class MilvusVectorStore(VectorStore):
     async def get_document_chunks(self, doc_id: str, *, user_id: str) -> List[RetrievedChunk]:
         return await run_in_threadpool(self._get_document_chunks, doc_id, user_id)
 
+    def _get_chunk(self, doc_id: str, chunk_id: str, user_id: str) -> Optional[RetrievedChunk]:
+        if not user_id or not doc_id or not chunk_id:
+            raise ValueError("Document owner, ID and chunk ID are required.")
+        self._connect()
+        if not has_collection(self.collection_name, using=self.alias):
+            return None
+        collection = Collection(self.collection_name, using=self.alias)
+        rows = collection.query(
+            expr=f"user_id == {json.dumps(user_id)} and doc_id == {json.dumps(doc_id)} and id == {json.dumps(chunk_id)}",
+            output_fields=[self.PK_FIELD, self.TEXT_FIELD, self.PAGE_FIELD, self.SOURCE_FIELD],
+            consistency_level="Strong", limit=1,
+        )
+        if not rows:
+            return None
+        row = rows[0]
+        return RetrievedChunk(row["id"], doc_id, row["text"], row["page"], row["source"], None)
+
+    async def get_chunk(self, doc_id: str, chunk_id: str, *, user_id: str) -> Optional[RetrievedChunk]:
+        return await run_in_threadpool(self._get_chunk, doc_id, chunk_id, user_id)
+
+    def _delete_document(self, doc_id: str, user_id: str) -> None:
+        if not user_id or not doc_id:
+            raise ValueError("Document owner and ID are required.")
+        self._connect()
+        if has_collection(self.collection_name, using=self.alias):
+            collection = Collection(self.collection_name, using=self.alias)
+            collection.delete(expr=f"user_id == {json.dumps(user_id)} and doc_id == {json.dumps(doc_id)}")
+            collection.flush()
+
+    async def delete_document(self, doc_id: str, *, user_id: str) -> None:
+        await run_in_threadpool(self._delete_document, doc_id, user_id)
+
     def _search_chunks(self, query_vector, doc_id, top_k, min_score, user_id) -> List[RetrievedChunk]:
         if not user_id:
             raise ValueError("Document owner is required.")
