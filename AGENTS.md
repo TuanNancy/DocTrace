@@ -23,7 +23,7 @@
 
 ## Current Checkout Limitations
 
-Frontend `src/lib/` is restored and explicitly unignored. Use `frontend/.env.example` for Supabase public settings and API URL; build-time `NEXT_PUBLIC_*` changes require a rebuild. The backend still uses Milvus host/port rather than a Zilliz URI/token adapter.
+Frontend `src/lib/` is restored and explicitly unignored. Use `frontend/.env.example` for Supabase public settings and API URL; build-time `NEXT_PUBLIC_*` changes require a rebuild. Milvus supports local host/port and cloud URI/token; URI mode defaults to AUTOINDEX.
 
 ## Coding Style & Naming Conventions
 
@@ -38,5 +38,9 @@ Use pytest/pytest-asyncio with `test_*.py` files and `test_*` functions. The Tes
 History uses imperative subjects such as `Update`, `Add`, and `Refactor`, without mandatory prefixes. Recommended PR content: purpose, relevant issues, validation results/blockers, and UI screenshots.
 
 ## Security & Configuration
+
+- `AppConfig(...)` never reads env; `AppConfig.from_env()` parses environment or an explicit mapping. `get_config()` loads root then backend `.env` once and caches the result; restart after edits. Pass the same config through pipeline/factories/embedder. Models must be configured explicitly when their service is used.
+- Retrieval callers must pass `top_k` and `min_score`; the manual retrieval script reads application defaults and accepts `--top-k` / `--min-score`. Vector dimensions come from API results; the old dimension env settings have no effect.
+- Tests seed an isolated config before importing the app, avoiding developer `.env` files. Use explicit mappings for environment parsing tests.
 
 Use ignored environment files: root `.env`, overriding `backend/.env`, and `frontend/.env.local`. Never place OpenRouter/S3 secrets in `NEXT_PUBLIC_*`. `MilvusVectorStore.ensure_collection()` rejects dimension mismatches without deleting data; only explicit `recreate_collection()` deletes existing chunks. `get_connection_status()` checks local connection state, not server health.

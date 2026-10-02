@@ -2,7 +2,7 @@
 Chat provider interface for generating completions and streaming text deltas.
 """
 from abc import ABC, abstractmethod
-from typing import AsyncIterator, Dict, List, Optional, Any
+from typing import AsyncIterator, Dict, List, Optional
 
 
 class ChatProvider(ABC):
@@ -84,10 +84,3 @@ class ChatProvider(ABC):
 
     async def close(self) -> None:
         """Release resources owned by this request's provider."""
-
-    def get_model_info(self) -> Dict[str, Any]:
-        return {
-            "provider": self.__class__.__name__,
-            "model": self.model,
-            "api_key_present": bool(self.api_key),
-        }

@@ -16,7 +16,7 @@ export function SourceCard({ source }: SourceCardProps) {
           Trang {source.page}
         </span>
         <span className="text-xs text-slate-500 dark:text-slate-400">
-          Độ liên quan: {(source.score * 100).toFixed(1)}%
+          {source.score === null ? "Nội dung tài liệu" : `Độ liên quan: ${(source.score * 100).toFixed(1)}%`}
         </span>
         {source.source && (
           <span className="truncate text-xs text-slate-500 dark:text-slate-400" title={source.source}>

@@ -41,10 +41,11 @@ async def index_pdf_bytes(
         chunks = await run_in_threadpool(chunk_documents, docs)
         if not chunks:
             raise ValueError("No text chunks produced from PDF.")
-        if len(chunks) > get_config().max_chunks_per_document:
+        config = get_config()
+        if len(chunks) > config.max_chunks_per_document:
             raise ValueError("PDF produces too many chunks. Split it into smaller documents.")
 
-        embedder = await run_in_threadpool(get_embedder)
+        embedder = await run_in_threadpool(get_embedder, config=config)
         vectors = await run_in_threadpool(embedder.embed_documents, [c["text"] for c in chunks])
         if len(vectors) != len(chunks):
             raise RuntimeError("Embedding count does not match chunk count.")
@@ -60,7 +61,7 @@ async def index_pdf_bytes(
                 vector_dim,
             )
 
-        vector_store = await create_connected_vector_store()
+        vector_store = await create_connected_vector_store(config=config)
         try:
             # Reject incompatible existing collections without deleting their data.
             await vector_store.ensure_collection(vector_dim=vector_dim)

@@ -10,6 +10,13 @@ from fastapi.testclient import TestClient
 # Ensure backend app is on path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from app.core import config as config_module
+
+# Prevent app construction and tests from loading developers' .env files.
+config_module._config = config_module.AppConfig(
+    model="test-model", embedding_model="test-embedding", openrouter_api_key="test-key",
+)
+
 from app.core.auth import require_supabase_user
 from app.main import app
 

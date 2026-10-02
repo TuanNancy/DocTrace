@@ -5,7 +5,7 @@ import logging
 from functools import lru_cache
 from typing import Protocol
 
-from app.core.config import get_config
+from app.core.config import AppConfig, get_config
 
 logger = logging.getLogger(__name__)
 
@@ -22,16 +22,15 @@ class Embedder(Protocol):
 class OpenRouterEmbedder:
     """Generate embeddings through OpenRouter using the OpenAI-compatible SDK."""
 
-    def __init__(self, model: str, api_key: str):
+    def __init__(self, model: str, api_key: str, base_url: str, timeout: float, batch_size: int):
         self._model = model
         openai = __import__("openai")
-        config = get_config()
         self._client = openai.OpenAI(
             api_key=api_key,
-            base_url=config.openrouter_base_url.rstrip("/"),
-            timeout=config.upstream_timeout_seconds,
+            base_url=base_url,
+            timeout=timeout,
         )
-        self._batch_size = config.embedding_batch_size
+        self._batch_size = batch_size
         try:
             self._dim = self._probe_embedding_dimension()
         except Exception:
@@ -71,10 +70,17 @@ class OpenRouterEmbedder:
 
 
 @lru_cache(maxsize=2)
-def get_embedder(model: str | None = None) -> Embedder:
-    """Return a cached OpenRouter embedder; first creation probes the API for dimension."""
-    config = get_config()
+def _cached_embedder(model: str, api_key: str, base_url: str, timeout: float, batch_size: int) -> Embedder:
     return OpenRouterEmbedder(
-        model=model or config.embedding_model,
-        api_key=config.openrouter_api_key,
+        model=model, api_key=api_key, base_url=base_url, timeout=timeout, batch_size=batch_size,
+    )
+
+
+def get_embedder(*, config: AppConfig | None = None) -> Embedder:
+    """Cache by all client settings so injected configs never reuse another endpoint/key."""
+    config = config if config is not None else get_config()
+    config.require_openrouter(embeddings=True)
+    return _cached_embedder(
+        config.embedding_model, config.openrouter_api_key, config.openrouter_base_url,
+        config.upstream_timeout_seconds, config.embedding_batch_size,
     )

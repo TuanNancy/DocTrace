@@ -18,6 +18,18 @@ const response = () => new Response('event: token\ndata: "Answer A"\n\nevent: do
 
 beforeEach(() => { streamMock.mockReset(); });
 
+it("renders summary sources without inventing a similarity percentage", async () => {
+  streamMock.mockResolvedValue(new Response(
+    'event: sources\ndata: [{"page":1,"source":"a.pdf","score":null}]\n\n'
+    + 'event: token\ndata: "Summary A"\n\nevent: done\ndata: "[DONE]"\n\n'
+  ));
+  render(<ChatWindow docId="a" mock={false} accessToken="token" />);
+  send("Tóm tắt PDF này");
+  await screen.findByText("Summary A");
+  expect(screen.getByText("Nội dung tài liệu")).toBeInTheDocument();
+  expect(screen.queryByText(/Độ liên quan/)).not.toBeInTheDocument();
+});
+
 it("clears messages and draft when the selected document changes", async () => {
   streamMock.mockResolvedValue(response());
   const { rerender } = render(<ChatWindow docId="a" mock={false} accessToken="token" />);

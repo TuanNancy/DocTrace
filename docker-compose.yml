@@ -27,7 +27,7 @@ services:
   # ── 2. MinIO: object storage ──────────────────
   minio:
     container_name: milvus-minio
-    image: minio/minio:RELEASE.2023-03-20T20-16-18Z
+    image: milvusdb/minio:RELEASE.2024-12-18T13-15-44Z
     environment:
       MINIO_ACCESS_KEY: minioadmin
       MINIO_SECRET_KEY: minioadmin
@@ -38,7 +38,7 @@ services:
       - ./volumes/minio:/minio_data
     command: minio server /minio_data --console-address ":9001"
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      test: ["CMD", "mc", "ready", "local"]
       interval: 30s
       timeout: 20s
       retries: 3

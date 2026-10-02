@@ -47,6 +47,14 @@ describe("API transport", () => {
 });
 
 describe("SSE decoding", () => {
+  it("accepts document summary citations without a similarity score", async () => {
+    const body = new Response('event: sources\ndata: [{"page":1,"source":"a.pdf","score":null}]\n\n'
+      + 'event: done\ndata: "[DONE]"\n\n').body!;
+    const events = [];
+    for await (const event of streamChatSSEParser(body)) events.push(event);
+    expect(events[0]).toEqual({ type: "sources", data: [{ page: 1, source: "a.pdf", score: null }] });
+  });
+
   it("handles split UTF-8, CRLF, comments, sources, errors and done", async () => {
     const payload = ': ping\r\nevent: sources\r\ndata: [{"page":1,"source":"a.pdf","score":0.9}]\r\n\r\n'
       + 'event: token\r\ndata: "Tiếng Việt"\r\n\r\n'

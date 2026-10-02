@@ -6,6 +6,7 @@ import pytest
 from pymilvus.client.search_result import Hit
 
 from app.storage import milvus_vector_store as milvus
+from app.core.config import AppConfig
 
 
 @pytest.fixture
@@ -26,7 +27,7 @@ def milvus_backend(monkeypatch):
     monkeypatch.setattr(milvus, "has_collection", has_collection)
     monkeypatch.setattr(milvus, "drop_collection", drop_collection)
     return SimpleNamespace(
-        store=milvus.MilvusVectorStore({"collection": "test_chunks"}),
+        store=milvus.MilvusVectorStore(AppConfig(milvus_collection="test_chunks")),
         collection=collection,
         collection_factory=collection_factory,
         has_collection=has_collection,
@@ -121,7 +122,7 @@ async def test_search_returns_persistent_chunk_id_and_filters_scores(milvus_back
     backend.collection.search.return_value = [hits]
 
     for _ in range(2):
-        chunks = await backend.store.search_chunks([0.1, 0.2, 0.3], "doc-1", min_score=0.32, user_id="user-a")
+        chunks = await backend.store.search_chunks([0.1, 0.2, 0.3], "doc-1", top_k=8, min_score=0.32, user_id="user-a")
         assert [chunk.chunk_id for chunk in chunks] == ["stored-chunk-1"]
         assert chunks[0].text == entity["text"]
         assert chunks[0].score == 0.9
@@ -159,7 +160,7 @@ async def test_insert_persists_owner(milvus_backend):
 
 async def test_cloud_uses_uri_token_and_autoindex_without_ivf_params(milvus_backend):
     backend = milvus_backend
-    store = milvus.MilvusVectorStore({"uri": "https://cluster.example.com", "token": "test-token"})
+    store = milvus.MilvusVectorStore(AppConfig(milvus_uri="https://cluster.example.com", milvus_token="test-token"))
     backend.collection.indexes = []
     await store.ensure_collection(3)
     backend.connections.connect.assert_called_once_with(
@@ -168,7 +169,7 @@ async def test_cloud_uses_uri_token_and_autoindex_without_ivf_params(milvus_back
     assert backend.collection.create_index.call_args.args[1] == {
         "index_type": "AUTOINDEX", "metric_type": "COSINE", "params": {},
     }
-    await store.search_chunks([1, 2, 3], "doc", user_id="user-a")
+    await store.search_chunks([1, 2, 3], "doc", top_k=8, min_score=None, user_id="user-a")
     assert backend.collection.search.call_args.kwargs["param"]["params"] == {}
     assert backend.collection.search.call_args.kwargs["consistency_level"] == "Strong"
 
@@ -178,7 +179,7 @@ async def test_requests_own_distinct_connections(milvus_backend):
 
     backend = milvus_backend
     first = backend.store
-    second = milvus.MilvusVectorStore({})
+    second = milvus.MilvusVectorStore(AppConfig())
     await asyncio.gather(first.connect(), second.connect())
     assert first.alias != second.alias
     aliases = {call.kwargs["alias"] for call in backend.connections.connect.call_args_list}
@@ -186,7 +187,7 @@ async def test_requests_own_distinct_connections(milvus_backend):
     await first.disconnect()
     backend.connections.remove_connection.assert_called_once_with(first.alias)
     assert await second.is_connected()
-    await second.search_chunks([1, 2, 3], "doc", user_id="user-b")
+    await second.search_chunks([1, 2, 3], "doc", top_k=8, min_score=None, user_id="user-b")
     assert backend.collection_factory.call_args.kwargs["using"] == second.alias
     await second.disconnect()
     assert backend.connections.remove_connection.call_count == 2
@@ -197,9 +198,9 @@ async def test_owner_required_and_filter_values_escaped(milvus_backend):
 
     store = milvus_backend.store
     with pytest.raises(ValueError, match="owner"):
-        await store.search_chunks([1, 2, 3], "doc", user_id="")
+        await store.search_chunks([1, 2, 3], "doc", top_k=8, min_score=None, user_id="")
     malicious_id = 'x" or user_id != "'
-    await store.search_chunks([1, 2, 3], malicious_id, user_id="user-b")
+    await store.search_chunks([1, 2, 3], malicious_id, top_k=8, min_score=None, user_id="user-b")
     expr = milvus_backend.collection.search.call_args.kwargs["expr"]
     assert expr == 'user_id == "user-b" and doc_id == ' + json.dumps(malicious_id)
 
@@ -207,7 +208,7 @@ async def test_owner_required_and_filter_values_escaped(milvus_backend):
 async def test_search_failure_is_not_disguised_as_empty_results(milvus_backend):
     milvus_backend.collection.search.side_effect = RuntimeError("service down")
     with pytest.raises(RuntimeError, match="service down"):
-        await milvus_backend.store.search_chunks([1, 2, 3], "doc", user_id="user-a")
+        await milvus_backend.store.search_chunks([1, 2, 3], "doc", top_k=8, min_score=None, user_id="user-a")
 
 
 async def test_blocking_sdk_runs_outside_event_loop(milvus_backend):
@@ -218,3 +219,66 @@ async def test_blocking_sdk_runs_outside_event_loop(milvus_backend):
     milvus_backend.connections.connect.side_effect = lambda **kwargs: worker_threads.append(threading.get_ident())
     await milvus_backend.store.connect()
     assert worker_threads and all(thread != main_thread for thread in worker_threads)
+
+
+async def test_summary_reads_all_batches_scoped_to_owner_and_document(milvus_backend):
+    backend = milvus_backend
+    iterator = backend.collection.query_iterator.return_value
+    iterator.next.side_effect = [
+        [{"id": "late", "doc_id": "doc", "text": "Conclusion", "page": 3,
+          "source": "a.pdf", "metadata": '{"chunk_index": 2}'}],
+        [{"id": "second", "doc_id": "doc", "text": "Middle", "page": 1,
+          "source": "a.pdf", "metadata": '{"chunk_index": 1}'},
+         {"id": "first", "doc_id": "doc", "text": "Introduction", "page": 1,
+          "source": "a.pdf", "metadata": '{"chunk_index": 0}'}],
+        [],
+    ]
+    chunks = await backend.store.get_document_chunks('doc"quoted', user_id="user-a")
+    assert [chunk.text for chunk in chunks] == ["Introduction", "Middle", "Conclusion"]
+    assert all(chunk.score is None for chunk in chunks)
+    kwargs = backend.collection.query_iterator.call_args.kwargs
+    assert kwargs["expr"] == 'user_id == "user-a" and doc_id == "doc\\"quoted"'
+    assert kwargs["consistency_level"] == "Strong"
+    iterator.close.assert_called_once()
+    backend.collection.search.assert_not_called()
+    backend.drop_collection.assert_not_called()
+
+
+async def test_summary_iterator_closed_on_failure(milvus_backend):
+    iterator = milvus_backend.collection.query_iterator.return_value
+    iterator.next.side_effect = RuntimeError("read failed")
+    with pytest.raises(RuntimeError, match="read failed"):
+        await milvus_backend.store.get_document_chunks("doc", user_id="user")
+    iterator.close.assert_called_once()
+
+
+@pytest.mark.parametrize("doc_id,user_id", [("", "user"), ("doc", "")])
+async def test_summary_requires_both_document_and_owner(milvus_backend, doc_id, user_id):
+    with pytest.raises(ValueError, match="owner"):
+        await milvus_backend.store.get_document_chunks(doc_id, user_id=user_id)
+    milvus_backend.collection.query_iterator.assert_not_called()
+
+
+async def test_summary_handles_missing_collection_and_legacy_metadata(milvus_backend):
+    backend = milvus_backend
+    backend.has_collection.return_value = False
+    assert await backend.store.get_document_chunks("doc", user_id="user") == []
+    backend.collection.query_iterator.assert_not_called()
+    backend.has_collection.return_value = True
+    backend.collection.query_iterator.return_value.next.side_effect = [
+        [{"id": "old", "doc_id": "doc", "text": "Old upload", "page": 1, "metadata": "{}"}], [],
+    ]
+    chunks = await backend.store.get_document_chunks("doc", user_id="user")
+    assert chunks[0].text == "Old upload"
+
+
+async def test_insert_persists_document_order_across_batches(milvus_backend):
+    import json
+
+    backend = milvus_backend
+    await backend.store.insert_chunks(
+        "doc", [{"text": "a"}, {"text": "b"}, {"text": "c"}],
+        [[1, 2, 3]] * 3, batch_size=2, user_id="user",
+    )
+    metadata = [json.loads(item) for call in backend.collection.insert.call_args_list for item in call.args[0][-1]]
+    assert [item["chunk_index"] for item in metadata] == [0, 1, 2]

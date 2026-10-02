@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional
 from pymilvus import Collection, CollectionSchema, DataType, FieldSchema, connections, drop_collection, has_collection
 from starlette.concurrency import run_in_threadpool
 
+from app.core.config import AppConfig
 from app.storage.base import InsertResult, RetrievedChunk, VectorStore
 
 logger = logging.getLogger(__name__)
@@ -26,18 +27,17 @@ class MilvusVectorStore(VectorStore):
     STATUS_FIELD = "status"
     METADATA_FIELD = "metadata"
 
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(self, config: AppConfig):
         super().__init__(config)
-        self.host = config.get("host", "localhost")
-        self.port = config.get("port", 19530)
-        self.uri = config.get("uri")
-        self.token = config.get("token")
-        self.collection_name = config.get("collection", "pdf_chunks")
-        self.vector_dim = config.get("vector_dim", 1536)
-        self.index_type = config.get("index_type", "AUTOINDEX" if self.uri else "IVF_FLAT")
-        self.metric_type = config.get("metric_type", "COSINE")
-        self.nlist = config.get("nlist", 128)
-        self.nprobe = config.get("nprobe", 32)
+        self.host = config.milvus_host
+        self.port = config.milvus_port
+        self.uri = config.milvus_uri
+        self.token = config.milvus_token
+        self.collection_name = config.milvus_collection
+        self.index_type = config.milvus_index_type
+        self.metric_type = config.milvus_metric_type
+        self.nlist = config.milvus_nlist
+        self.nprobe = config.milvus_nprobe
         self.alias = f"doctrace_{uuid.uuid4().hex}"
         self._collection: Optional[Collection] = None
 
@@ -151,7 +151,8 @@ class MilvusVectorStore(VectorStore):
                 [chunk["text"] for chunk in batch], vectors[i:i + batch_size],
                 [chunk.get("page", 0) for chunk in batch], [chunk.get("source", "") for chunk in batch],
                 [timestamp] * count, [timestamp] * count, ["completed"] * count,
-                [json.dumps(chunk.get("metadata", {}), ensure_ascii=False) for chunk in batch],
+                [json.dumps({**chunk.get("metadata", {}), "chunk_index": i + offset}, ensure_ascii=False)
+                 for offset, chunk in enumerate(batch)],
             ])
         collection.flush()
         return InsertResult(doc_id=doc_id, chunks_inserted=len(chunks), warnings=[])
@@ -161,6 +162,42 @@ class MilvusVectorStore(VectorStore):
         batch_size: int = 64, *, user_id: str,
     ) -> InsertResult:
         return await run_in_threadpool(self._insert_chunks, doc_id, chunks, vectors, batch_size, user_id)
+
+    def _get_document_chunks(self, doc_id: str, user_id: str) -> List[RetrievedChunk]:
+        if not user_id or not doc_id:
+            raise ValueError("Document owner and ID are required.")
+        self._connect()
+        if not has_collection(self.collection_name, using=self.alias):
+            return []
+        collection = Collection(self.collection_name, using=self.alias)
+        expr = f"{self.USER_ID_FIELD} == {json.dumps(user_id)} and {self.DOC_ID_FIELD} == {json.dumps(doc_id)}"
+        iterator = collection.query_iterator(
+            expr=expr, batch_size=256, consistency_level="Strong",
+            output_fields=[self.PK_FIELD, self.DOC_ID_FIELD, self.TEXT_FIELD,
+                           self.PAGE_FIELD, self.SOURCE_FIELD, self.METADATA_FIELD],
+        )
+        chunks = []
+        try:
+            while True:
+                rows = iterator.next()
+                if not rows:
+                    break
+                for row in rows:
+                    metadata = json.loads(row.get(self.METADATA_FIELD) or "{}")
+                    chunks.append(RetrievedChunk(
+                        chunk_id=row[self.PK_FIELD], doc_id=row[self.DOC_ID_FIELD],
+                        text=row[self.TEXT_FIELD], page=row.get(self.PAGE_FIELD, 0),
+                        source=row.get(self.SOURCE_FIELD, ""), score=None, metadata=metadata,
+                    ))
+        finally:
+            iterator.close()
+        # Older uploads have no chunk_index; retain stable ordering within each page.
+        return sorted(chunks, key=lambda chunk: (
+            chunk.page, chunk.metadata.get("chunk_index", 0), chunk.chunk_id,
+        ))
+
+    async def get_document_chunks(self, doc_id: str, *, user_id: str) -> List[RetrievedChunk]:
+        return await run_in_threadpool(self._get_document_chunks, doc_id, user_id)
 
     def _search_chunks(self, query_vector, doc_id, top_k, min_score, user_id) -> List[RetrievedChunk]:
         if not user_id:
@@ -204,6 +241,6 @@ class MilvusVectorStore(VectorStore):
 
     async def search_chunks(
         self, query_vector: List[float], doc_id: Optional[str] = None,
-        top_k: int = 8, min_score: Optional[float] = None, *, user_id: str,
+        *, top_k: int, min_score: Optional[float], user_id: str,
     ) -> List[RetrievedChunk]:
         return await run_in_threadpool(self._search_chunks, query_vector, doc_id, top_k, min_score, user_id)

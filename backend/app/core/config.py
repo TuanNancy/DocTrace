@@ -1,206 +1,170 @@
-"""
-Core configuration. LLM and embeddings use OpenRouter only (OpenAI-compatible HTTP API).
-"""
+"""Application defaults and environment parsing; consumers receive resolved settings."""
+import math
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Mapping, Optional, Tuple
+from urllib.parse import urlparse
 
 from dotenv import load_dotenv
 
-# Load .env: repo root first, then backend/.env (overrides) for local dev
-_project_root = Path(__file__).resolve().parents[3]
-load_dotenv(_project_root / ".env")
-load_dotenv(_project_root / "backend" / ".env", override=True)
 
-
-def _str(key: str, default: str = "") -> str:
-    v = os.getenv(key)
-    if v is None or v == "":
-        return default
-    return v.strip()
-
-
-def _optional_str(key: str, default: Optional[str] = None) -> Optional[str]:
-    v = os.getenv(key)
-    if v is None or v.strip() == "":
-        return default
-    return v.strip()
-
-
-def _int(key: str, default: int) -> int:
-    v = os.getenv(key)
-    return int(v) if v not in (None, "") else default
-
-
-def _float(key: str, default: float) -> float:
-    v = os.getenv(key)
-    return float(v) if v not in (None, "") else default
+def setting(default, env: str):
+    return field(default=default, metadata={"env": env})
 
 
 @dataclass
 class AppConfig:
-    """Application settings for PDF processing, AI, storage, and authentication."""
+    """Direct construction is environment-independent; from_env reads environment only."""
 
-    # ==================== Document Processing ====================
     chunk_size: int = 1000
     chunk_overlap: int = 150
     min_chars_per_page: int = 50
     scanned_page_ratio_threshold: float = 0.5
-
-    # ==================== Upload Settings ====================
     upload_max_size_mb: int = 50
     upload_max_concurrent: int = 1
     max_chunks_per_document: int = 2000
-    upload_allowed_content_types: Tuple[str, ...] = field(default_factory=lambda: ("application/pdf",))
+    upload_allowed_content_types: Tuple[str, ...] = field(
+        default=("application/pdf",), metadata={"env": None},
+    )
 
-    # ==================== Vector Database (Milvus) ====================
     milvus_host: str = "localhost"
     milvus_uri: Optional[str] = None
     milvus_token: Optional[str] = None
     milvus_port: int = 19530
     milvus_collection: str = "pdf_chunks"
-    milvus_vector_dim: int = 1536
-    milvus_index_type: str = "IVF_FLAT"
+    # Resolve the index default once, after the connection mode is known.
+    milvus_index_type: Optional[str] = None
     milvus_metric_type: str = "COSINE"
     milvus_nlist: int = 128
     milvus_nprobe: int = 32
 
-    # ==================== OpenRouter (LLM + embeddings) ====================
-    model: str = "openai/gpt-4o-mini"
-    temperature: float = 0.7
-    max_tokens: int = 4096
-
-    # ==================== Embedding Settings ====================
-    embedding_model: str = "text-embedding-3-small"
-    embedding_dimension: int = 1536
+    model: str = setting("", "RAG_MODEL")
+    temperature: float = setting(0.7, "RAG_TEMPERATURE")
+    max_tokens: int = setting(2048, "RAG_MAX_TOKENS")
+    embedding_model: str = ""
     embedding_batch_size: int = 64
     upstream_timeout_seconds: float = 60.0
-
-    # ==================== RAG Settings ====================
     retrieval_top_k: int = 8
-    context_max_chars: int = 6000
+    context_max_chars: int = 12000
     min_relevance_score: float = 0.32
 
-    # ==================== API Keys ====================
     openrouter_api_key: Optional[str] = None
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
     supabase_url: Optional[str] = None
     supabase_publishable_key: Optional[str] = None
-
-    # Supabase Storage (S3-compatible API) — original PDF retention
     supabase_s3_endpoint: Optional[str] = None
     supabase_s3_region: str = "ap-southeast-2"
     supabase_s3_access_key_id: Optional[str] = None
     supabase_s3_secret_access_key: Optional[str] = None
     supabase_storage_bucket: Optional[str] = None
+    cors_allow_origins: Tuple[str, ...] = (
+        "http://localhost:3000", "http://127.0.0.1:3000",
+        "http://localhost:3001", "http://127.0.0.1:3001",
+    )
 
-    # ==================== Storage ====================
-    vector_store_type: str = "milvus"
+    @classmethod
+    def from_env(cls, environ: Optional[Mapping[str, str]] = None) -> "AppConfig":
+        """Parse supported variables; no file loading or secret values in errors."""
+        env = os.environ if environ is None else environ
+        aliases = {
+            "OPENROUTER_API_KEY": ("OPENAI_API_KEY",),
+            "SUPABASE_URL": ("NEXT_PUBLIC_SUPABASE_URL",),
+            "SUPABASE_PUBLISHABLE_KEY": (
+                "NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY", "NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY",
+            ),
+        }
+        values = {}
+        for item in fields(cls):
+            key = item.metadata.get("env", item.name.upper())
+            if key is None:
+                continue
+            raw = next((env[name].strip() for name in (key, *aliases.get(key, ()))
+                        if env.get(name, "").strip()), None)
+            if raw is None:
+                continue
+            try:
+                if isinstance(item.default, int):
+                    value = int(raw)
+                elif isinstance(item.default, float):
+                    value = float(raw)
+                elif isinstance(item.default, tuple):
+                    value = tuple(part.strip() for part in raw.split(",") if part.strip())
+                else:
+                    value = raw
+            except ValueError:
+                raise ValueError(f"{key} has an invalid numeric value.") from None
+            values[item.name] = value
+        return cls(**values)
 
     def __post_init__(self):
-        self._load_from_env()
-
-    def _load_from_env(self):
-        # Document Processing
-        self.chunk_size = _int("CHUNK_SIZE", self.chunk_size)
-        self.chunk_overlap = _int("CHUNK_OVERLAP", self.chunk_overlap)
-        self.min_chars_per_page = _int("MIN_CHARS_PER_PAGE", self.min_chars_per_page)
-        self.scanned_page_ratio_threshold = _float("SCANNED_PAGE_RATIO_THRESHOLD", self.scanned_page_ratio_threshold)
-
-        # Upload Settings
-        self.upload_max_size_mb = _int("UPLOAD_MAX_SIZE_MB", self.upload_max_size_mb)
-        self.upload_max_concurrent = _int("UPLOAD_MAX_CONCURRENT", self.upload_max_concurrent)
-        self.max_chunks_per_document = _int("MAX_CHUNKS_PER_DOCUMENT", self.max_chunks_per_document)
-
-        # Vector Database
-        self.milvus_host = _str("MILVUS_HOST", self.milvus_host)
-        self.milvus_uri = _optional_str("MILVUS_URI", self.milvus_uri)
-        self.milvus_token = _optional_str("MILVUS_TOKEN", self.milvus_token)
-        self.milvus_port = _int("MILVUS_PORT", self.milvus_port)
-        self.milvus_collection = _str("MILVUS_COLLECTION", self.milvus_collection)
-        self.milvus_vector_dim = _int("MILVUS_VECTOR_DIM", self.milvus_vector_dim)
-        self.milvus_index_type = _str("MILVUS_INDEX_TYPE", "AUTOINDEX" if self.milvus_uri else self.milvus_index_type)
-        self.milvus_metric_type = _str("MILVUS_METRIC_TYPE", self.milvus_metric_type)
-        self.milvus_nlist = _int("MILVUS_NLIST", self.milvus_nlist)
-        self.milvus_nprobe = _int("MILVUS_NPROBE", self.milvus_nprobe)
-
-        # OpenRouter LLM
-        self.model = _str("RAG_MODEL", self.model)
-        self.temperature = _float("RAG_TEMPERATURE", self.temperature)
-        self.max_tokens = _int("RAG_MAX_TOKENS", self.max_tokens)
-
-        # Embedding
-        self.embedding_model = _str("EMBEDDING_MODEL", self.embedding_model)
-        self.embedding_dimension = _int("EMBEDDING_DIMENSION", self.embedding_dimension)
-        self.embedding_batch_size = _int("EMBEDDING_BATCH_SIZE", self.embedding_batch_size)
-        self.upstream_timeout_seconds = _float("UPSTREAM_TIMEOUT_SECONDS", self.upstream_timeout_seconds)
-        if min(self.upload_max_concurrent, self.max_chunks_per_document, self.embedding_batch_size, self.upstream_timeout_seconds) <= 0:
-            raise ValueError("Concurrency, chunk/batch limits and upstream timeout must be positive.")
-
-        # RAG Settings
-        self.retrieval_top_k = _int("RETRIEVAL_TOP_K", self.retrieval_top_k)
-        self.context_max_chars = _int("CONTEXT_MAX_CHARS", self.context_max_chars)
-        self.min_relevance_score = _float("MIN_RELEVANCE_SCORE", self.min_relevance_score)
-
-        # OpenRouter API key
-        self.openrouter_api_key = _optional_str("OPENROUTER_API_KEY", self.openrouter_api_key)
-        legacy_openai = _optional_str("OPENAI_API_KEY", None)
-        if not self.openrouter_api_key and legacy_openai:
-            self.openrouter_api_key = legacy_openai
-
-        self.openrouter_base_url = _str("OPENROUTER_BASE_URL", self.openrouter_base_url).rstrip("/")
-        self.supabase_url = _optional_str("SUPABASE_URL", self.supabase_url) or _optional_str(
-            "NEXT_PUBLIC_SUPABASE_URL",
-            self.supabase_url,
-        )
-        self.supabase_publishable_key = (
-            _optional_str("SUPABASE_PUBLISHABLE_KEY", self.supabase_publishable_key)
-            or _optional_str("NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY", self.supabase_publishable_key)
-            or _optional_str("NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY", self.supabase_publishable_key)
-        )
-
-        # Supabase Storage S3
-        self.supabase_s3_endpoint = _optional_str("SUPABASE_S3_ENDPOINT", self.supabase_s3_endpoint)
-        self.supabase_s3_region = _str("SUPABASE_S3_REGION", self.supabase_s3_region)
-        self.supabase_s3_access_key_id = _optional_str("SUPABASE_S3_ACCESS_KEY_ID", self.supabase_s3_access_key_id)
-        self.supabase_s3_secret_access_key = _optional_str(
-            "SUPABASE_S3_SECRET_ACCESS_KEY", self.supabase_s3_secret_access_key
-        )
-        self.supabase_storage_bucket = _optional_str("SUPABASE_STORAGE_BUCKET", self.supabase_storage_bucket)
-
-        # Embedding model IDs on OpenRouter use provider/model prefix
-        em = (self.embedding_model or "").strip()
-        if em and "/" not in em and em.startswith("text-embedding"):
-            self.embedding_model = f"openai/{em}"
-
-    def get_chat_provider_config(self) -> dict:
-        return {
-            "api_key": self.openrouter_api_key,
-            "base_url": self.openrouter_base_url,
-            "model": self.model,
-            "timeout": self.upstream_timeout_seconds,
-        }
+        self.milvus_index_type = self.milvus_index_type or ("AUTOINDEX" if self.milvus_uri else "IVF_FLAT")
+        self.openrouter_base_url = self.openrouter_base_url.rstrip("/")
+        if self.embedding_model.startswith("text-embedding") and "/" not in self.embedding_model:
+            self.embedding_model = f"openai/{self.embedding_model}"
+        errors = self.validate()
+        if errors:
+            raise ValueError("Invalid configuration: " + "; ".join(errors))
 
     def validate(self) -> list[str]:
         errors = []
-        key = self.openrouter_api_key
-        if not key or key == "test-key":
-            if key != "test-key":
-                errors.append("OPENROUTER_API_KEY required (or set OPENAI_API_KEY to a legacy OpenRouter key)")
+        for attr, key in (
+            ("chunk_size", "CHUNK_SIZE"), ("min_chars_per_page", "MIN_CHARS_PER_PAGE"),
+            ("upload_max_size_mb", "UPLOAD_MAX_SIZE_MB"), ("upload_max_concurrent", "UPLOAD_MAX_CONCURRENT"),
+            ("max_chunks_per_document", "MAX_CHUNKS_PER_DOCUMENT"), ("max_tokens", "RAG_MAX_TOKENS"),
+            ("embedding_batch_size", "EMBEDDING_BATCH_SIZE"), ("upstream_timeout_seconds", "UPSTREAM_TIMEOUT_SECONDS"),
+            ("retrieval_top_k", "RETRIEVAL_TOP_K"), ("context_max_chars", "CONTEXT_MAX_CHARS"),
+            ("milvus_nlist", "MILVUS_NLIST"), ("milvus_nprobe", "MILVUS_NPROBE"),
+        ):
+            value = getattr(self, attr)
+            if not math.isfinite(value) or value <= 0:
+                errors.append(f"{key} must be positive and finite")
+        if not 0 <= self.chunk_overlap < self.chunk_size:
+            errors.append("CHUNK_OVERLAP must be between 0 and CHUNK_SIZE - 1")
+        if not 0 <= self.scanned_page_ratio_threshold <= 1:
+            errors.append("SCANNED_PAGE_RATIO_THRESHOLD must be between 0 and 1")
+        if not math.isfinite(self.min_relevance_score):
+            errors.append("MIN_RELEVANCE_SCORE must be finite")
+        if not math.isfinite(self.temperature) or self.temperature < 0:
+            errors.append("RAG_TEMPERATURE must be non-negative and finite")
+        if self.milvus_uri:
+            if urlparse(self.milvus_uri).scheme not in ("http", "https") or not urlparse(self.milvus_uri).hostname:
+                errors.append("MILVUS_URI must be an absolute HTTP(S) URL")
+        elif self.milvus_token:
+            errors.append("MILVUS_TOKEN requires MILVUS_URI")
+        elif not self.milvus_host or not 1 <= self.milvus_port <= 65535:
+            errors.append("MILVUS_HOST and MILVUS_PORT must identify a valid local connection")
+        if not self.milvus_collection:
+            errors.append("MILVUS_COLLECTION must not be empty")
+        for attr in ("openrouter_base_url", "supabase_url", "supabase_s3_endpoint"):
+            value = getattr(self, attr)
+            if value and (urlparse(value).scheme not in ("http", "https") or not urlparse(value).hostname):
+                errors.append(f"{attr.upper()} must be an absolute HTTP(S) URL")
+        # A bucket/region alone is an inactive template; credentials or an endpoint opt in.
+        if any((self.supabase_s3_endpoint, self.supabase_s3_access_key_id, self.supabase_s3_secret_access_key)):
+            for attr in ("supabase_s3_endpoint", "supabase_s3_region", "supabase_s3_access_key_id",
+                         "supabase_s3_secret_access_key", "supabase_storage_bucket"):
+                if not getattr(self, attr):
+                    errors.append(f"{attr.upper()} is required when S3 storage is enabled")
         return errors
 
+    def require_openrouter(self, *, embeddings: bool = False) -> None:
+        """Check service requirements when used; offline health/tests need no cloud keys."""
+        if not self.openrouter_api_key:
+            raise ValueError("OPENROUTER_API_KEY is required")
+        if not (self.embedding_model if embeddings else self.model):
+            raise ValueError(f"{'EMBEDDING_MODEL' if embeddings else 'RAG_MODEL'} is required")
 
-# Global configuration instance
+
 _config: Optional[AppConfig] = None
 
 
 def get_config() -> AppConfig:
+    """Load files once. Restart the process after changing environment configuration."""
     global _config
     if _config is None:
-        _config = AppConfig()
-        errors = _config.validate()
-        if errors:
-            import warnings
-            warnings.warn(f"Configuration validation errors: {errors}")
+        root = Path(__file__).resolve().parents[3]
+        load_dotenv(root / ".env")
+        load_dotenv(root / "backend" / ".env", override=True)
+        _config = AppConfig.from_env()
     return _config
