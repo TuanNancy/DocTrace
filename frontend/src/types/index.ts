@@ -14,6 +14,9 @@ export interface UploadResponse {
 
 /** Single citation source from SSE event "sources" */
 export interface ChatSource {
+  citation_id?: number;
+  chunk_id?: string;
+  doc_id?: string;
   page: number;
   source: string;
   /** Similarity score; null for document summaries retrieved without vector search. */
@@ -36,4 +39,27 @@ export interface ChatMessage {
   content: string;
   sources?: ChatSource[];
   isStreaming?: boolean;
+  interrupted?: boolean;
+}
+
+export type DocumentStatus = "uploading" | "queued" | "processing" | "ready" | "error" | "deleting" | "delete_error" | "deleted";
+
+export interface LibraryDocument {
+  doc_id: string;
+  name: string;
+  size_bytes: number;
+  status: DocumentStatus;
+  chunks_count: number;
+  warnings: string[];
+  error: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SourceExcerpt {
+  doc_id: string;
+  chunk_id: string;
+  source: string;
+  page: number;
+  text: string;
 }

@@ -1,223 +1,37 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
-import { uploadPDF } from "@/lib/api";
+import { useState } from "react";
+import { Check, CloudUpload, LoaderCircle } from "lucide-react";
+import { useUpload, type UploadSession } from "@/lib/use-upload";
 import type { UploadResponse } from "@/types";
 
-type Status = "idle" | "uploading" | "success" | "error";
-
-interface UploadZoneProps {
-  onUploadComplete?: (res: UploadResponse) => void;
-  /** When true, upload is simulated (no backend). For demo. */
-  mock?: boolean;
-  accessToken?: string | null;
-  compact?: boolean;
-}
-
-export function UploadZone({
-  onUploadComplete,
-  mock = true,
-  accessToken,
-  compact = false,
-}: UploadZoneProps) {
-  const [status, setStatus] = useState<Status>("idle");
-  const [progress, setProgress] = useState(0);
-  const [result, setResult] = useState<UploadResponse | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [filename, setFilename] = useState<string | null>(null);
+export function UploadZone({ onUploadComplete, mock = true, accessToken, compact = false, session }: {
+  onUploadComplete?: (result: UploadResponse) => void; mock?: boolean; accessToken?: string | null;
+  compact?: boolean; session?: UploadSession;
+}) {
+  const local = useUpload({ onUploadComplete, mock, accessToken, enabled: !session });
+  const upload = session ?? local;
   const [dragging, setDragging] = useState(false);
-  const activeUpload = useRef<AbortController | null>(null);
-
-  useEffect(() => () => { activeUpload.current?.abort(); }, []);
-
-  const handleDragOver = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    if (!activeUpload.current) setDragging(true);
-  }, []);
-
-  const handleDragLeave = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setDragging(false);
-  }, []);
-
-  const uploadFile = useCallback(
-    async (file: File) => {
-      // A ref guards the request immediately, before React renders the busy state.
-      if (activeUpload.current) return;
-      if (file.type !== "application/pdf") {
-        setError("Chỉ chấp nhận file PDF.");
-        setStatus("error");
-        return;
-      }
-      const controller = new AbortController();
-      activeUpload.current = controller;
-      setStatus("uploading");
-      setError(null);
-      setResult(null);
-      setFilename(file.name);
-      setProgress(mock ? 0 : 30);
-
-      try {
-        let res: UploadResponse;
-        if (mock) {
-          for (let n = 1; n <= 20; n++) {
-            await new Promise((resolve) => setTimeout(resolve, 120));
-            if (controller.signal.aborted) return;
-            setProgress(n * 5);
-          }
-          res = {
-            doc_id: `mock-${Date.now()}`,
-            chunks_count: Math.max(3, Math.floor(Math.random() * 15)),
-            message: "Upload and indexing completed (mock).",
-          };
-        } else {
-          if (!accessToken) throw new Error("Thiếu phiên đăng nhập. Vui lòng đăng nhập lại.");
-          res = await uploadPDF(file, accessToken, controller.signal);
-        }
-
-        if (controller.signal.aborted) return;
-        setResult(res);
-        setProgress(100);
-        setStatus("success");
-        onUploadComplete?.(res);
-      } catch (err) {
-        if (!controller.signal.aborted) {
-          setError(err instanceof Error ? err.message : "Upload failed.");
-          setStatus("error");
-        }
-      } finally {
-        if (activeUpload.current === controller) activeUpload.current = null;
-      }
-    },
-    [mock, accessToken, onUploadComplete]
-  );
-
-  const handleDrop = useCallback(
-    async (e: React.DragEvent) => {
-      e.preventDefault();
-      e.stopPropagation();
-      setDragging(false);
-      const file = e.dataTransfer.files?.[0];
-      if (!file) return;
-      await uploadFile(file);
-    },
-    [uploadFile]
-  );
-
-  const handleFileInput = useCallback(
-    async (e: React.ChangeEvent<HTMLInputElement>) => {
-      const file = e.target.files?.[0];
-      e.target.value = "";
-      if (!file) return;
-      await uploadFile(file);
-    },
-    [uploadFile]
-  );
-
-  const isActive = dragging || status === "uploading";
-
-  return (
-    <div
-      className={`h-full rounded-xl border-2 border-dashed border-slate-300 bg-slate-50 transition-colors dark:border-slate-600 dark:bg-slate-800/50 ${
-        compact ? "p-3" : "p-6"
-      }`}
-    >
-      <div
-        onDragOver={handleDragOver}
-        onDragLeave={handleDragLeave}
-        onDrop={handleDrop}
-        className={`flex h-full flex-col items-center justify-center gap-2 rounded-lg transition-colors ${
-          isActive ? "bg-blue-50 dark:bg-blue-950/30" : ""
-        }`}
-      >
-        {status === "idle" && (
-          <>
-            <p className="text-center text-slate-600 dark:text-slate-400">
-              Kéo thả file PDF vào đây hoặc nhấn để chọn
-            </p>
-          </>
-        )}
-
-        {dragging && (
-          <p className="text-blue-600 dark:text-blue-400">Thả file để tải lên</p>
-        )}
-
-        {status === "uploading" && (
-          <div className="w-full max-w-xs space-y-2">
-            <p className="text-center text-sm text-slate-600 dark:text-slate-400">
-              Đang index: {filename}
-            </p>
-            <div className="h-2 w-full overflow-hidden rounded-full bg-slate-200 dark:bg-slate-700">
-              <div
-                className="h-full rounded-full bg-blue-600 transition-all duration-300 dark:bg-blue-500"
-                style={{ width: `${progress}%` }}
-              />
-            </div>
-            <p className="text-center text-xs text-slate-500">{progress}%</p>
-          </div>
-        )}
-
-        {status === "success" && result && (
-          <div className="w-full space-y-2 text-center">
-            <p className="text-sm font-medium text-green-700 dark:text-green-400">
-              Tải lên thành công
-            </p>
-            <p className="text-sm text-slate-600 dark:text-slate-400">
-              File: <span className="font-medium">{filename}</span>
-            </p>
-            <p className="text-sm text-slate-600 dark:text-slate-400">
-              Số chunks: <span className="font-medium">{result.chunks_count}</span>
-            </p>
-            {result.message && (
-              <p className="text-xs text-slate-500">{result.message}</p>
-            )}
-            {result.status && !result.message && (
-              <p className="text-xs text-slate-500">
-                Trạng thái: <span className="font-medium">{result.status}</span>
-              </p>
-            )}
-            {typeof result.processing_time === "number" && (
-              <p className="text-xs text-slate-500">
-                Thời gian:{" "}
-                <span className="font-medium">{result.processing_time}s</span>
-              </p>
-            )}
-            {result.pdf_storage_key && (
-              <p className="text-xs text-green-600 dark:text-green-400">
-                ✅ Đã lưu PDF lên Storage: <span className="font-medium">{result.pdf_storage_key}</span>
-              </p>
-            )}
-            {result.warnings && result.warnings.length > 0 && (
-              <p className="text-xs text-amber-700 dark:text-amber-300">
-                Cảnh báo: {result.warnings[0]}
-              </p>
-            )}
-          </div>
-        )}
-
-        {status === "error" && (
-          <div className="space-y-2 text-center">
-            <p className="text-sm font-medium text-red-600 dark:text-red-400">
-              Lỗi
-            </p>
-            <p className="text-sm text-slate-600 dark:text-slate-400">
-              {error}
-            </p>
-          </div>
-        )}
-        <label className={`rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white focus-within:ring-2 focus-within:ring-blue-400 dark:bg-blue-500 ${status === "uploading" ? "cursor-not-allowed opacity-50" : "cursor-pointer hover:bg-blue-700 dark:hover:bg-blue-600"}`}>
-          {status === "success" ? "Chọn file khác" : status === "error" ? "Thử lại" : "Chọn file"}
-          <input
-            type="file"
-            accept="application/pdf"
-            className="sr-only"
-            onChange={handleFileInput}
-            disabled={status === "uploading"}
-          />
-        </label>
+  const busy = upload.status === "uploading";
+  return <div className={`upload-zone ${dragging ? "upload-zone-dragging" : ""}`}>
+    <div onDragOver={(event) => { event.preventDefault(); if (!busy) setDragging(true); }}
+      onDragLeave={(event) => { event.preventDefault(); setDragging(false); }}
+      onDrop={(event) => { event.preventDefault(); setDragging(false); const file = event.dataTransfer.files[0]; if (file && !busy) void upload.upload(file); }}
+      className={`flex flex-col items-center justify-center text-center ${compact ? "px-4 py-6" : "px-6 py-8"}`}>
+      <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-xl border border-blue-100 bg-white/80 text-blue-500">
+        {busy ? <LoaderCircle className="animate-spin" size={20} /> : upload.status === "success" ? <Check size={20} /> : <CloudUpload size={22} strokeWidth={1.6} />}
       </div>
+      <p className="text-sm font-medium text-slate-700">{dragging ? "Thả PDF vào đây" : busy ? (upload.progress === 100 ? "Đang lưu PDF…" : `Đang tải lên ${upload.progress}%`) : upload.status === "success" ? "Tải lên thành công" : "Thêm tài liệu của bạn"}</p>
+      <p className="mt-1.5 max-w-full truncate text-xs text-slate-400">{busy ? upload.filename : "Kéo thả PDF hoặc chọn tệp để tải lên"}</p>
+      {busy && <div className="mt-4 h-1.5 w-full overflow-hidden rounded-full bg-blue-100" role="progressbar" aria-label="Tiến trình tải PDF" aria-valuenow={upload.progress} aria-valuemin={0} aria-valuemax={100}>
+        <div className="h-full rounded-full bg-blue-500 transition-[width]" style={{ width: `${upload.progress}%` }} /></div>}
+      {upload.error && <p role="alert" className="mt-3 text-xs leading-5 text-red-600">{upload.error}</p>}
+      <label className={`secondary-button mt-4 cursor-pointer text-xs ${busy ? "pointer-events-none opacity-50" : ""}`}>
+        {upload.status === "success" ? "Chọn file khác" : upload.status === "error" ? "Thử lại" : "Chọn file"}
+        <input type="file" accept="application/pdf,.pdf" className="sr-only" disabled={busy} onChange={(event) => {
+          const file = event.target.files?.[0]; event.target.value = ""; if (file) void upload.upload(file);
+        }} />
+      </label>
     </div>
-  );
+  </div>;
 }

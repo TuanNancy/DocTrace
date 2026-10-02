@@ -84,7 +84,7 @@ def test_chat_sse_stream(chat_dependencies, client: TestClient) -> None:
     assert response.status_code == 200
     assert response.headers["content-type"] == "text/event-stream; charset=utf-8"
     assert parse_sse_events(response) == [
-        ("sources", [{"page": 2, "source": "policy.pdf", "score": 0.9}]),
+        ("sources", [{"citation_id": 1, "chunk_id": "chunk-1", "doc_id": "test-doc-id", "page": 2, "source": "policy.pdf", "score": 0.9}]),
         ("token", "Twelve "),
         ("token", "days."),
         ("done", "[DONE]"),
@@ -116,6 +116,17 @@ def test_chat_sse_error_path(chat_dependencies, client: TestClient) -> None:
     ]
     deps.create_completion.assert_not_awaited()
     deps.vector_store.disconnect.assert_awaited_once()
+
+
+def test_chat_resolves_generation_but_citations_keep_public_document_id(chat_dependencies, client, repository):
+    repository.get.side_effect = None
+    repository.get.return_value = {"status": "ready", "active_index_id": "private-generation"}
+    events = parse_sse_events(client.post("/api/chat", json={"query": "How much leave?", "doc_id": "public-document"}))
+    assert chat_dependencies.vector_store.search_chunks.call_args.kwargs["doc_id"] == "private-generation"
+    assert events[0][1][0]["doc_id"] == "public-document"
+    assert events[0][1][0]["chunk_id"] == "chunk-1"
+    context = chat_dependencies.create_completion.call_args.kwargs["messages"][1]["content"]
+    assert "[1] [Trang 2]" in context
 
 
 def test_chat_cannot_override_owner_in_payload(client):
@@ -205,7 +216,7 @@ def test_document_overview_uses_owned_content_without_embeddings(chat_dependenci
     response = client.post("/api/chat", json={"query": query, "doc_id": "test-doc-id"})
     events = parse_sse_events(response)
     assert [event[0] for event in events] == ["sources", "token", "token", "done"]
-    assert events[0][1] == [{"page": 2, "source": "policy.pdf", "score": None}]
+    assert events[0][1] == [{"citation_id": 1, "chunk_id": "chunk-1", "doc_id": "test-doc-id", "page": 2, "source": "policy.pdf", "score": None}]
     deps.vector_store.get_document_chunks.assert_awaited_once_with(
         "test-doc-id", user_id="00000000-0000-0000-0000-000000000001",
     )

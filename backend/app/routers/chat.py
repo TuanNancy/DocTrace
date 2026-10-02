@@ -12,6 +12,7 @@ from app.ai.document_summary import is_document_overview
 from app.ai.rag_pipeline import create_initialized_rag_pipeline
 from app.core.auth import require_supabase_user
 from app.schemas import ChatRequest
+from app.services.document_repository import DocumentRepository, get_document_repository
 
 logger = logging.getLogger(__name__)
 
@@ -22,17 +23,21 @@ def _sse_message(event: str, data: str) -> str:
     return f"event: {event}\ndata: {data}\n\n"
 
 
-async def _stream_chat_sse(query: str, doc_id: str, user_id: str, language: str = "vi") -> AsyncIterator[str]:
+async def _stream_chat_sse(query: str, doc_id: str, user_id: str, language: str = "vi",
+                           document_id: str | None = None) -> AsyncIterator[str]:
     pipeline = None
 
     try:
         pipeline = await create_initialized_rag_pipeline()
 
         retrieved_chunks = await pipeline.retrieve_chunks(query, doc_id, user_id=user_id)
+        if not is_document_overview(query):
+            retrieved_chunks = pipeline.select_context_chunks(retrieved_chunks)
         sources_payload = [
-            {"page": chunk.page, "source": chunk.source,
+            {"citation_id": number, "chunk_id": chunk.chunk_id, "doc_id": document_id or doc_id,
+             "page": chunk.page, "source": chunk.source,
              "score": round(chunk.score, 4) if chunk.score is not None else None}
-            for chunk in retrieved_chunks
+            for number, chunk in enumerate(retrieved_chunks, 1)
         ]
         yield _sse_message("sources", json.dumps(sources_payload))
 
@@ -80,6 +85,7 @@ async def _stream_chat_sse(query: str, doc_id: str, user_id: str, language: str 
 async def chat(
     request: ChatRequest,
     user: dict = Depends(require_supabase_user),
+    repository: DocumentRepository = Depends(get_document_repository),
 ) -> StreamingResponse:
     try:
         query = request.query.strip()
@@ -92,9 +98,12 @@ async def chat(
         user_id = str(user.get("id") or "")
         if not user_id:
             raise HTTPException(status_code=401, detail="Invalid user: missing id.")
+        document = await repository.get(user_id, doc_id)
+        if document["status"] != "ready" or not document.get("active_index_id"):
+            raise HTTPException(409, "Tài liệu chưa sẵn sàng để hỏi đáp.")
 
         return StreamingResponse(
-            _stream_chat_sse(query, doc_id, user_id, language),
+            _stream_chat_sse(query, document["active_index_id"], user_id, language, document_id=doc_id),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",

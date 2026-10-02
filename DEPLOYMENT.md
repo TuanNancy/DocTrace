@@ -1,4 +1,4 @@
-# Deploy FastAPI với Nginx + Certbot trên EC2
+# Deploy FastAPI + document worker với Nginx + Certbot trên EC2
 
 ```text
 Browser / frontend trên Vercel
@@ -11,21 +11,24 @@ EC2: Nginx container ──→ api:8000 (FastAPI container)
 
 ## Trạng thái checkout
 
-Bộ deploy này đóng gói API và reverse proxy. Frontend đã có shared modules, build checks và browser test với fixtures; cấu hình Vercel theo `frontend/.env.example` và `frontend/README.md`. Backend hiện dùng Milvus host/port, chưa đọc `MILVUS_URI`/`MILVUS_TOKEN`; các biến mới đó trong `backend/.env.example` chưa có tác dụng với code hiện tại. Cần bổ sung adapter tương ứng trước khi chạy end-to-end trên Vercel + Zilliz.
+Bộ deploy đóng gói API, worker xử lý PDF và reverse proxy. Frontend cấu hình trên Vercel theo `frontend/.env.example` và `frontend/README.md`. Milvus hỗ trợ host/port hoặc `MILVUS_URI`/`MILVUS_TOKEN`; URI mode mặc định AUTOINDEX.
 
-`GET /health` là liveness của process, không gọi Supabase, Milvus hay OpenRouter. Container healthy không có nghĩa các dịch vụ ngoài đã được cấu hình đúng.
+Trước khi chạy, áp dụng `backend/migrations/001_document_library.sql` trong Supabase SQL Editor, tạo bucket PDF private và cấu hình `SUPABASE_SERVICE_ROLE_KEY` cùng các S3 keys trong `backend/.env`. Worker và API dùng chung cấu hình. Đây là migration tạo schema lần đầu, không phải script chạy lại ở mỗi deploy. Các PDF tải bằng phiên bản cũ chưa có metadata thư viện cần tải lại; migration không xóa collection/bucket cũ.
+
+`GET /health` là liveness của API process, không kiểm tra worker, Supabase, Milvus hay OpenRouter. Theo dõi log worker và trạng thái tài liệu để kiểm tra xử lý nền.
 
 ## 1. Hiểu các image và service
 
 | Service | Nguồn image | Vai trò |
 |---|---|---|
 | `api` | Build từ `backend/Dockerfile` + context `backend/` | Python, dependency và code FastAPI |
+| `worker` | Cùng image API; command `python -m app.worker` | Indexing, xóa, heartbeat/khôi phục jobs và dọn tombstone |
 | `nginx` | Image `nginx:1.28-alpine` có sẵn | TLS, reverse proxy, upload/SSE |
 | `certbot` | Image `certbot/certbot:v5.1.0` có sẵn | Cấp/gia hạn certificate qua HTTP-01 |
 
 `docker build` tạo image; `docker compose up` tạo/chạy container từ image. Compose thiết lập network, env, mount và healthcheck. API image không chứa database server hay frontend. Frontend được build/deploy riêng trên Vercel với Root Directory là `frontend`.
 
-Root `docker-compose.yml` chạy **Milvus local + etcd + MinIO + Attu**. File `compose.production.yml` chạy **API + Nginx**; Certbot ở profile `tools` và chỉ chạy khi gọi rõ service. Đừng nhầm hai file.
+Root `docker-compose.yml` chạy **Milvus local + etcd + MinIO + Attu**. File `compose.production.yml` chạy **API + worker + Nginx**; Certbot ở profile `tools` và chỉ chạy khi gọi rõ service.
 
 ## 2. Chuẩn bị EC2, DNS và env
 
@@ -60,6 +63,8 @@ CORS_ALLOW_ORIGINS=https://YOUR-FRONTEND
 
 **Networking:** `localhost` trong API container là chính container đó. Nếu Milvus ở cùng Docker network, dùng `MILVUS_HOST=milvus`; nếu Milvus ở máy khác, dùng hostname/IP truy cập được. Trên Docker Desktop, có thể dùng `host.docker.internal` để đi qua cổng của host. Không chạy thêm cả cụm Milvus trên EC2 t3.small theo cấu hình này mà chưa đo tài nguyên.
 
+API và worker có giới hạn riêng `1400m`, tổng tối đa `2800m` chưa tính Nginx/OS. Bố trí RAM phù hợp cho cả hai process; việc tách worker tăng tài nguyên so với deployment API-only trước đây.
+
 `backend/.env` được inject lúc chạy; không copy vào image. `.env.production` chứa domain/cấu hình Compose và được Git ignore. Các giá trị `NEXT_PUBLIC_*` của frontend được cấu hình trên Vercel; API URL phải dùng HTTPS.
 
 ## 3. Lần đầu: bootstrap HTTP → cấp certificate → bật HTTPS
@@ -70,7 +75,7 @@ CORS_ALLOW_ORIGINS=https://YOUR-FRONTEND
 sh deploy/certificates.sh bootstrap
 ```
 
-Lệnh này build API, chạy API + Nginx và chờ healthcheck. Nó tạm đặt `TLS_MODE=http` cho lần chạy đó; file `.env.production` vẫn là `https`.
+Lệnh này build image, chạy API + worker + Nginx và chờ API/Nginx healthcheck; worker được kiểm tra ở mức process running. Nó tạm đặt `TLS_MODE=http` cho lần chạy đó; file `.env.production` vẫn là `https`.
 
 Bootstrap chỉ phục vụ:
 
@@ -141,9 +146,9 @@ sudo journalctl -u doctrace-cert-renew.service
 Sau lần cấp certificate đầu tiên:
 
 ```sh
-docker compose --env-file .env.production -f compose.production.yml up -d --build --wait api nginx
+docker compose --env-file .env.production -f compose.production.yml up -d --build --wait api worker nginx
 docker compose --env-file .env.production -f compose.production.yml ps
-docker compose --env-file .env.production -f compose.production.yml logs --tail=100 api nginx
+docker compose --env-file .env.production -f compose.production.yml logs --tail=100 api worker nginx
 docker compose --env-file .env.production -f compose.production.yml exec nginx nginx -t
 ```
 
@@ -154,6 +159,8 @@ docker compose --env-file .env.production -f compose.production.yml up -d --forc
 ```
 
 Certificate renewal chỉ đổi file PEM, nên graceful reload là đủ. Giữ nguyên tên project Compose giữa các lệnh và timer để dùng đúng volumes. `down` giữ named volumes; **`down -v` xóa certificate/account state**. Không dùng bootstrap cho một deployment đã chạy HTTPS.
+
+`POST /api/upload` trả `202 queued` sau khi lưu PDF, trước khi indexing. Worker claim jobs trong Postgres, cập nhật heartbeat và công bố generation khi hoàn tất. Sau restart, jobs bị ngắt được claim lại khi lease hết hạn (`DOCUMENT_JOB_LEASE_SECONDS`, mặc định 120 giây); sau ba lần gián đoạn, UI hiển thị lỗi để thử lại. Worker không cần public port. Xóa là tác vụ idempotent; tombstone được dọn lại định kỳ để bắt các thao tác remote kết thúc muộn.
 
 ## 6. Upload và SSE
 
@@ -183,3 +190,5 @@ Trong PowerShell, dùng đường dẫn tuyệt đối cho tham số `-v` ở l�
 Integration test dùng production Compose/templates với project name ngẫu nhiên, ports loopback ngẫu nhiên, auth/RAG giả lập và certificate tự ký. Nó kiểm tra bootstrap, TLS, redirect, forwarding/CORS, upload limit, stream trước khi upstream hoàn tất, cancellation, certificate rotation và API recreation. Containers/volumes test được dọn trong `finally`; không gọi ACME hay dịch vụ AI thật.
 
 CI chạy backend tests, deployment checks và frontend typecheck/lint/Vitest/Chromium/build. Frontend checks dùng cấu hình public giả và Auth/API fixtures local; chưa chứng minh dịch vụ cloud thực đã được kết nối đúng.
+
+Kiểm tra migration/queue/RLS độc lập với cloud: từ `backend/`, chạy `python scripts/verify_document_queue.py`. Script tạo PostgreSQL tạm bằng Docker và tự dọn sau kiểm tra.

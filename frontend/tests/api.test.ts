@@ -30,6 +30,13 @@ describe("API transport", () => {
     expect(init.signal).toBe(controller.signal);
   });
 
+  it("supplies the PDF MIME type when the browser leaves it empty", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(Response.json({ doc_id: "a", chunks_count: 0, status: "queued" }, { status: 202 }));
+    vi.stubGlobal("fetch", fetchMock);
+    await uploadPDF(new File(["%PDF-1.4"], "a.pdf"), "token");
+    expect(fetchMock.mock.calls[0][1].body.get("file").type).toBe("application/pdf");
+  });
+
   it("surfaces HTTP auth errors instead of trying to parse SSE", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ detail: "Expired session" }, { status: 401 })));
     await expect(streamChat("q", "a", "expired")).rejects.toThrow("Expired session");

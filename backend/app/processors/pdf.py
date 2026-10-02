@@ -20,7 +20,7 @@ def _normalize_metadata(doc: Document, source_path: str) -> dict:
     meta = dict(doc.metadata)
     if "page" not in meta and "page_number" in meta:
         meta["page"] = meta["page_number"]
-    meta.setdefault("page", 0)
+    meta.setdefault("page", 1)
     meta.setdefault("source", source_path)
     return meta
 
@@ -50,9 +50,11 @@ def load_pdf_pages(
 
     source_name = original_filename or os.path.basename(file_path)
     low_text_pages = 0
-    for d in docs:
-        d.metadata["source"] = d.metadata.get("source") or source_name
-        d.metadata["page"] = d.metadata.get("page", 0)
+    for page_index, d in enumerate(docs):
+        # PyPDFLoader supplies a temporary path and zero-based physical page index.
+        # Citations and browser PDF #page navigation use the original name and 1-based pages.
+        d.metadata["source"] = source_name
+        d.metadata["page"] = int(d.metadata.get("page", page_index)) + 1
         if len((d.page_content or "").strip()) < config.min_chars_per_page:
             low_text_pages += 1
 
@@ -94,7 +96,7 @@ def chunk_documents(
         meta = _normalize_metadata(d, d.metadata.get("source", ""))
         chunks.append({
             "text": d.page_content,
-            "page": meta.get("page", 0),
+            "page": meta.get("page", 1),
             "source": meta.get("source", ""),
         })
     logger.info(

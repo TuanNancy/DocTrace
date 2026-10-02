@@ -1,4 +1,4 @@
-import type { ChatSource, SSEEvent, UploadResponse } from "@/types";
+import type { ChatSource, LibraryDocument, SourceExcerpt, SSEEvent, UploadResponse } from "@/types";
 
 function apiUrl(path: string) {
   const base = process.env.NEXT_PUBLIC_API_URL?.trim().replace(/\/+$/, "");
@@ -29,10 +29,36 @@ async function checkResponse(response: Response) {
 export async function uploadPDF(
   file: File,
   accessToken: string,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  onProgress?: (percent: number) => void
 ): Promise<UploadResponse> {
   const form = new FormData();
-  form.append("file", file);
+  form.append("file", file.type ? file : new File([file], file.name, { type: "application/pdf" }));
+  if (onProgress) {
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      const abort = () => xhr.abort();
+      const cleanup = () => signal?.removeEventListener("abort", abort);
+      xhr.open("POST", apiUrl("/api/upload"));
+      xhr.setRequestHeader("Authorization", authorization(accessToken).Authorization);
+      xhr.upload.onprogress = (event) => {
+        if (event.lengthComputable) onProgress(Math.round(event.loaded * 100 / event.total));
+      };
+      xhr.onload = async () => {
+        cleanup();
+        try {
+          const response = new Response(xhr.responseText, { status: xhr.status });
+          await checkResponse(response);
+          resolve(await response.json());
+        } catch (error) { reject(error); }
+      };
+      xhr.onerror = () => { cleanup(); reject(new Error("Không thể tải PDF. Kiểm tra kết nối và thử lại.")); };
+      xhr.onabort = () => { cleanup(); reject(new DOMException("Upload aborted", "AbortError")); };
+      if (signal?.aborted) { reject(new DOMException("Upload aborted", "AbortError")); return; }
+      signal?.addEventListener("abort", abort, { once: true });
+      xhr.send(form);
+    });
+  }
   const response = await fetch(apiUrl("/api/upload"), {
     method: "POST",
     headers: authorization(accessToken),
@@ -70,7 +96,56 @@ function isSource(value: unknown): value is ChatSource {
   if (!value || typeof value !== "object") return false;
   const source = value as Record<string, unknown>;
   return typeof source.page === "number" && typeof source.source === "string"
-    && (typeof source.score === "number" || source.score === null);
+    && (typeof source.score === "number" || source.score === null)
+    && (source.citation_id === undefined || (Number.isInteger(source.citation_id) && Number(source.citation_id) > 0))
+    && (source.chunk_id === undefined || typeof source.chunk_id === "string")
+    && (source.doc_id === undefined || typeof source.doc_id === "string");
+}
+
+async function libraryRequest<T>(path: string, accessToken: string, signal?: AbortSignal, method = "GET"): Promise<T> {
+  const response = await fetch(apiUrl(`/api/documents${path}`), {
+    method, headers: authorization(accessToken), signal, cache: "no-store",
+  });
+  await checkResponse(response);
+  return response.json();
+}
+
+export async function listDocuments(accessToken: string, signal?: AbortSignal): Promise<LibraryDocument[]> {
+  const documents: LibraryDocument[] = [];
+  let hasMore = true;
+  while (hasMore) {
+    const page = await libraryRequest<{ items: LibraryDocument[]; has_more: boolean }>(
+      `?limit=100&offset=${documents.length}`, accessToken, signal
+    );
+    documents.push(...page.items);
+    hasMore = page.has_more && page.items.length > 0;
+  }
+  return Array.from(new Map(documents.map((document) => [document.doc_id, document])).values());
+}
+
+export const deleteDocument = (id: string, token: string) =>
+  libraryRequest<LibraryDocument>(`/${encodeURIComponent(id)}`, token, undefined, "DELETE");
+
+export const retryDocument = (id: string, token: string) =>
+  libraryRequest<LibraryDocument>(`/${encodeURIComponent(id)}/retry`, token, undefined, "POST");
+
+export const getSourceExcerpt = (source: ChatSource, token: string, signal?: AbortSignal) =>
+  libraryRequest<SourceExcerpt>(`/${encodeURIComponent(source.doc_id!)}/chunks/${encodeURIComponent(source.chunk_id!)}`, token, signal);
+
+export const getDocumentFile = (id: string, token: string, signal?: AbortSignal) =>
+  libraryRequest<{ url: string; expires_in: number }>(`/${encodeURIComponent(id)}/file`, token, signal);
+
+export async function openDocumentFile(id: string, token: string, page = 1) {
+  const tab = window.open("about:blank", "_blank");
+  if (tab) tab.opener = null;
+  try {
+    const { url } = await getDocumentFile(id, token);
+    if (tab) tab.location.href = `${url}#page=${Math.max(1, page)}`;
+    else throw new Error("Hãy cho phép mở cửa sổ mới để xem PDF.");
+  } catch (error) {
+    tab?.close();
+    throw error;
+  }
 }
 
 function parseEvent(block: string): SSEEvent | null {

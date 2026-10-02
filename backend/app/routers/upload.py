@@ -1,5 +1,5 @@
 """
-POST /api/upload: multipart/form-data PDF upload → indexing pipeline → UploadResponse.
+POST /api/upload: retain a multipart PDF and return 202 with queued document metadata.
 """
 import logging
 import uuid
@@ -11,25 +11,23 @@ from starlette.concurrency import run_in_threadpool
 from app.core.auth import require_supabase_user
 from app.core.config import get_config
 from app.core.limits import require_upload_slot
-from app.services.pdf_indexing import index_pdf_bytes
-from app.services.supabase_pdf_storage import try_upload_pdf
+from app.services.document_repository import DocumentRepository, get_document_repository, public_document
+from app.services.supabase_pdf_storage import build_pdf_object_key, upload_pdf_to_supabase_storage, is_pdf_storage_configured
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["upload"])
 
 
-@router.post("/upload")
+@router.post("/upload", status_code=202)
 async def upload_pdf(
     file: Annotated[UploadFile, File(description="PDF file to index")],
     user: dict = Depends(require_supabase_user),
     _slot: None = Depends(require_upload_slot),
+    repository: DocumentRepository = Depends(get_document_repository),
 ) -> Dict[str, Any]:
     """
-    Accept a PDF via multipart/form-data, validate size/type, run indexing pipeline,
-    return doc_id and chunks count. Handles errors gracefully.
-
-    Delegates PDF indexing to services.pdf_indexing.index_pdf_bytes.
+    Retain a PDF and enqueue durable indexing. The worker owns extraction/embedding.
     """
     config = get_config()
 
@@ -69,39 +67,27 @@ async def upload_pdf(
 
     if not file_content:
         raise HTTPException(status_code=400, detail="Empty file.")
+    if not file_content.startswith(b"%PDF-"):
+        raise HTTPException(status_code=400, detail="Invalid PDF header.")
+    if not is_pdf_storage_configured():
+        raise HTTPException(503, "Kho PDF chưa được cấu hình trên máy chủ.")
 
     uid = str(user.get("id") or "")
     if not uid:
         raise HTTPException(status_code=401, detail="Invalid user: missing id.")
     doc_id = str(uuid.uuid4())
 
-    # Store original PDF early so users can still find the file in Storage
-    # even if downstream indexing (Milvus/embeddings) fails.
-    pdf_key, storage_warn = await run_in_threadpool(
-        try_upload_pdf,
-        file_content,
-        uid,
-        doc_id,
-        filename,
-    )
-
+    key = build_pdf_object_key(uid, doc_id, filename)
+    await repository.create({"doc_id": doc_id, "user_id": uid, "name": filename,
+                             "size_bytes": total_size, "storage_key": key, "status": "uploading"})
     try:
-        result = await index_pdf_bytes(file_content, filename, doc_id, user_id=uid)
-        if storage_warn:
-            result.warnings.append(storage_warn)
-        if pdf_key:
-            result.pdf_storage_key = pdf_key
-            logger.info("PDF storage key set in response: %s", pdf_key)
-        else:
-            logger.info("PDF storage key is None — S3 upload was skipped or failed")
-    except ValueError as e:
-        logger.warning("Indexing validation error: %s", e)
-        raise HTTPException(status_code=400, detail=str(e)) from e
+        await run_in_threadpool(upload_pdf_to_supabase_storage, file_content, key)
+        document = await repository.queue(uid, doc_id, "index")
     except Exception as e:
-        logger.exception("Indexing failed: %s", e)
-        raise HTTPException(
-            status_code=500,
-            detail="Indexing failed. Please try again or contact the administrator.",
-        ) from e
-
-    return result.to_dict()
+        logger.exception("PDF retention/enqueue failed")
+        try:
+            await repository.upload_failed(uid, doc_id)
+        except Exception:
+            logger.exception("Could not record failed upload; stale-upload recovery will handle it")
+        raise HTTPException(503, "Không thể lưu hoặc xếp hàng tài liệu. Vui lòng kiểm tra thư viện và thử lại.") from e
+    return public_document(document)
