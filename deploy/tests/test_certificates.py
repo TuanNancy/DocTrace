@@ -32,7 +32,7 @@ class CertificateCommandsTest(unittest.TestCase):
         code, commands = self.invoke("bootstrap")
         self.assertEqual(code, 0)
         self.assertTrue(commands.startswith("http |"))
-        self.assertIn("up -d --build --wait api worker nginx", commands)
+        self.assertIn("up -d --build --wait api worker dispatcher nginx", commands)
 
     def test_issue_enables_tls_only_after_success(self):
         code, commands = self.invoke("issue")

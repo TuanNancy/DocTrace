@@ -17,7 +17,7 @@ reload_nginx() {
 case "${1:-}" in
     bootstrap)
         # The .env file stays in https mode; this override is for initial issuance only.
-        TLS_MODE=http dc up -d --build --wait api worker nginx
+        TLS_MODE=http dc up -d --build --wait api worker dispatcher nginx
         ;;
     issue)
         dc run --rm --entrypoint /bin/sh certbot /opt/doctrace/issue.sh

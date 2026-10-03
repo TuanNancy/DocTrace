@@ -54,8 +54,11 @@ class AppConfig:
     supabase_url: Optional[str] = None
     supabase_publishable_key: Optional[str] = None
     supabase_service_role_key: Optional[str] = None
-    document_job_lease_seconds: int = 120
-    document_worker_poll_seconds: float = 2.0
+    redis_url: str = "redis://localhost:6379/0"
+    rq_queue_name: str = "documents"
+    document_index_timeout_seconds: int = 900
+    document_delete_timeout_seconds: int = 300
+    document_dispatch_poll_seconds: float = 2.0
     supabase_s3_endpoint: Optional[str] = None
     supabase_s3_region: str = "ap-southeast-2"
     supabase_s3_access_key_id: Optional[str] = None
@@ -118,8 +121,9 @@ class AppConfig:
             ("embedding_batch_size", "EMBEDDING_BATCH_SIZE"), ("upstream_timeout_seconds", "UPSTREAM_TIMEOUT_SECONDS"),
             ("retrieval_top_k", "RETRIEVAL_TOP_K"), ("context_max_chars", "CONTEXT_MAX_CHARS"),
             ("milvus_nlist", "MILVUS_NLIST"), ("milvus_nprobe", "MILVUS_NPROBE"),
-            ("document_job_lease_seconds", "DOCUMENT_JOB_LEASE_SECONDS"),
-            ("document_worker_poll_seconds", "DOCUMENT_WORKER_POLL_SECONDS"),
+            ("document_index_timeout_seconds", "DOCUMENT_INDEX_TIMEOUT_SECONDS"),
+            ("document_delete_timeout_seconds", "DOCUMENT_DELETE_TIMEOUT_SECONDS"),
+            ("document_dispatch_poll_seconds", "DOCUMENT_DISPATCH_POLL_SECONDS"),
         ):
             value = getattr(self, attr)
             if not math.isfinite(value) or value <= 0:
@@ -141,6 +145,10 @@ class AppConfig:
             errors.append("MILVUS_HOST and MILVUS_PORT must identify a valid local connection")
         if not self.milvus_collection:
             errors.append("MILVUS_COLLECTION must not be empty")
+        if urlparse(self.redis_url).scheme not in ("redis", "rediss") or not urlparse(self.redis_url).hostname:
+            errors.append("REDIS_URL must be an absolute redis(s) URL")
+        if not self.rq_queue_name:
+            errors.append("RQ_QUEUE_NAME must not be empty")
         for attr in ("openrouter_base_url", "supabase_url", "supabase_s3_endpoint"):
             value = getattr(self, attr)
             if value and (urlparse(value).scheme not in ("http", "https") or not urlparse(value).hostname):

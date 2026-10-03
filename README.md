@@ -16,8 +16,9 @@ Hỏi đáp PDF với nguồn trích dẫn có thể kiểm chứng. Giao diện
 |---|---|
 | Frontend | Next.js 14 App Router, React 18, Tailwind, react-markdown + remark-gfm |
 | API | FastAPI; Supabase Bearer authentication; API thư viện và SSE |
-| Worker | `python -m app.worker`; claim/heartbeat/finish tác vụ bền vững |
-| Metadata và jobs | Supabase Postgres, truy cập qua PostgREST với service-role key phía server |
+| Worker | RQ 2.12; `python -m app.worker`, JSON jobs, timeout và retry có scheduler |
+| Queue | Redis 7.4, AOF, volume bền vững; `python -m app.dispatcher` giao việc và đối soát |
+| Metadata / outbox | Supabase Postgres qua PostgREST với service-role key phía server |
 | PDF gốc | Bucket Supabase Storage riêng tư, giao thức S3 |
 | Vector/text chunks | Milvus local hoặc Zilliz URI/token |
 | Chat/embedding | OpenRouter, model cấu hình rõ trong env |
@@ -31,7 +32,7 @@ CI sử dụng Python **3.12** và Node **22**. Docker cần thiết nếu dùng
 ### 1. Supabase và môi trường backend
 
 1. Tạo project Supabase, bật Auth và tạo bucket PDF **private**.
-2. Chạy `backend/migrations/001_document_library.sql` một lần trong SQL Editor của project. Migration tạo `documents`, `document_jobs`, RLS và các RPC cho worker.
+2. Với database mới, chạy lần lượt `backend/migrations/001_document_library.sql` và `002_rq_document_jobs.sql` một lần trong SQL Editor. Nếu đã chạy 001, thực hiện quy trình chuyển đổi trong [DEPLOYMENT.md](DEPLOYMENT.md#chuyển-từ-worker-postgresql-sang-rq) trước khi áp dụng 002.
 3. Copy `backend/.env.example` thành `backend/.env`, điền:
    - `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`: xác thực người dùng.
    - `SUPABASE_SERVICE_ROLE_KEY`: key **server-only** cho metadata và jobs.
@@ -39,11 +40,11 @@ CI sử dụng Python **3.12** và Node **22**. Docker cần thiết nếu dùng
    - `OPENROUTER_API_KEY`, `RAG_MODEL`, `EMBEDDING_MODEL`.
    - Milvus host/port hoặc `MILVUS_URI` + `MILVUS_TOKEN` cho Zilliz.
 
-Root `.env` được hỗ trợ; `backend/.env` ghi đè cả root và biến process. `get_config()` cache một lần, nên khởi động lại API/worker sau khi đổi cấu hình.
+Root `.env` được hỗ trợ; `backend/.env` ghi đè cả root và biến process. `get_config()` cache một lần, nên khởi động lại API/worker/dispatcher sau khi đổi cấu hình.
 
 Thư viện mới cần metadata trong Postgres. PDF tải bằng phiên bản cũ chưa có bản ghi thư viện cần được tải lại; migration không xóa dữ liệu Milvus/Storage cũ.
 
-### 2. Milvus local (bỏ qua nếu dùng Zilliz)
+### 2. Redis và Milvus local
 
 Từ root:
 
@@ -51,7 +52,7 @@ Từ root:
 docker compose up -d
 ```
 
-Lệnh này chỉ chạy Milvus, etcd, MinIO và Attu; không chạy API/frontend. Attu ở `http://localhost:8001`.
+Lệnh này chạy Redis, Milvus, etcd, MinIO và Attu. Attu ở `http://localhost:8001`. Nếu dùng Zilliz, chỉ cần `docker compose up -d redis`.
 
 ### 3. API và worker
 
@@ -64,13 +65,15 @@ python -m pip install -r requirements.txt
 uvicorn app.main:app --reload --port 8000
 ```
 
-Ở terminal thứ hai, cùng môi trường `backend/`:
+Worker và dispatcher nên chạy bằng Linux container, từ repository root:
 
 ```sh
-python -m app.worker
+docker compose --profile jobs up -d --build worker dispatcher
 ```
 
-API docs: `http://localhost:8000/docs`. Worker phải chạy để tài liệu chuyển từ **Chờ xử lý** sang **Sẵn sàng** và hoàn tất xóa. API có thể restart mà không mất hàng đợi. Worker bị ngắt sẽ được phục hồi sau khi lease hết hạn; tối đa ba lần claim tự động, sau đó người dùng có thể thử lại.
+Trên Linux, cũng có thể chạy `python -m app.worker` và `python -m app.dispatcher` trong hai terminal riêng từ `backend/`. Worker container dùng `MILVUS_HOST=milvus`; cấu hình `MILVUS_URI` vẫn được ưu tiên nếu dùng Zilliz.
+
+API docs: `http://localhost:8000/docs`. Dispatcher giao yêu cầu đã lưu sang Redis; worker xử lý và cập nhật thư viện. Mỗi operation có tối đa ba lần thực thi, retry thường chờ 10/30 giây. Worker bị ngắt được RQ/dispatcher phục hồi; có thể phải chờ deadline của lần chạy cũ (timeout + 60 giây). Sau lỗi cuối cùng, người dùng bấm Thử lại để tạo operation mới.
 
 ### 4. Frontend
 
@@ -116,7 +119,7 @@ python -m pytest tests/test_documents.py tests/test_worker.py
 python scripts/verify_document_queue.py
 ```
 
-Lệnh cuối cần Docker, chạy migration thật trên PostgreSQL tạm, kiểm tra RLS, lease, recovery và xóa/thử lại; tự dọn container.
+Lệnh cuối cần Docker; build image rồi chạy PostgreSQL/PostgREST, Redis và RQ workers thật trên Linux. Nó kiểm tra nâng cấp migration, RLS, outbox, retry, kill worker, xóa/thử lại và tự dọn tài nguyên. Có thể truyền `--api-image doctrace-api:verify` để dùng image đã build.
 
 Từ `frontend/`:
 
@@ -139,4 +142,4 @@ python scripts/test_retrieval.py <user_id> <doc_id> "câu hỏi" --top-k 8 --min
 
 ## Deploy
 
-[DEPLOYMENT.md](DEPLOYMENT.md) hướng dẫn API + worker + Nginx/Certbot; frontend deploy riêng. `/health` chỉ kiểm tra API process, không kiểm tra database, worker hay nhà cung cấp AI.
+[DEPLOYMENT.md](DEPLOYMENT.md) hướng dẫn API + Redis + dispatcher + RQ worker + Nginx/Certbot; frontend deploy riêng. `/health` chỉ kiểm tra API process, không kiểm tra queue hay nhà cung cấp AI.

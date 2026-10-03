@@ -1,4 +1,22 @@
 services:
+  redis:
+    image: redis:7.4.8-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec", "--maxmemory", "128mb", "--maxmemory-policy", "noeviction"]
+    volumes:
+      - redis_data:/data
+    mem_limit: 256m
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
   api:
     image: ${API_IMAGE:-doctrace-api:local}
     build:
@@ -30,10 +48,45 @@ services:
     restart: unless-stopped
     env_file:
       - ${BACKEND_ENV_FILE:-./backend/.env}
+    environment:
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      redis:
+        condition: service_healthy
     read_only: true
     tmpfs:
       - /tmp:size=256m,mode=1777
     mem_limit: 1400m
+    healthcheck:
+      disable: true
+    stop_grace_period: 16m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  dispatcher:
+    image: ${API_IMAGE:-doctrace-api:local}
+    build:
+      context: ./backend
+    command: ["python", "-m", "app.dispatcher"]
+    restart: unless-stopped
+    env_file:
+      - ${BACKEND_ENV_FILE:-./backend/.env}
+    environment:
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      redis:
+        condition: service_healthy
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    mem_limit: 192m
     healthcheck:
       disable: true
     stop_grace_period: 30s
@@ -89,5 +142,6 @@ services:
       - ./deploy/certbot:/opt/doctrace:ro
 
 volumes:
+  redis_data:
   certificates:
   acme_webroot:
