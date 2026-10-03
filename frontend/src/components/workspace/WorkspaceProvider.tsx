@@ -4,9 +4,10 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import type { User } from "@supabase/supabase-js";
 import { createClient } from "@/lib/client";
 import { deleteDocument, listDocuments, retryDocument } from "@/lib/api";
+import { isPending } from "@/lib/documents";
 import { useChatSession } from "@/lib/use-chat-session";
 import { useUpload } from "@/lib/use-upload";
-import type { ChatSource, LibraryDocument, UploadResponse } from "@/types";
+import type { ChatSource, LibraryDocument } from "@/types";
 
 function useWorkspaceState() {
   const supabase = useMemo(() => createClient(), []);
@@ -78,7 +79,7 @@ function useWorkspaceState() {
     return () => { documentRequest.current?.abort(); window.removeEventListener("focus", focus); };
   }, [refresh]);
 
-  const pending = documents.some((document) => ["uploading", "queued", "processing", "deleting"].includes(document.status));
+  const pending = documents.some((document) => isPending(document.status));
   useEffect(() => {
     if (!pending || mock) return;
     const timer = window.setInterval(() => { if (!document.hidden && !documentRequest.current) void refresh(); }, 2500);
@@ -94,15 +95,9 @@ function useWorkspaceState() {
     }
   }, [documents, documentsLoading, docId]);
 
-  const uploaded = useCallback((result: UploadResponse, file: File) => {
+  const uploaded = useCallback((result: LibraryDocument) => {
     documentRequest.current?.abort();
-    const now = new Date().toISOString();
-    const document: LibraryDocument = {
-      doc_id: result.doc_id, name: result.name ?? file.name, size_bytes: file.size,
-      status: mock ? "ready" : "queued", chunks_count: result.chunks_count,
-      created_at: result.created_at ?? now, updated_at: now, warnings: result.warnings ?? [], error: null,
-    };
-    setDocuments((items) => [document, ...items.filter((item) => item.doc_id !== result.doc_id)]);
+    setDocuments((items) => [result, ...items.filter((item) => item.doc_id !== result.doc_id)]);
     setNotice(mock ? "Đã thêm PDF minh họa. Nội dung chat ở chế độ demo." : "Đã thêm PDF vào thư viện. Trạng thái xử lý được cập nhật tự động.");
     if (!mock) void refresh();
   }, [mock, refresh]);

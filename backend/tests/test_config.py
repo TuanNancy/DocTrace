@@ -93,7 +93,7 @@ async def test_injected_config_reaches_real_milvus_search(monkeypatch):
 
 
 def test_diagnostic_script_uses_config_unless_explicitly_overridden():
-    from scripts.test_retrieval import parse_args
+    from scripts.inspect_retrieval import parse_args
     config = AppConfig(retrieval_top_k=12, min_relevance_score=0.21)
     args = parse_args(["owner", "doc", "question"], config=config)
     assert (args.top_k, args.min_score) == (12, 0.21)
@@ -102,7 +102,6 @@ def test_diagnostic_script_uses_config_unless_explicitly_overridden():
 
 
 def test_file_precedence_and_config_cache(monkeypatch, tmp_path):
-    from pathlib import Path
     from app.core import config as module
     # config.py resolves parents[3] as the repository root.
     monkeypatch.setattr(module, "__file__", str(tmp_path / "backend/app/core/config.py"))

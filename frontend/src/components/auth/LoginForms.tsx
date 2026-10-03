@@ -1,17 +1,14 @@
 "use client";
 
 import Link from "next/link";
+import Image from "next/image";
+import logo from "@/assets/baymax.png";
 import { useMemo, useState } from "react";
 import { useFormState } from "react-dom";
-import { loginAction } from "@/app/auth/actions";
+import { loginAction, type AuthActionState } from "@/app/auth/actions";
 import { AuthSubmitButton } from "@/components/auth/AuthSubmitButton";
 import { BrandMark } from "@/components/BrandMark";
 import { createClient } from "@/lib/client";
-
-type AuthActionState = {
-  status: "idle" | "success" | "error";
-  message: string;
-};
 
 const INITIAL_AUTH_ACTION_STATE: AuthActionState = {
   status: "idle",
@@ -118,9 +115,10 @@ export function LoginForms() {
         </section>
 
         <section className="flex items-end justify-center border-t border-[#8f1b1b] bg-[#B22222] p-0 md:border-l md:border-t-0">
-          <img
-            src="/brand/logo"
+          <Image
+            src={logo}
             alt="Baymax logo"
+            sizes="(min-width: 768px) 50vw, 100vw"
             className="h-auto max-h-[640px] w-full max-w-[520px] object-contain object-bottom"
           />
         </section>

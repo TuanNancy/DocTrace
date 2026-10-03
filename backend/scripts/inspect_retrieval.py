@@ -1,6 +1,6 @@
 """
-Test retrieval with different queries; verify top-k results.
-Usage: python scripts/test_retrieval.py <user_id> <doc_id> "câu hỏi 1" ...
+Inspect owner-scoped retrieval with real embedding/vector services.
+Usage: python scripts/inspect_retrieval.py <user_id> <doc_id> "câu hỏi 1" ...
 """
 import asyncio
 import argparse

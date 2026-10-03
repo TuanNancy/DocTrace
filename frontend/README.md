@@ -4,6 +4,8 @@ Next.js 14 App Router, React 18, Tailwind, ReactMarkdown/GFM. The authenticated 
 
 Inter is the shared font across all pages, headings, branding and Markdown. It is loaded with Latin/Vietnamese support through `next/font` and connected to Tailwind's `font-sans` via `--font-sans`.
 
+The logo lives in `src/assets/baymax.png` and is bundled through `next/image`; frontend builds are self-contained.
+
 ## Setup
 
 From `frontend/`, run `npm ci`, copy `.env.example` to `.env.local`, then `npm run dev`.
@@ -22,7 +24,7 @@ Supabase Auth needs Site URL and allowlisted `/auth/callback` for OAuth and `/au
 ## Workspace
 
 - `src/app/(workspace)/layout.tsx` mounts `WorkspaceProvider` for `/chat` and `/documents`; route changes preserve in-memory chat/upload state. Reload starts a new conversation. There is no localStorage/server chat persistence.
-- `/documents` uploads PDF via XHR byte progress and receives `202 queued`. Metadata comes from the owner-scoped library API. Polling follows queued/processing/deleting documents; reload retrieves persisted status.
+- `/documents` uploads PDF via XHR byte progress and receives the same `LibraryDocument` contract as the library endpoints. Upload progress is local UI state; persisted documents start at queued. `src/lib/documents.ts` shares pending/indexing checks across polling, filters and actions.
 - The Redis library and Linux RQ worker described in the root README are required for real processing. Re-upload PDFs when moving from the old PostgreSQL library; no SQL migration is needed. Delete/retry is blocked until the current job ends; a stale UI may receive a 409 and refresh.
 - Chat uses only a selected ready PDF. `useChatSession` owns streaming, clear/stop, export and cancellation. Switching PDFs clears messages; navigation between workspace pages preserves them.
 - ReactMarkdown/GFM renders assistant output. Source IDs become buttons only when present in the response. The citation panel fetches original text and opens a short-lived PDF URL at the cited page.

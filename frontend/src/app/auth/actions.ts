@@ -4,7 +4,7 @@ import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/server";
 
-type AuthActionState = {
+export type AuthActionState = {
   status: "idle" | "success" | "error";
   message: string;
 };

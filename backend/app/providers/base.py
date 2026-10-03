@@ -6,10 +6,9 @@ from typing import AsyncIterator, Dict, List, Optional
 
 
 class ChatProvider(ABC):
-    def __init__(self, api_key: str, model: str, **kwargs):
+    def __init__(self, api_key: str, model: str):
         self.api_key = api_key
         self.model = model
-        self.config = kwargs
 
     @abstractmethod
     async def generate_completion(
@@ -77,10 +76,6 @@ class ChatProvider(ABC):
             **kwargs
         ):
             yield text_delta
-
-    def has_api_key(self) -> bool:
-        """Check local key presence; this does not authenticate with the provider."""
-        return bool(self.api_key)
 
     async def close(self) -> None:
         """Release resources owned by this request's provider."""

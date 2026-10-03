@@ -18,6 +18,7 @@ from rq import Worker
 from rq.command import send_kill_horse_command
 from rq.job import Job
 from rq.registry import StartedJobRegistry
+from rq.scheduler import RQScheduler
 from rq.serializers import JSONSerializer
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -133,9 +134,9 @@ def main():
         print("PASS: atomic catalog/enqueue, duplicate request, owner scope, outage and AOF restart", flush=True)
 
         def worker(suffix):
-            return launch(suffix, "-v", f"{ROOT / 'scripts'}:/checks:ro", "-e", "PYTHONPATH=/app",
+            return launch(suffix, "-v", f"{ROOT / 'tests' / 'fixtures'}:/checks:ro", "-e", "PYTHONPATH=/app",
                           "-e", "REDIS_URL=redis://redis:6379/0", "-e", f"RQ_QUEUE_NAME={config.rq_queue_name}",
-                          "-e", "DOCUMENT_INDEX_TIMEOUT_SECONDS=5", image, "python", "/checks/queue_worker_fixture.py")
+                          "-e", "DOCUMENT_INDEX_TIMEOUT_SECONDS=5", image, "python", "/checks/queue_worker.py")
 
         workers = [worker("worker-one"), worker("worker-two")]
         eventually(lambda: state(queued, "ready"))
@@ -203,21 +204,37 @@ def main():
         assert current(broken)["attempt_number"] == 0
         run(repository.queue(owner, broken["doc_id"], "index"))
         eventually(lambda: state(broken, "ready"))
+        eventually(lambda: finished(broken))
 
+        # Kill the scheduler's worker deliberately, rather than passing only when
+        # the other worker happens to consume this job.
+        scheduler_key = RQScheduler.get_locking_key(config.rq_queue_name)
+        scheduler_owner = connection.get(scheduler_key)
+        scheduler = RQScheduler.fetch(scheduler_owner.decode(), connection=connection)
+        victim = next(name for name in workers if docker("inspect", "--format", "{{.Config.Hostname}}", name) == scheduler.hostname)
+        survivors = [name for name in workers if name != victim]
+        # Stop idle consumers so Redis cannot deliver the job to a paused
+        # worker's still-open blocking dequeue connection.
+        docker("stop", *survivors)
         abandoned = document("slow.pdf")
         eventually(lambda: started(abandoned))
         abandoned_job = Job.fetch(abandoned["job_id"], connection=connection, serializer=JSONSerializer)
         running = next(w for w in Worker.all(connection=connection) if w.name == abandoned_job.worker_name)
-        victim = next(name for name in workers if docker("inspect", "--format", "{{.Config.Hostname}}", name) == running.hostname)
+        assert running.hostname == scheduler.hostname
         docker("kill", victim)
         connection.set(f"release:{abandoned['doc_id']}", "yes")
         # Advance RQ's registry clock after the process is dead, avoiding a full
         # heartbeat expiry wait. This is the real abandoned-job maintenance path.
         StartedJobRegistry(config.rq_queue_name, connection=connection, serializer=JSONSerializer).cleanup(time.time() + 120)
-        docker("start", victim)
+        # RQ's killed scheduler retains its ~61s lease. Restart after expiry (or
+        # takeover): an earlier restart can enter a 405s idle dequeue before its
+        # next maintenance pass, longer than this test's 90s deadline.
+        print("Waiting for killed scheduler lease expiry/takeover...", flush=True)
+        eventually(lambda: connection.get(scheduler_key) != scheduler_owner)
+        docker("start", victim, *survivors)
         eventually(lambda: state(abandoned, "ready"))
         assert current(abandoned)["attempt_number"] == 2
-        print("PASS: killed horse/container, missing job keys, pre-task failure and manual retry", flush=True)
+        print("PASS: killed horse/container/scheduler, missing job keys, pre-task failure and manual retry", flush=True)
         print("All Redis/RQ integration checks passed.", flush=True)
     except Exception:
         for name in containers:

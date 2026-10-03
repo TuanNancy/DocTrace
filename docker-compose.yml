@@ -1,7 +1,4 @@
-# docker-compose.yml
-
 services:
-
   redis:
     image: redis:7.4.8-alpine
     command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec", "--maxmemory", "128mb", "--maxmemory-policy", "noeviction"]
@@ -108,8 +105,5 @@ services:
       milvus:
         condition: service_healthy
 
-volumes:  # Named volumes — data tồn tại sau khi down
+volumes:
   redis_data:
-  etcd_data:
-  minio_data:
-  milvus_data:

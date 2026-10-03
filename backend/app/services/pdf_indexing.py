@@ -2,15 +2,20 @@
 import logging
 import os
 import tempfile
-import time
+from dataclasses import dataclass, field
 from starlette.concurrency import run_in_threadpool
 from anyio import CancelScope
 
 from app.core.config import get_config
-from app.models.document import DocumentStatus, IndexingResult, create_indexing_result
 from app.storage.factory import create_connected_vector_store
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class IndexingResult:
+    chunks_count: int
+    warnings: list[str] = field(default_factory=list)
 
 
 class InvalidPDFError(ValueError):
@@ -34,7 +39,6 @@ async def index_pdf_bytes(
 
     if not user_id:
         raise ValueError("Document owner is required.")
-    start_time = time.time()
     suffix = os.path.splitext(filename)[1] or ".pdf"
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as f:
         f.write(file_content)
@@ -84,12 +88,8 @@ async def index_pdf_bytes(
 
         merged_warnings = list(warnings or [])
         merged_warnings.extend(insert_result.warnings or [])
-        return create_indexing_result(
-            doc_id=doc_id,
-            name=filename,
+        return IndexingResult(
             chunks_count=insert_result.chunks_inserted,
-            status=DocumentStatus.COMPLETED,
-            processing_time=time.time() - start_time,
             warnings=merged_warnings,
         )
     finally:

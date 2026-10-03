@@ -60,7 +60,7 @@ body {
   .document-choice-active { @apply border-blue-100 bg-blue-50/60; }
   .status-badge { @apply inline-flex max-w-full items-center gap-1.5 whitespace-nowrap rounded-full px-2.5 py-1 text-[10px] font-medium; }
   .status-ready { @apply bg-emerald-50 text-emerald-600; }
-  .status-queued, .status-uploading, .status-processing { @apply bg-blue-50 text-blue-500; }
+  .status-queued, .status-processing { @apply bg-blue-50 text-blue-500; }
   .status-error, .status-delete_error { @apply bg-red-50 text-red-600; }
   .status-deleting, .status-deleted { @apply bg-slate-100 text-slate-500; }
   .document-row { @apply grid items-center gap-3 rounded-2xl border border-slate-200/60 bg-white/60 p-4 transition hover:bg-white/90 md:grid-cols-[minmax(0,1fr)_135px_180px] md:gap-4; }

@@ -2,10 +2,10 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { uploadPDF } from "@/lib/api";
-import type { UploadResponse } from "@/types";
+import type { LibraryDocument } from "@/types";
 
 export function useUpload({ accessToken, mock, onUploadComplete, enabled = true }: {
-  accessToken?: string | null; mock?: boolean; onUploadComplete?: (result: UploadResponse, file: File) => void; enabled?: boolean;
+  accessToken?: string | null; mock?: boolean; onUploadComplete?: (result: LibraryDocument) => void; enabled?: boolean;
 }) {
   const [status, setStatus] = useState<"idle" | "uploading" | "success" | "error">("idle");
   const [progress, setProgress] = useState(0);
@@ -26,10 +26,15 @@ export function useUpload({ accessToken, mock, onUploadComplete, enabled = true 
     active.current = controller;
     setStatus("uploading"); setProgress(0); setError(null); setFilename(file.name);
     try {
-      let result: UploadResponse;
+      let result: LibraryDocument;
       if (mock) {
         await new Promise((resolve) => setTimeout(resolve, 500));
-        result = { doc_id: crypto.randomUUID(), name: file.name, status: "ready", chunks_count: 0 };
+        const now = new Date().toISOString();
+        result = {
+          doc_id: crypto.randomUUID(), name: file.name, size_bytes: file.size,
+          status: "ready", chunks_count: 0, created_at: now, updated_at: now,
+          warnings: [], error: null,
+        };
       } else {
         result = await uploadPDF(file, accessToken ?? "", controller.signal, (percent) => {
           if (!controller.signal.aborted) setProgress(percent);
@@ -37,7 +42,7 @@ export function useUpload({ accessToken, mock, onUploadComplete, enabled = true 
       }
       if (controller.signal.aborted) return;
       setProgress(100); setStatus("success");
-      onUploadComplete?.(result, file);
+      onUploadComplete?.(result);
     } catch (cause) {
       if (!controller.signal.aborted) {
         setStatus("error"); setError(cause instanceof Error ? cause.message : "Không thể tải PDF.");
