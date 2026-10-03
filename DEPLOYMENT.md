@@ -1,4 +1,4 @@
-# Deploy FastAPI + document worker với Nginx + Certbot trên EC2
+# Deploy FastAPI + Redis/RQ với Nginx + Certbot trên EC2
 
 ```text
 Browser / frontend trên Vercel
@@ -7,13 +7,15 @@ Browser / frontend trên Vercel
 EC2: Nginx container ──→ api:8000 (FastAPI container)
           │                   └── dịch vụ auth/storage/vector/LLM
           └── certificate volume ← Certbot (chạy khi cấp/gia hạn)
+
+Postgres outbox → dispatcher → Redis → RQ worker → Storage/Milvus/Postgres
 ```
 
 ## Trạng thái checkout
 
 Bộ deploy đóng gói API, worker xử lý PDF và reverse proxy. Frontend cấu hình trên Vercel theo `frontend/.env.example` và `frontend/README.md`. Milvus hỗ trợ host/port hoặc `MILVUS_URI`/`MILVUS_TOKEN`; URI mode mặc định AUTOINDEX.
 
-Trước khi chạy, áp dụng `backend/migrations/001_document_library.sql` trong Supabase SQL Editor, tạo bucket PDF private và cấu hình `SUPABASE_SERVICE_ROLE_KEY` cùng các S3 keys trong `backend/.env`. Worker và API dùng chung cấu hình. Đây là migration tạo schema lần đầu, không phải script chạy lại ở mỗi deploy. Các PDF tải bằng phiên bản cũ chưa có metadata thư viện cần tải lại; migration không xóa collection/bucket cũ.
+Với database mới, áp dụng migrations `001_document_library.sql` rồi `002_rq_document_jobs.sql` trong Supabase SQL Editor. Tạo bucket PDF private và cấu hình `SUPABASE_SERVICE_ROLE_KEY` cùng các S3 keys trong `backend/.env`. Đây là migrations chạy một lần. Database đã chạy worker cũ cần quy trình chuyển đổi bên dưới. PDF chưa có metadata thư viện cần tải lại.
 
 `GET /health` là liveness của API process, không kiểm tra worker, Supabase, Milvus hay OpenRouter. Theo dõi log worker và trạng thái tài liệu để kiểm tra xử lý nền.
 
@@ -22,13 +24,15 @@ Trước khi chạy, áp dụng `backend/migrations/001_document_library.sql` tr
 | Service | Nguồn image | Vai trò |
 |---|---|---|
 | `api` | Build từ `backend/Dockerfile` + context `backend/` | Python, dependency và code FastAPI |
-| `worker` | Cùng image API; command `python -m app.worker` | Indexing, xóa, heartbeat/khôi phục jobs và dọn tombstone |
+| `worker` | Cùng image API; `python -m app.worker` | RQ + scheduler: indexing, xóa, cleanup, timeout/retry |
+| `dispatcher` | Cùng image API; `python -m app.dispatcher` | Giao outbox, đối soát RQ, lên lịch cleanup/stale uploads |
+| `redis` | `redis:7.4.8-alpine` | Queue/RQ metadata; AOF `everysec`, volume `redis_data`, `noeviction` |
 | `nginx` | Image `nginx:1.28-alpine` có sẵn | TLS, reverse proxy, upload/SSE |
 | `certbot` | Image `certbot/certbot:v5.1.0` có sẵn | Cấp/gia hạn certificate qua HTTP-01 |
 
 `docker build` tạo image; `docker compose up` tạo/chạy container từ image. Compose thiết lập network, env, mount và healthcheck. API image không chứa database server hay frontend. Frontend được build/deploy riêng trên Vercel với Root Directory là `frontend`.
 
-Root `docker-compose.yml` chạy **Milvus local + etcd + MinIO + Attu**. File `compose.production.yml` chạy **API + worker + Nginx**; Certbot ở profile `tools` và chỉ chạy khi gọi rõ service.
+Root `docker-compose.yml` chạy Redis + cụm Milvus; profile `jobs` thêm worker/dispatcher. Production chạy API + Redis + dispatcher + worker + Nginx; Certbot ở profile `tools`.
 
 ## 2. Chuẩn bị EC2, DNS và env
 
@@ -63,7 +67,9 @@ CORS_ALLOW_ORIGINS=https://YOUR-FRONTEND
 
 **Networking:** `localhost` trong API container là chính container đó. Nếu Milvus ở cùng Docker network, dùng `MILVUS_HOST=milvus`; nếu Milvus ở máy khác, dùng hostname/IP truy cập được. Trên Docker Desktop, có thể dùng `host.docker.internal` để đi qua cổng của host. Không chạy thêm cả cụm Milvus trên EC2 t3.small theo cấu hình này mà chưa đo tài nguyên.
 
-API và worker có giới hạn riêng `1400m`, tổng tối đa `2800m` chưa tính Nginx/OS. Bố trí RAM phù hợp cho cả hai process; việc tách worker tăng tài nguyên so với deployment API-only trước đây.
+API và worker có giới hạn riêng `1400m`; dispatcher `192m`, Redis `256m`, Nginx `128m` (tổng khoảng 3.3 GiB chưa tính OS). Redis `maxmemory=128mb` chừa dung lượng cho persistence; khi đầy nó từ chối ghi, dispatcher giữ yêu cầu trong outbox để giao lại. Redis chỉ truy cập qua mạng Docker, không publish port production.
+
+Compose đặt `REDIS_URL=redis://redis:6379/0` cho worker/dispatcher. `DOCUMENT_INDEX_TIMEOUT_SECONDS=900`, `DOCUMENT_DELETE_TIMEOUT_SECONDS=300`; tăng timeout cần điều chỉnh `stop_grace_period` (mặc định 16 phút) tương ứng. RQ graceful shutdown chờ job hiện tại; force kill được phục hồi bằng RQ + deadline database.
 
 `backend/.env` được inject lúc chạy; không copy vào image. `.env.production` chứa domain/cấu hình Compose và được Git ignore. Các giá trị `NEXT_PUBLIC_*` của frontend được cấu hình trên Vercel; API URL phải dùng HTTPS.
 
@@ -75,7 +81,7 @@ API và worker có giới hạn riêng `1400m`, tổng tối đa `2800m` chưa t
 sh deploy/certificates.sh bootstrap
 ```
 
-Lệnh này build image, chạy API + worker + Nginx và chờ API/Nginx healthcheck; worker được kiểm tra ở mức process running. Nó tạm đặt `TLS_MODE=http` cho lần chạy đó; file `.env.production` vẫn là `https`.
+Lệnh này build image, chạy API + worker + dispatcher + Redis + Nginx. Redis/API/Nginx có healthcheck; worker/dispatcher được kiểm tra ở mức process running. Nó tạm đặt `TLS_MODE=http` cho lần chạy đó; file `.env.production` vẫn là `https`.
 
 Bootstrap chỉ phục vụ:
 
@@ -146,9 +152,9 @@ sudo journalctl -u doctrace-cert-renew.service
 Sau lần cấp certificate đầu tiên:
 
 ```sh
-docker compose --env-file .env.production -f compose.production.yml up -d --build --wait api worker nginx
+docker compose --env-file .env.production -f compose.production.yml up -d --build --wait api worker dispatcher nginx
 docker compose --env-file .env.production -f compose.production.yml ps
-docker compose --env-file .env.production -f compose.production.yml logs --tail=100 api worker nginx
+docker compose --env-file .env.production -f compose.production.yml logs --tail=100 api worker dispatcher redis nginx
 docker compose --env-file .env.production -f compose.production.yml exec nginx nginx -t
 ```
 
@@ -160,7 +166,24 @@ docker compose --env-file .env.production -f compose.production.yml up -d --forc
 
 Certificate renewal chỉ đổi file PEM, nên graceful reload là đủ. Giữ nguyên tên project Compose giữa các lệnh và timer để dùng đúng volumes. `down` giữ named volumes; **`down -v` xóa certificate/account state**. Không dùng bootstrap cho một deployment đã chạy HTTPS.
 
-`POST /api/upload` trả `202 queued` sau khi lưu PDF, trước khi indexing. Worker claim jobs trong Postgres, cập nhật heartbeat và công bố generation khi hoàn tất. Sau restart, jobs bị ngắt được claim lại khi lease hết hạn (`DOCUMENT_JOB_LEASE_SECONDS`, mặc định 120 giây); sau ba lần gián đoạn, UI hiển thị lỗi để thử lại. Worker không cần public port. Xóa là tác vụ idempotent; tombstone được dọn lại định kỳ để bắt các thao tác remote kết thúc muộn.
+`POST /api/upload` trả `202 queued` sau khi giữ PDF và commit yêu cầu vào outbox, kể cả khi Redis đang gián đoạn. Dispatcher giao việc mỗi khoảng 2 giây; RQ thực thi và retry sau 10/30 giây. Mỗi operation có ngân sách bền vững tối đa ba lần thực thi. Recovery job bị kill/mất Redis có thể chờ timeout của lần chạy cũ + 60 giây và chu kỳ maintenance. PostgreSQL kiểm tra operation/delivery/attempt trước khi công bố generation. Cleanup định kỳ bắt các thao tác remote kết thúc muộn.
+
+Quan sát queue mặc định bằng:
+
+```sh
+docker compose --env-file .env.production -f compose.production.yml exec worker rq info --url redis://redis:6379/0
+```
+
+Theo dõi worker heartbeat, tuổi operation `pending`, log `Dispatcher heartbeat`, các trạng thái `error/delete_error`. Log nối được bằng `doc`, `operation`, `attempt`. `/health` thành công không chứng minh dispatcher/worker đang chạy. `down -v` cũng xóa dữ liệu Redis; AOF `everysec` có cửa sổ mất ghi gần nhất, còn outbox/attempt budget trong PostgreSQL cho phép đối soát.
+
+### Chuyển từ worker PostgreSQL sang RQ
+
+1. Backup database và giữ image backend cũ. Dừng API để tạm ngừng upload/retry/delete; chờ hoặc dừng worker cũ có kiểm soát. Xác nhận không còn process cũ đang ghi vector.
+2. Áp dụng **002** (không chạy lại 001). Migration chuyển queued/processing/deleting thành outbox mới, giữ toàn bộ generation cũ và active pointer; xóa RPC worker cũ để mọi publish muộn thất bại. `document_jobs` được giữ làm dữ liệu lịch sử, thu hồi quyền service-role.
+3. Build/start Redis, dispatcher, worker và API mới bằng lệnh ở trên. Xác nhận một PDF mới đạt ready, mở nguồn và xóa được trước khi mở lại frontend.
+4. Kiểm tra log, outbox còn pending và cleanup. Chỉ bỏ bảng lịch sử bằng một migration sau khi đã xác nhận vận hành; runtime mới không đọc bảng đó.
+
+Rollback trước khi mở lại traffic: dừng toàn bộ binary mới, phục hồi backup/schema cũ cùng image cũ và đối soát các generation đã phát sinh. Sau khi đã nhận dữ liệu mới, ưu tiên sửa tiến thay vì restore backup làm mất metadata; việc đổi image đơn thuần không tương thích schema 002. Không chạy đồng thời worker cũ và mới.
 
 ## 6. Upload và SSE
 
@@ -191,4 +214,4 @@ Integration test dùng production Compose/templates với project name ngẫu nh
 
 CI chạy backend tests, deployment checks và frontend typecheck/lint/Vitest/Chromium/build. Frontend checks dùng cấu hình public giả và Auth/API fixtures local; chưa chứng minh dịch vụ cloud thực đã được kết nối đúng.
 
-Kiểm tra migration/queue/RLS độc lập với cloud: từ `backend/`, chạy `python scripts/verify_document_queue.py`. Script tạo PostgreSQL tạm bằng Docker và tự dọn sau kiểm tra.
+Kiểm tra migration/queue/RLS độc lập với cloud: từ `backend/`, chạy `python scripts/verify_document_queue.py`. Script build image (hoặc dùng `--api-image`), tạo PostgreSQL/PostgREST/Redis cùng Linux RQ workers thật; các dịch vụ PDF/AI/Storage/Milvus được giả lập. Tự dọn container, network, volume test.

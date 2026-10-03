@@ -13,6 +13,10 @@ from app.storage.factory import create_connected_vector_store
 logger = logging.getLogger(__name__)
 
 
+class InvalidPDFError(ValueError):
+    """Permanent input failure: another network retry cannot repair this PDF."""
+
+
 async def index_pdf_bytes(
     file_content: bytes,
     filename: str,
@@ -20,10 +24,10 @@ async def index_pdf_bytes(
     *,
     user_id: str,
 ) -> IndexingResult:
-    """Index a PDF under an existing document ID and clean up temporary resources.
+    """Index a PDF under an attempt's generation ID and clean up temporary resources.
 
     Authentication, HTTP validation, and original-PDF retention belong to the
-    caller. The document ID is shared by the stored PDF and all indexed chunks.
+    caller. doc_id here is the internal generation, not the public library ID.
     """
     from app.processors.pdf import chunk_documents, load_pdf_pages
     from app.providers.embeddings import get_embedder
@@ -37,13 +41,16 @@ async def index_pdf_bytes(
         temp_path = f.name
 
     try:
-        docs, warnings = await run_in_threadpool(load_pdf_pages, temp_path, original_filename=filename)
+        try:
+            docs, warnings = await run_in_threadpool(load_pdf_pages, temp_path, original_filename=filename)
+        except ValueError as exc:
+            raise InvalidPDFError("PDF is corrupt or unreadable.") from exc
         chunks = await run_in_threadpool(chunk_documents, docs)
         if not chunks:
-            raise ValueError("No text chunks produced from PDF.")
+            raise InvalidPDFError("No text chunks produced from PDF.")
         config = get_config()
         if len(chunks) > config.max_chunks_per_document:
-            raise ValueError("PDF produces too many chunks. Split it into smaller documents.")
+            raise InvalidPDFError("PDF produces too many chunks. Split it into smaller documents.")
 
         embedder = await run_in_threadpool(get_embedder, config=config)
         vectors = await run_in_threadpool(embedder.embed_documents, [c["text"] for c in chunks])
