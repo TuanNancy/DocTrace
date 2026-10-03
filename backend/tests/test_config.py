@@ -29,7 +29,7 @@ def test_local_cloud_and_index_override():
     ("UPSTREAM_TIMEOUT_SECONDS", "nan"), ("UPLOAD_MAX_CONCURRENT", "0"),
     ("MAX_CHUNKS_PER_DOCUMENT", "-1"), ("MILVUS_PORT", "70000"),
     ("DOCUMENT_INDEX_TIMEOUT_SECONDS", "0"), ("DOCUMENT_DELETE_TIMEOUT_SECONDS", "-1"),
-    ("DOCUMENT_DISPATCH_POLL_SECONDS", "nan"), ("REDIS_URL", "https://wrong.test"),
+    ("REDIS_URL", "https://wrong.test"),
 ])
 def test_invalid_values_name_the_setting(key, value):
     with pytest.raises(ValueError, match=key):

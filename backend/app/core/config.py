@@ -53,12 +53,10 @@ class AppConfig:
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
     supabase_url: Optional[str] = None
     supabase_publishable_key: Optional[str] = None
-    supabase_service_role_key: Optional[str] = None
     redis_url: str = "redis://localhost:6379/0"
-    rq_queue_name: str = "documents"
+    rq_queue_name: str = "documents-v2"
     document_index_timeout_seconds: int = 900
     document_delete_timeout_seconds: int = 300
-    document_dispatch_poll_seconds: float = 2.0
     supabase_s3_endpoint: Optional[str] = None
     supabase_s3_region: str = "ap-southeast-2"
     supabase_s3_access_key_id: Optional[str] = None
@@ -123,7 +121,6 @@ class AppConfig:
             ("milvus_nlist", "MILVUS_NLIST"), ("milvus_nprobe", "MILVUS_NPROBE"),
             ("document_index_timeout_seconds", "DOCUMENT_INDEX_TIMEOUT_SECONDS"),
             ("document_delete_timeout_seconds", "DOCUMENT_DELETE_TIMEOUT_SECONDS"),
-            ("document_dispatch_poll_seconds", "DOCUMENT_DISPATCH_POLL_SECONDS"),
         ):
             value = getattr(self, attr)
             if not math.isfinite(value) or value <= 0:

@@ -1,13 +1,9 @@
-"""Document work, independent of RQ's scheduling machinery.
-
-An operation identifies user intent; each attempt gets a fresh Milvus generation.
-Only an unexpired, current attempt can publish. Postgres also keeps the retry budget
-and generation inventory when Redis loses keys. RQ exceptions must not be swallowed.
-"""
+"""RQ document tasks. Redis owns metadata; Storage owns PDFs; Milvus owns chunks."""
 import asyncio
 import logging
 
 from starlette.concurrency import run_in_threadpool
+from rq import get_current_job
 
 from app.core.config import get_config
 from app.services.document_repository import DocumentRepository
@@ -29,21 +25,22 @@ async def remove_generations(user_id: str, generations: list[str]) -> None:
         await store.disconnect()
 
 
-async def process_document(repository: DocumentRepository, operation_id: str, delivery: int, kind: str) -> None:
-    timeout = (repository.config.document_index_timeout_seconds if kind == "index"
-               else repository.config.document_delete_timeout_seconds)
-    attempt = await repository.begin(operation_id, delivery, timeout)
+async def process_document(repository: DocumentRepository, doc_id: str, job_id: str,
+                           attempt_number: int, retries_left: int) -> None:
+    attempt = await repository.begin(doc_id, job_id, attempt_number)
     if not attempt:
-        return  # Superseded, already completed, duplicate delivery, or deletion waiting for a writer.
+        return  # Old job, duplicate execution, or an already committed result.
     document = attempt["document"]
     uid, doc_id = document["user_id"], document["doc_id"]
-    logger.info("Started operation=%s attempt=%s doc=%s kind=%s", operation_id, attempt["attempt_id"], doc_id, kind)
+    logger.info("Started job=%s attempt=%s doc=%s kind=%s", job_id, attempt["attempt_id"], doc_id, attempt["kind"])
     try:
         if attempt["kind"] == "delete":
-            await remove_generations(uid, await repository.generations(doc_id))
+            await remove_generations(uid, document["generations"])
             await run_in_threadpool(delete_pdf, document["storage_key"])
             await repository.finish(attempt)
         else:
+            # Retried jobs clean earlier partial indexes before writing a fresh one.
+            await remove_generations(uid, [item for item in document["generations"] if item != attempt["attempt_id"]])
             content = await run_in_threadpool(download_pdf, document["storage_key"])
             result = await index_pdf_bytes(content, document["name"], attempt["attempt_id"], user_id=uid)
             await repository.finish(attempt, chunks_count=result.chunks_count, warnings=result.warnings)
@@ -54,35 +51,30 @@ async def process_document(repository: DocumentRepository, operation_id: str, de
                         or (attempt["kind"] == "delete" and current["status"] == "deleted")):
             return
         permanent = isinstance(exc, InvalidPDFError)
-        await repository.finish(attempt, retryable=not permanent, error=(
+        await repository.finish(attempt, retryable=not permanent and retries_left > 0, error=(
             "Không thể xóa hết dữ liệu. Vui lòng thử lại." if attempt["kind"] == "delete" else
             "Không thể xử lý PDF. Kiểm tra tệp có văn bản, rồi thử lại hoặc tải lại tài liệu."
         ))
         if not permanent:
-            raise  # RQ applies Retry; a killed process is repaired by the dispatcher instead.
-        logger.info("PDF rejected operation=%s doc=%s", operation_id, doc_id)
-    # Cleanup is a separate, durable task. It cannot convert a committed success into failure.
-    # No finally deletion: its database response may be lost, or a remote write may finish late.
+            raise  # RQ owns timeout, retry scheduling and abandoned-job maintenance.
+        logger.info("PDF rejected job=%s doc=%s", job_id, doc_id)
+    # Failed generations remain registered for the next retry/delete. No finally
+    # deletion: a publication response can be lost after Redis has committed it.
 
 
-def index_document(operation_id: str, delivery: int) -> None:
-    asyncio.run(process_document(DocumentRepository(get_config()), operation_id, delivery, "index"))
+def run_document(doc_id: str) -> None:
+    job = get_current_job()
+    if job is None:
+        raise RuntimeError("Document tasks must run inside an RQ worker")
+    retries_left = job.retries_left or 0
+    # Retry(max=2): 1, 2, 3. The number also rejects duplicate entries for the same
+    # RQ execution without implementing a second retry budget or SQL lease.
+    asyncio.run(process_document(DocumentRepository(get_config()), doc_id, job.id, 3 - retries_left, retries_left))
 
 
-def delete_document(operation_id: str, delivery: int) -> None:
-    asyncio.run(process_document(DocumentRepository(get_config()), operation_id, delivery, "delete"))
+def index_document(doc_id: str) -> None:
+    run_document(doc_id)
 
 
-async def cleanup(repository: DocumentRepository, doc_id: str, expected: str) -> None:
-    document = await repository.internal_document(doc_id)
-    if not document:
-        return
-    # SQL excludes published and live-attempt generations; deadlines fence late publishers.
-    await remove_generations(document["user_id"], await repository.cleanup_candidates(doc_id))
-    if document["status"] == "deleted":
-        await run_in_threadpool(delete_pdf, document["storage_key"])
-    await repository.cleanup_finished(doc_id, expected)
-
-
-def cleanup_document(doc_id: str, expected: str) -> None:
-    asyncio.run(cleanup(DocumentRepository(get_config()), doc_id, expected))
+def delete_document(doc_id: str) -> None:
+    run_document(doc_id)
