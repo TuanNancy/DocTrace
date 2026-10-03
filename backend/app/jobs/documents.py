@@ -7,6 +7,7 @@ from rq import get_current_job
 
 from app.core.config import get_config
 from app.services.document_repository import DocumentRepository
+from app.services.job_queue import MAX_RETRIES
 from app.services.pdf_indexing import InvalidPDFError, index_pdf_bytes
 from app.services.supabase_pdf_storage import download_pdf, delete_pdf
 from app.storage.factory import create_connected_vector_store
@@ -67,9 +68,9 @@ def run_document(doc_id: str) -> None:
     if job is None:
         raise RuntimeError("Document tasks must run inside an RQ worker")
     retries_left = job.retries_left or 0
-    # Retry(max=2): 1, 2, 3. The number also rejects duplicate entries for the same
-    # RQ execution without implementing a second retry budget or SQL lease.
-    asyncio.run(process_document(DocumentRepository(get_config()), doc_id, job.id, 3 - retries_left, retries_left))
+    # RQ's retry counter also fences duplicate entries for the same execution.
+    attempt_number = MAX_RETRIES + 1 - retries_left
+    asyncio.run(process_document(DocumentRepository(get_config()), doc_id, job.id, attempt_number, retries_left))
 
 
 def index_document(doc_id: str) -> None:

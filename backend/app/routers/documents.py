@@ -46,7 +46,7 @@ async def delete_document(doc_id: UUID, user: dict = Depends(require_supabase_us
 async def document_file(doc_id: UUID, user: dict = Depends(require_supabase_user),
                          repository: DocumentRepository = Depends(get_document_repository)):
     document = await repository.get(user["id"], str(doc_id))
-    if document["status"] in ("uploading", "deleting", "delete_error"):
+    if document["status"] in ("deleting", "delete_error"):
         raise HTTPException(409, "PDF chưa sẵn sàng hoặc đang bị xóa.")
     try:
         url = await run_in_threadpool(signed_pdf_url, document["storage_key"])

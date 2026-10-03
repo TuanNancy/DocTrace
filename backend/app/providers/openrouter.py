@@ -18,9 +18,8 @@ class OpenRouterChatProvider(ChatProvider):
         model: str,
         base_url: str,
         timeout: float,
-        **kwargs
     ):
-        super().__init__(api_key=api_key, model=model, **kwargs)
+        super().__init__(api_key=api_key, model=model)
         self.base_url = base_url
         self.timeout = timeout
         self._client: Optional[AsyncOpenAI] = None

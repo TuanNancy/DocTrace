@@ -2,7 +2,7 @@
 import json
 import logging
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from pymilvus import Collection, CollectionSchema, DataType, FieldSchema, connections, drop_collection, has_collection
@@ -142,7 +142,7 @@ class MilvusVectorStore(VectorStore):
             raise ValueError("Chunks/vectors must be non-empty and equal in length; batch size must be positive.")
         self._ensure_collection(len(vectors[0]))
         collection = self._collection
-        timestamp = datetime.utcnow().isoformat()
+        timestamp = datetime.now(timezone.utc).isoformat()
         for i in range(0, len(chunks), batch_size):
             batch = chunks[i:i + batch_size]
             count = len(batch)

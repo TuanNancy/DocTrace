@@ -8,6 +8,7 @@ from rq.serializers import JSONSerializer
 from app.core.config import AppConfig
 
 LIVE_STATES = {"queued", "started", "scheduled", "deferred"}
+MAX_RETRIES = 2
 
 
 class DocumentQueue:
@@ -32,6 +33,6 @@ class DocumentQueue:
         # guards the document instead, so metadata and enqueue commit together.
         self.queue.enqueue_call(
             f"app.jobs.documents.{kind}_document", args=(doc_id,), job_id=job_id,
-            pipeline=pipeline, timeout=timeout, retry=Retry(max=2, interval=[10, 30]),
+            pipeline=pipeline, timeout=timeout, retry=Retry(max=MAX_RETRIES, interval=[10, 30]),
             result_ttl=86400, failure_ttl=604800,
         )

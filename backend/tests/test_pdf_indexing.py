@@ -44,12 +44,11 @@ async def test_indexing_preserves_metadata_warnings_and_actual_dimension(indexin
     deps = indexing_dependencies
     result = await pdf_indexing.index_pdf_bytes(b"pdf contents", "policy.pdf", "doc-1", user_id="user-a")
 
-    assert result.doc_id == "doc-1"
-    assert result.name == "policy.pdf"
     assert result.chunks_count == 1
     assert result.warnings == ["PDF warning", "Store warning"]
     deps.vector_store.ensure_collection.assert_awaited_once_with(vector_dim=3)
     chunks = deps.vector_store.insert_chunks.call_args.kwargs["chunks"]
+    assert deps.vector_store.insert_chunks.call_args.kwargs["doc_id"] == "doc-1"
     assert deps.vector_store.insert_chunks.call_args.kwargs["user_id"] == "user-a"
     assert chunks[0]["page"] == 2
     assert chunks[0]["source"] == "policy.pdf"

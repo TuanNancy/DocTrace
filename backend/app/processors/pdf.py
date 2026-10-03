@@ -1,28 +1,18 @@
 """
-PDF text extraction and chunking (LangChain + PyPDFLoader).
+PDF text extraction with pypdf and recursive text splitting.
 
 Processors handle document I/O only; embeddings and vector storage live in providers/ and storage/.
 """
 import logging
 import os
 
-from langchain_community.document_loaders import PyPDFLoader
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
+from pypdf import PdfReader
 
 from app.core.config import get_config
 
 logger = logging.getLogger(__name__)
-
-
-def _normalize_metadata(doc: Document, source_path: str) -> dict:
-    """Ensure page number and source in metadata."""
-    meta = dict(doc.metadata)
-    if "page" not in meta and "page_number" in meta:
-        meta["page"] = meta["page_number"]
-    meta.setdefault("page", 1)
-    meta.setdefault("source", source_path)
-    return meta
 
 
 def load_pdf_pages(
@@ -31,16 +21,22 @@ def load_pdf_pages(
     original_filename: str | None = None,
 ) -> tuple[list[Document], list[str]]:
     """
-    Load PDF with PyPDFLoader; return (documents with page metadata, list of warnings).
+    Return physical PDF pages with one-based metadata and extraction warnings.
     Handles corrupt file (raises); detects likely scanned PDF (adds warning).
 
     When loading from a temp path, pass ``original_filename`` so chunk metadata keeps the real PDF name.
     """
     config = get_config()
     warnings: list[str] = []
+    source_name = original_filename or os.path.basename(file_path)
     try:
-        loader = PyPDFLoader(file_path, mode="page")
-        docs = loader.load()
+        with open(file_path, "rb") as file:
+            reader = PdfReader(file)
+            docs = [
+                Document(page_content=(page.extract_text() or "").strip(),
+                         metadata={"source": source_name, "page": number})
+                for number, page in enumerate(reader.pages, 1)
+            ]
     except Exception as e:
         logger.exception("PDF load failed for %s: %s", file_path, e)
         raise ValueError(f"PDF file is corrupt or unreadable: {e!s}") from e
@@ -48,15 +44,7 @@ def load_pdf_pages(
     if not docs:
         raise ValueError("PDF produced no pages (empty or unreadable).")
 
-    source_name = original_filename or os.path.basename(file_path)
-    low_text_pages = 0
-    for page_index, d in enumerate(docs):
-        # PyPDFLoader supplies a temporary path and zero-based physical page index.
-        # Citations and browser PDF #page navigation use the original name and 1-based pages.
-        d.metadata["source"] = source_name
-        d.metadata["page"] = int(d.metadata.get("page", page_index)) + 1
-        if len((d.page_content or "").strip()) < config.min_chars_per_page:
-            low_text_pages += 1
+    low_text_pages = sum(len(doc.page_content) < config.min_chars_per_page for doc in docs)
 
     if low_text_pages / len(docs) >= config.scanned_page_ratio_threshold:
         warnings.append(
@@ -80,7 +68,7 @@ def chunk_documents(
 ) -> list[dict]:
     """
     Split documents with RecursiveCharacterTextSplitter.
-    Returns list of dicts with keys: text, page, source (and metadata for Milvus).
+    Returns list of dicts with keys: text, page, source for Milvus.
     """
     config = get_config()
     resolved_chunk_size = chunk_size if chunk_size is not None else config.chunk_size
@@ -93,11 +81,10 @@ def chunk_documents(
     split_docs = splitter.split_documents(documents)
     chunks: list[dict] = []
     for d in split_docs:
-        meta = _normalize_metadata(d, d.metadata.get("source", ""))
         chunks.append({
             "text": d.page_content,
-            "page": meta.get("page", 1),
-            "source": meta.get("source", ""),
+            "page": d.metadata["page"],
+            "source": d.metadata["source"],
         })
     logger.info(
         "Chunking produced %s chunks (chunk_size=%s, chunk_overlap=%s)",
