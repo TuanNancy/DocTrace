@@ -55,10 +55,13 @@ htmlcov/
 # Jupyter
 .ipynb_checkpoints/
 
-# Frontend
+# Frontend dependencies, generated output and local deployment settings
 frontend/.next/
 frontend/out/
 frontend/node_modules/
+frontend/.pnp*
+frontend/.vercel/
+frontend/*.pem
 frontend/tsconfig.tsbuildinfo
 frontend/test-results/
 frontend/playwright-report/

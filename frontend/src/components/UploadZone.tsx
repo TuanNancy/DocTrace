@@ -3,10 +3,10 @@
 import { useState } from "react";
 import { Check, CloudUpload, LoaderCircle } from "lucide-react";
 import { useUpload, type UploadSession } from "@/lib/use-upload";
-import type { UploadResponse } from "@/types";
+import type { LibraryDocument } from "@/types";
 
 export function UploadZone({ onUploadComplete, mock = true, accessToken, compact = false, session }: {
-  onUploadComplete?: (result: UploadResponse) => void; mock?: boolean; accessToken?: string | null;
+  onUploadComplete?: (result: LibraryDocument) => void; mock?: boolean; accessToken?: string | null;
   compact?: boolean; session?: UploadSession;
 }) {
   const local = useUpload({ onUploadComplete, mock, accessToken, enabled: !session });

@@ -1,4 +1,4 @@
-import type { ChatSource, LibraryDocument, SourceExcerpt, SSEEvent, UploadResponse } from "@/types";
+import type { ChatSource, LibraryDocument, SourceExcerpt, SSEEvent } from "@/types";
 
 function apiUrl(path: string) {
   const base = process.env.NEXT_PUBLIC_API_URL?.trim().replace(/\/+$/, "");
@@ -31,7 +31,7 @@ export async function uploadPDF(
   accessToken: string,
   signal?: AbortSignal,
   onProgress?: (percent: number) => void
-): Promise<UploadResponse> {
+): Promise<LibraryDocument> {
   const form = new FormData();
   form.append("file", file.type ? file : new File([file], file.name, { type: "application/pdf" }));
   if (onProgress) {

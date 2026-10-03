@@ -2,12 +2,15 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { beforeEach, expect, it, vi } from "vitest";
 import { UploadZone } from "@/components/UploadZone";
 import { uploadPDF } from "@/lib/api";
-import type { UploadResponse } from "@/types";
+import type { LibraryDocument } from "@/types";
 
 vi.mock("@/lib/api", () => ({ uploadPDF: vi.fn() }));
 const uploadMock = vi.mocked(uploadPDF);
 const pdf = (name = "a.pdf") => new File(["%PDF"], name, { type: "application/pdf" });
-const result = { doc_id: "doc-a", chunks_count: 3 };
+const result: LibraryDocument = {
+  doc_id: "doc-a", name: "a.pdf", size_bytes: 4, status: "queued", chunks_count: 0,
+  created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z", warnings: [], error: null,
+};
 
 beforeEach(() => { uploadMock.mockReset(); });
 
@@ -31,7 +34,7 @@ it("allows retrying after an API error", async () => {
 });
 
 it("does not start a second upload when files are dropped while busy", async () => {
-  let resolve!: (value: UploadResponse) => void;
+  let resolve!: (value: LibraryDocument) => void;
   uploadMock.mockReturnValue(new Promise((r) => { resolve = r; }));
   const { container } = render(<UploadZone mock={false} accessToken="token" />);
   fireEvent.change(screen.getByLabelText("Chọn file"), { target: { files: [pdf()] } });
@@ -43,7 +46,7 @@ it("does not start a second upload when files are dropped while busy", async () 
 });
 
 it("aborts on unmount and ignores a late upload result", async () => {
-  let resolve!: (value: UploadResponse) => void;
+  let resolve!: (value: LibraryDocument) => void;
   uploadMock.mockReturnValue(new Promise((r) => { resolve = r; }));
   const onUploadComplete = vi.fn();
   const { unmount } = render(<UploadZone mock={false} accessToken="token" onUploadComplete={onUploadComplete} />);
@@ -56,7 +59,7 @@ it("aborts on unmount and ignores a late upload result", async () => {
 });
 
 it("recovers after a token change and ignores late progress and results", async () => {
-  let resolve!: (value: UploadResponse) => void;
+  let resolve!: (value: LibraryDocument) => void;
   uploadMock.mockReturnValueOnce(new Promise((r) => { resolve = r; })).mockResolvedValue(result);
   const onUploadComplete = vi.fn();
   const { rerender } = render(<UploadZone mock={false} accessToken="old-token" onUploadComplete={onUploadComplete} />);

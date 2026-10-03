@@ -5,9 +5,10 @@ import { useRouter } from "next/navigation";
 import { Dialog } from "@base-ui/react/dialog";
 import { ArrowUpRight, BookOpen, FileText, MessageSquare, RefreshCw, Search, Trash2, X } from "lucide-react";
 import { UploadZone } from "@/components/UploadZone";
-import { DocumentStatus, formatBytes } from "@/components/workspace/DocumentStatus";
+import { DocumentStatus } from "@/components/workspace/DocumentStatus";
 import { useWorkspace } from "@/components/workspace/WorkspaceProvider";
 import { openDocumentFile } from "@/lib/api";
+import { formatBytes, isIndexing, isPending } from "@/lib/documents";
 import type { LibraryDocument } from "@/types";
 
 export default function DocumentsPage() {
@@ -17,7 +18,7 @@ export default function DocumentsPage() {
   const [filter, setFilter] = useState("all");
   const [deleting, setDeleting] = useState<LibraryDocument | null>(null);
   const documents = workspace.documents.filter((document) => document.name.toLocaleLowerCase("vi").includes(query.toLocaleLowerCase("vi"))
-    && (filter === "all" || (filter === "pending" ? ["uploading", "queued", "processing", "deleting"].includes(document.status)
+    && (filter === "all" || (filter === "pending" ? isPending(document.status)
       : filter === "error" ? ["error", "delete_error"].includes(document.status) : document.status === filter)));
   const ready = workspace.documents.filter((document) => document.status === "ready").length;
   return <section className="glass-panel min-h-0 flex-1 overflow-y-auto p-5 sm:p-8">
@@ -50,8 +51,8 @@ export default function DocumentsPage() {
             <div className="mb-2 hidden grid-cols-[minmax(0,1fr)_135px_180px] gap-4 px-4 py-2 text-[10px] uppercase tracking-wider text-slate-400 md:grid"><span>Tài liệu</span><span>Trạng thái</span><span className="text-right">Thao tác</span></div>
             <ul className="space-y-2.5">{documents.map((document) => {
               const busy = workspace.busyIds.includes(document.doc_id);
-               const removing = ["deleting", "deleted"].includes(document.status);
-               const processing = ["uploading", "queued", "processing"].includes(document.status);
+              const removing = ["deleting", "deleted"].includes(document.status);
+              const processing = isIndexing(document.status);
               return <li key={document.doc_id} className="document-row" data-testid="document-row">
                 <div className="flex min-w-0 items-start gap-3"><div className="flex h-11 w-10 shrink-0 flex-col items-center justify-center gap-0.5 rounded-xl border border-blue-100/60 bg-blue-50/80 text-blue-400"><FileText size={19} strokeWidth={1.4} /><span className="text-[7px] font-bold tracking-wider">PDF</span></div>
                   <div className="min-w-0 flex-1"><p className="truncate text-sm font-medium text-slate-700" title={document.name}>{document.name}</p>
@@ -63,7 +64,7 @@ export default function DocumentsPage() {
                 <div className="ml-[52px] flex flex-wrap items-center gap-1.5 md:ml-0 md:justify-end">
                   {document.status === "ready" && <button className="secondary-button px-2.5 py-2 text-[11px]" onClick={() => { workspace.selectDocument(document); router.push("/chat"); }}><MessageSquare size={13} />Hỏi đáp</button>}
                   {["error", "delete_error"].includes(document.status) && <button className="secondary-button px-2.5 py-2 text-[11px]" disabled={busy} onClick={() => void workspace.operate(document, "retry")}><RefreshCw size={13} />Thử lại</button>}
-                  {!workspace.mock && <button className="icon-button" aria-label={`Xem PDF ${document.name}`} title="Xem PDF" disabled={removing || document.status === "uploading" || document.status === "delete_error"} onClick={async () => {
+                  {!workspace.mock && <button className="icon-button" aria-label={`Xem PDF ${document.name}`} title="Xem PDF" disabled={removing || document.status === "delete_error"} onClick={async () => {
                     try { await openDocumentFile(document.doc_id, workspace.accessToken!); }
                     catch (cause) { workspace.setNotice(cause instanceof Error ? cause.message : "Không thể mở PDF."); }
                   }}><ArrowUpRight size={16} /></button>}

@@ -1,4 +1,5 @@
-"use client";
+import Image from "next/image";
+import logo from "@/assets/baymax.png";
 
 interface BrandMarkProps {
   compact?: boolean;
@@ -23,7 +24,7 @@ export function BrandMark({
 
   return (
     <div className="flex items-center gap-2">
-      <img src="/brand/logo" alt="Baymax logo" className={imageClass} />
+      <Image src={logo} alt="Baymax logo" width={compact ? 32 : 40} height={compact ? 32 : 40} className={imageClass} />
       <span className={textClass}>Baymax</span>
     </div>
   );
