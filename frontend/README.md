@@ -15,7 +15,7 @@ From `frontend/`, run `npm ci`, copy `.env.example` to `.env.local`, then `npm r
 | `NEXT_PUBLIC_SITE_URL` | Frontend origin, e.g. `http://localhost:3000` |
 | `NEXT_PUBLIC_API_URL` | Backend origin, e.g. `http://localhost:8000`, without `/api` |
 
-Public env is embedded at build time; rebuild after changes. Server-only service-role, S3 and OpenRouter keys belong in backend env. Empty API URL enables explicitly labelled demo upload/chat; authentication still uses Supabase and demo documents disappear on reload.
+Public env is embedded at build time; rebuild after changes. S3 and OpenRouter keys belong in backend env. Empty API URL enables explicitly labelled demo upload/chat; authentication still uses Supabase and demo documents disappear on reload.
 
 Supabase Auth needs Site URL and allowlisted `/auth/callback` for OAuth and `/auth/login` for the current email-confirmation flow. Enable Google provider for Google login. Backend CORS must allow the frontend origin.
 
@@ -23,7 +23,7 @@ Supabase Auth needs Site URL and allowlisted `/auth/callback` for OAuth and `/au
 
 - `src/app/(workspace)/layout.tsx` mounts `WorkspaceProvider` for `/chat` and `/documents`; route changes preserve in-memory chat/upload state. Reload starts a new conversation. There is no localStorage/server chat persistence.
 - `/documents` uploads PDF via XHR byte progress and receives `202 queued`. Metadata comes from the owner-scoped library API. Polling follows queued/processing/deleting documents; reload retrieves persisted status.
-- The backend migration and worker described in the root README are required for real document processing. Existing PDFs from the old upload API need re-uploading to create catalog metadata.
+- The Redis library and Linux RQ worker described in the root README are required for real processing. Re-upload PDFs when moving from the old PostgreSQL library; no SQL migration is needed. Delete/retry is blocked until the current job ends; a stale UI may receive a 409 and refresh.
 - Chat uses only a selected ready PDF. `useChatSession` owns streaming, clear/stop, export and cancellation. Switching PDFs clears messages; navigation between workspace pages preserves them.
 - ReactMarkdown/GFM renders assistant output. Source IDs become buttons only when present in the response. The citation panel fetches original text and opens a short-lived PDF URL at the cited page.
 - The workspace is light independently of the public landing/auth pages' theme. Sidebar collapses below 1024px, source panel below 1280px; Base UI dialogs provide focus management.
