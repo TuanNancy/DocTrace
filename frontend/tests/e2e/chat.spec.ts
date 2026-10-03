@@ -84,6 +84,18 @@ test("failed documents can be filtered, retried and selected", async ({ page }) 
   await page.screenshot({ path: "test-results/soft-glass-library-desktop.png", fullPage: true });
 });
 
+test("deletion waits for indexing to finish", async ({ page }) => {
+  await login(page);
+  await page.getByRole("navigation", { name: "Điều hướng chính" }).getByRole("link", { name: /Thư viện/ }).click();
+  await page.getByLabel("Chọn file", { exact: true }).setInputFiles(file("slow.pdf"));
+  const row = page.getByTestId("document-row");
+  const remove = row.getByRole("button", { name: "Xóa slow.pdf", exact: true });
+  await expect(remove).toBeDisabled();
+  await expect(remove).toHaveAttribute("title", "Chờ xử lý hoàn tất trước khi xóa");
+  await expect(row.getByText("Sẵn sàng", { exact: true })).toBeVisible({ timeout: 15000 });
+  await expect(remove).toBeEnabled();
+});
+
 test("mobile navigation and citation drawers remain usable without horizontal overflow", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await login(page);

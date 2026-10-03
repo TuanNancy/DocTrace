@@ -43,7 +43,7 @@ function processDocument(document, fail = false) {
     document.status = fail ? "error" : "ready";
     document.error = fail ? "Không thể đọc văn bản PDF. Vui lòng thử lại." : null;
     document.chunks_count = fail ? 0 : 2;
-  }, 1000);
+  }, document.name === "slow.pdf" ? 7000 : 1000);
 }
 
 function json(response, status, body) {
@@ -109,11 +109,17 @@ createServer(async (request, response) => {
     if (!document) return json(response, 404, { detail: "Không tìm thấy tài liệu." });
     const action = documentRoute[2];
     if (request.method === "DELETE") {
+      if (["queued", "processing", "deleting"].includes(document.status)) {
+        return json(response, 409, { detail: "Chờ xử lý hoàn tất trước khi xóa." });
+      }
       document.status = "deleting";
       setTimeout(() => documents.delete(document.doc_id), 500);
       return json(response, 202, document);
     }
-    if (action === "/retry") { processDocument(document); return json(response, 202, document); }
+    if (action === "/retry") {
+      if (!["error", "delete_error"].includes(document.status)) return json(response, 409, { detail: "Tài liệu chưa thể thử lại." });
+      processDocument(document); return json(response, 202, document);
+    }
     if (action === "/file") return json(response, 200, { url: "http://127.0.0.1:4311/fixture.pdf?signature=fixture", expires_in: 300 });
     if (action === `/chunks/${chunkId}`) return json(response, 200, { doc_id: document.doc_id, chunk_id: chunkId, source: document.name, page: 1, text: excerpt });
     return json(response, 200, document);

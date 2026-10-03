@@ -88,3 +88,13 @@ it("clears the source and cancels chat when the deleted document is still select
   await act(async () => { finishChat(response()); await chat; });
   expect(workspace.current.chat.messages).toEqual([]);
 });
+
+it("refreshes stale document state after a rejected deletion", async () => {
+  const workspace = await mountWorkspace();
+  vi.mocked(deleteDocument).mockRejectedValue(new Error("Wait for current job"));
+  const refreshed = [{ ...documents[0], status: "processing" as const }, documents[1]];
+  vi.mocked(listDocuments).mockResolvedValue(refreshed);
+  await act(async () => { await workspace.current.operate(documents[0], "delete"); });
+  await waitFor(() => expect(workspace.current.documents).toEqual(refreshed));
+  expect(workspace.current.notice).toBe("Wait for current job");
+});
