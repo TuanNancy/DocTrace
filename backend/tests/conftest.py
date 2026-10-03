@@ -29,13 +29,15 @@ async def _fake_supabase_user():
 
 @pytest.fixture
 def repository():
-    """Only the persistent database boundary is mocked; no developer cloud calls."""
+    """Only the Redis library boundary is mocked; no developer cloud calls."""
     fake = AsyncMock(spec=DocumentRepository)
     fake.get.side_effect = lambda uid, doc_id: {
         "doc_id": doc_id, "user_id": uid, "name": "sample.pdf", "status": "ready",
         "active_index_id": doc_id, "storage_key": f"{uid}/{doc_id}/sample.pdf",
     }
-    fake.create.side_effect = lambda document: document
+    fake.create.side_effect = lambda document: {
+        **document, "status": "queued", "chunks_count": 0, "warnings": [], "error": None,
+    }
     fake.queue.side_effect = lambda uid, doc_id, kind: {
         "doc_id": doc_id, "name": "sample.pdf", "status": "queued" if kind == "index" else "deleting",
         "chunks_count": 0, "size_bytes": 100, "warnings": [], "user_id": uid,

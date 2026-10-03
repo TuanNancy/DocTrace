@@ -30,19 +30,6 @@ services:
       disable: true
     stop_grace_period: 16m
 
-  dispatcher:
-    profiles: ["jobs"]
-    build: ./backend
-    command: ["python", "-m", "app.dispatcher"]
-    env_file: ./backend/.env
-    environment:
-      REDIS_URL: redis://redis:6379/0
-    depends_on:
-      redis:
-        condition: service_healthy
-    healthcheck:
-      disable: true
-
   # ── 1. etcd: metadata store ───────────────────
   etcd:
     container_name: milvus-etcd

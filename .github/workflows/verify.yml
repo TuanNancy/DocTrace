@@ -23,7 +23,7 @@ jobs:
           cache-dependency-path: backend/requirements.txt
       - run: python -m pip install -r requirements.txt
       - run: python -m pytest
-      - name: Verify migration, outbox, Redis and real Linux RQ workers
+      - name: Verify Redis library transactions and real Linux RQ workers
         run: python scripts/verify_document_queue.py
 
   frontend:

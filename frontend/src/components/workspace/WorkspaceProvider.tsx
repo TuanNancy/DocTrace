@@ -125,7 +125,10 @@ function useWorkspaceState() {
         setSource((selected) => selected?.doc_id === document.doc_id ? null : selected);
         setNotice(`Đã yêu cầu xóa “${document.name}”.`);
       }
-    } catch (cause) { setNotice(cause instanceof Error ? cause.message : "Thao tác thất bại. Vui lòng thử lại."); }
+    } catch (cause) {
+      setNotice(cause instanceof Error ? cause.message : "Thao tác thất bại. Vui lòng thử lại.");
+      if (!mock) void refresh(); // A 409 can mean the job changed since the last poll.
+    }
     finally { setBusyIds((ids) => ids.filter((id) => id !== document.doc_id)); }
   };
 

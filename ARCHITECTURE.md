@@ -3,10 +3,10 @@
 ## Boundaries
 
 - `backend/app/main.py` mounts upload, documents and chat routers. Authentication resolves the user through Supabase; clients cannot select another owner.
-- `services/document_repository.py` accesses Supabase PostgREST using a backend service-role key. Every user-facing read is owner-scoped. Apply migration 001 then 002; lifecycle transitions and the transactional outbox live in `002_rq_document_jobs.sql`.
+- `services/document_repository.py` stores owner-scoped metadata in Redis hashes under `doctrace:library:v2`; per-user sorted sets provide library pagination. These keys have no TTL and are separate from RQ job/result keys.
 - `services/supabase_pdf_storage.py` owns original PDF operations. Synchronous boto3 and Milvus calls run in threadpools.
 - `services/pdf_indexing.py:index_pdf_bytes()` extracts text, chunks, embeds and inserts into Milvus. Temporary-file and vector-connection cleanup stays here.
-- `app.dispatcher` delivers PostgreSQL outbox operations to Redis using `services/job_queue.py`. `app.worker` starts standard RQ workers with JSON serialization and the retry scheduler. `jobs/documents.py` contains importable task functions; clients/connections are created in the work horse, after fork.
+- The API enqueues directly through `services/job_queue.py`. `app.worker` starts standard RQ workers with JSON serialization and the retry scheduler. `jobs/documents.py` contains task functions; Redis/storage clients are created after fork. Redis/RQ calls from async code run in threadpools.
 - `frontend/src/app/(workspace)/layout.tsx` owns the shared provider and shell for `/chat` and `/documents`. `WorkspaceProvider` keeps authentication, catalog, upload and transient chat state across client navigation. Reload discards chat; documents remain server-side.
 
 ## Upload and indexing
@@ -14,36 +14,34 @@
 ```text
 POST /api/upload
   → authenticate, enforce upload capacity, validate MIME/extension/header/size
-  → create owner-scoped documents row (uploading)
+  → check Redis availability
   → retain original PDF in private Storage
-  → request_document_operation(index): atomically update metadata + insert outbox → 202
-
-python -m app.dispatcher
-  → enqueue unique operation_id-delivery in Redis, with timeout and Retry(max=2, interval=[10,30])
+  → WATCH/MULTI: catalog record + user index + RQ job → EXEC → 202
 
 python -m app.worker (RQ + scheduler)
-  → begin_document_attempt: verify current operation/delivery, register a new generation
+  → verify current job/attempt, register a fresh generation
+  → remove registered partial indexes from earlier failed attempts
   → download PDF → index_pdf_bytes(..., doc_id=attempt_id, user_id=owner)
-  → finish_document_attempt: atomically publish only the current, unexpired attempt
+  → publish active_index_id only if job/attempt still matches
 ```
 
-The public document UUID and the Milvus generation UUID are different. A retry never writes into another attempt's index. The router resolves `documents.active_index_id` before retrieval; citation payloads retain the public document UUID.
+The public document UUID and the Milvus generation UUID are different. A retry never writes into another attempt's index. The router resolves Redis metadata's `active_index_id` before retrieval; citation payloads retain the public document UUID.
 
-RQ owns execution heartbeats, timeout enforcement, failed-job registries and scheduled retries. PostgreSQL has no renewable worker lease. A fixed publication deadline (job timeout + 60 seconds) bounds the authority of an attempt even if Redis is lost. `operation_id` tracks user intent; `delivery` fences replaced Redis deliveries; `attempt_id` is a fresh generation UUID per execution. All lifecycle RPCs lock document before operation.
+RQ owns execution heartbeats, timeouts, abandoned-job maintenance and `Retry(max=2, interval=[10,30])`. The task derives its attempt number from RQ's remaining retries; repeated entry for the same attempt is a no-op. A manual retry gets a new job ID. Redis WATCH protects concurrent updates and enqueue; RQ 2.12's `unique=True` must not be used here because it ignores the supplied pipeline.
 
-Each operation has a durable budget of three actual attempts, including crash recovery. Ordinary failures release the attempt and leave a 10/30-second backoff; `InvalidPDFError` is a terminal business failure. The dispatcher respects healthy RQ queued/started/scheduled states. For lost or terminal jobs it uses compare-and-swap recovery, waiting for any outstanding publication deadline before replacement. An expired publication deadline permits recovery even if a stale Redis started key remains without its registry entry. An RQ retry arriving while an interrupted SQL attempt is still outstanding does no work; after the deadline the dispatcher creates a new delivery. Recovery latency includes this deadline, RQ maintenance and dispatch polling.
+`InvalidPDFError` records a terminal business error without more embedding retries. Transient errors are raised for RQ to retry; final failure persists `error` or `delete_error`. On library reads, pending documents are reconciled against RQ: scheduled jobs stay queued, failed/stopped/missing jobs become errors. This also covers failure before task entry and process termination without callbacks. Business outcomes survive RQ result expiration; RQ `finished` alone never implies `ready`.
 
-`202` acknowledges retained bytes plus durable intent, not necessarily successful Redis delivery. Redis outages leave outbox operations pending. `unique=True` deduplicates enqueue retries; database guards also protect against duplicate execution. A Redis connection error is never interpreted as a missing job. Redis AOF `everysec` reduces loss but is not the source of durability for user intent.
+`202` acknowledges retained PDF bytes and confirmed Redis metadata/enqueue. Redis outages cause `503`; connection errors never look like missing documents/jobs. If enqueue's reply is lost, the API rereads metadata. It removes the PDF only when no enqueue was committed; uncertain outcomes retain the PDF. A lost publication reply is also reread before recording failure.
 
-A lost HTTP response from publication can mean the transaction committed. Tasks reread metadata before reporting failure. Cleanup is independent: it only deletes registered generations past their cleanup deadline, excluding published/live-attempt generations. Postgres remains the source of document status even when RQ result keys expire. A finished RQ job may have reported an invalid PDF or ignored a superseded operation; it does not necessarily mean the document is ready.
+### Recovery limits
+
+Redis is the sole source of library/queue state. AOF `everysec` and a persistent volume survive ordinary restarts but may lose recent writes on a crash; loss of the volume loses the library. PDFs/vectors do not rebuild it automatically. A dead worker's job waits for RQ heartbeat/registry maintenance before retry/failure; this is not immediate. Missing job keys allow manual retry from the library. There is no independent outbox, renewable SQL lease or periodic tombstone sweep. A process dying between Storage upload and Redis commit can leave an unlisted PDF; remote writes completing after a killed task can leave unused vectors requiring manual cleanup. Re-upload is the chosen cutover for the old PostgreSQL library.
 
 ## Deletion
 
-`DELETE /api/documents/{id}` installs a new delete operation, marks pending index intent superseded and clears `active_index_id` immediately. New chat/source reads are rejected. Queued stale index tasks become no-ops; an already running index may finish, but cannot publish. Deletion waits for outstanding index attempts to acknowledge completion or reach their fixed deadlines, then removes all recorded generations and the original PDF.
+`DELETE /api/documents/{id}` accepts ready/error/delete_error documents only after their RQ job is terminal or missing. Queued/started/scheduled/deferred jobs return `409`; the UI disables deletion while indexing. Acceptance atomically clears `active_index_id`, marks `deleting` and enqueues deletion. Chat/source reads are then rejected. The task removes every registered generation and the original PDF.
 
-Cleanup operations are idempotent. Partial failure becomes `delete_error`; retry preserves the deletion intent. Deleted rows are tombstones excluded from library/RLS reads, retaining generation metadata for cleanup rather than erasing the audit of unfinished external operations.
-
-Every 30 seconds the dispatcher schedules due cleanup jobs and recovers `uploading` rows older than 15 minutes. Cleanup first becomes due one minute after publication/deletion and repeats hourly; unfinished generations are eligible after their attempt deadline plus 60 seconds. This catches remote writes finishing after process termination. Cleanup tasks have independent RQ retry and result expiry, and failed cleanup is scheduled again. Generation registrations and tombstones are retained for repeated physical cleanup.
+Cleanup is idempotent. Partial failures use RQ retry, then `delete_error`; manual retry continues deletion. On success, the document leaves the user's sorted set and becomes a hidden tombstone so lost success responses can be reconciled. Registered generations remain available through all retries.
 
 ## RAG and citation contract
 
@@ -65,12 +63,12 @@ ReactMarkdown + GFM render assistant messages without raw HTML. The citation plu
 - `RAG_MODEL` and `EMBEDDING_MODEL` have no implicit model fallback. Embedding dimensions come from API vectors; constructing an embedder also probes the API.
 - Milvus supports host/port and URI/token. URI defaults to AUTOINDEX. Requests own their connection alias; reads use Strong consistency so newly published uploads are immediately queryable.
 - `ensure_collection()` rejects incompatible dimensions/owner schemas. Only explicit `recreate_collection()` deletes a collection.
-- Postgres RLS allows authenticated users to read their own live documents. Mutations and job RPCs are service-role-only. No service-role/S3/LLM secret belongs in frontend env.
+- Supabase provides Auth and private PDF Storage. Redis is server-only; application owner checks protect every library operation, and Milvus queries also filter by owner. S3/LLM credentials belong only in backend env.
 - Frontend middleware protects both `/chat` and `/documents`. API URL is an origin without `/api`; no API URL means demo upload/chat, while Auth still uses Supabase.
 
 ## Verification and deployment
 
-- pytest mocks database/storage/provider boundaries; chat tests exercise the real pipeline/provider/SSE. TestClient overrides Auth, while dedicated tests exercise the real auth dependency with mocked HTTP.
-- `python scripts/verify_document_queue.py` applies 001→002 to disposable PostgreSQL, checks RLS/concurrent fencing, then uses real PostgREST, Redis and two Linux RQ workers to exercise delivery, restart, retry, kill and deletion. Only PDF/embedding/S3/Milvus boundaries are faked. It builds a disposable backend image unless `--api-image` is supplied.
+- pytest uses isolated fakeredis for repository/RQ serialization, and mocks Storage/provider boundaries. Chat tests exercise the real pipeline/provider/SSE. TestClient overrides Auth; dedicated auth tests mock its upstream HTTP.
+- `python scripts/verify_document_queue.py` uses real Redis and two Linux RQ workers to exercise transactions, owner scope, restart/outage, retry/timeout, kill and deletion. Only PDF/embedding/S3/Milvus boundaries are faked. It builds a disposable image unless `--api-image` is supplied. Abandoned-job registry time is advanced after a container kill to shorten the test.
 - Vitest covers transport, cancellation, Markdown and auth. Playwright runs real UI/cookies with loopback Auth/API fixtures; it does not validate real cloud services.
-- Root Compose runs Redis and vector infrastructure; profile `jobs` runs Linux worker/dispatcher containers. Production Compose runs API, Redis, dispatcher, RQ worker, Nginx and on-demand Certbot. `/health` is API process liveness only. See `DEPLOYMENT.md`.
+- Root Compose runs Redis and vector infrastructure; profile `jobs` runs the Linux worker. Production Compose runs API, Redis, RQ worker, Nginx and on-demand Certbot. `/health` is API process liveness only. See `DEPLOYMENT.md`.

@@ -50,7 +50,8 @@ export default function DocumentsPage() {
             <div className="mb-2 hidden grid-cols-[minmax(0,1fr)_135px_180px] gap-4 px-4 py-2 text-[10px] uppercase tracking-wider text-slate-400 md:grid"><span>Tài liệu</span><span>Trạng thái</span><span className="text-right">Thao tác</span></div>
             <ul className="space-y-2.5">{documents.map((document) => {
               const busy = workspace.busyIds.includes(document.doc_id);
-              const removing = ["deleting", "deleted"].includes(document.status);
+               const removing = ["deleting", "deleted"].includes(document.status);
+               const processing = ["uploading", "queued", "processing"].includes(document.status);
               return <li key={document.doc_id} className="document-row" data-testid="document-row">
                 <div className="flex min-w-0 items-start gap-3"><div className="flex h-11 w-10 shrink-0 flex-col items-center justify-center gap-0.5 rounded-xl border border-blue-100/60 bg-blue-50/80 text-blue-400"><FileText size={19} strokeWidth={1.4} /><span className="text-[7px] font-bold tracking-wider">PDF</span></div>
                   <div className="min-w-0 flex-1"><p className="truncate text-sm font-medium text-slate-700" title={document.name}>{document.name}</p>
@@ -66,7 +67,7 @@ export default function DocumentsPage() {
                     try { await openDocumentFile(document.doc_id, workspace.accessToken!); }
                     catch (cause) { workspace.setNotice(cause instanceof Error ? cause.message : "Không thể mở PDF."); }
                   }}><ArrowUpRight size={16} /></button>}
-                  <button className="icon-button hover:!bg-red-50 hover:!text-red-500" aria-label={`Xóa ${document.name}`} title="Xóa tài liệu" disabled={busy || removing || document.status === "uploading"} onClick={() => setDeleting(document)}><Trash2 size={15} /></button>
+                  <button className="icon-button hover:!bg-red-50 hover:!text-red-500" aria-label={`Xóa ${document.name}`} title={processing ? "Chờ xử lý hoàn tất trước khi xóa" : "Xóa tài liệu"} disabled={busy || removing || processing} onClick={() => setDeleting(document)}><Trash2 size={15} /></button>
                 </div>
               </li>;
             })}</ul>

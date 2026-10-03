@@ -24,6 +24,11 @@ services:
     restart: unless-stopped
     env_file:
       - ${BACKEND_ENV_FILE:-./backend/.env}
+    environment:
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      redis:
+        condition: service_healthy
     expose:
       - "8000"
     read_only: true
@@ -60,36 +65,6 @@ services:
     healthcheck:
       disable: true
     stop_grace_period: 16m
-    security_opt:
-      - no-new-privileges:true
-    cap_drop:
-      - ALL
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
-
-  dispatcher:
-    image: ${API_IMAGE:-doctrace-api:local}
-    build:
-      context: ./backend
-    command: ["python", "-m", "app.dispatcher"]
-    restart: unless-stopped
-    env_file:
-      - ${BACKEND_ENV_FILE:-./backend/.env}
-    environment:
-      REDIS_URL: redis://redis:6379/0
-    depends_on:
-      redis:
-        condition: service_healthy
-    read_only: true
-    tmpfs:
-      - /tmp:size=16m,mode=1777
-    mem_limit: 192m
-    healthcheck:
-      disable: true
-    stop_grace_period: 30s
     security_opt:
       - no-new-privileges:true
     cap_drop:

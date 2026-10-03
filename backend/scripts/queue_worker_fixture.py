@@ -1,4 +1,4 @@
-"""Linux integration worker: real RQ + PostgREST, fake PDF/embedding/S3/Milvus boundaries.
+"""Linux integration worker: real Redis/RQ, fake PDF/embedding/S3/Milvus boundaries.
 
 Only mounted by verify_document_queue.py; never copied into the production image.
 """
@@ -33,7 +33,8 @@ async def index(content, filename, generation, *, user_id):
             raise InvalidPDFError("no text")
         if filename == "retry.pdf" and redis.incr(f"failures:{doc_id}") == 1:
             raise ConnectionError("temporary embedding outage")
-    if filename == "slow.pdf":
+        timeout_once = filename == "timeout.pdf" and redis.incr(f"timeouts:{doc_id}") == 1
+    if filename == "slow.pdf" or timeout_once:
         while True:
             with connection() as redis:
                 if redis.exists(f"release:{doc_id}"):
@@ -65,7 +66,7 @@ original_finish = DocumentRepository.finish
 async def finish(self, attempt, **kwargs):
     result = await original_finish(self, attempt, **kwargs)
     if result and attempt["document"]["name"] == "lost.pdf":
-        raise ConnectionError("committed RPC response lost")
+        raise ConnectionError("committed Redis response lost")
     return result
 
 

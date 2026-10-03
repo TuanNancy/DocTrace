@@ -1,56 +1,37 @@
-"""The only Redis/RQ adapter. Payloads contain IDs; PDF bytes stay in Storage."""
-from uuid import NAMESPACE_URL, uuid5
-
+"""RQ adapter; callers share a Redis transaction with library metadata writes."""
 from redis import Redis
 from rq import Queue, Retry
-from rq.exceptions import DuplicateJobError, NoSuchJobError
+from rq.exceptions import NoSuchJobError
 from rq.job import Job
 from rq.serializers import JSONSerializer
 
 from app.core.config import AppConfig
 
+LIVE_STATES = {"queued", "started", "scheduled", "deferred"}
+
 
 class DocumentQueue:
-    def __init__(self, config: AppConfig):
+    def __init__(self, config: AppConfig, connection: Redis):
         self.config = config
-        self.connection = Redis.from_url(config.redis_url, socket_connect_timeout=5, socket_timeout=10)
-        self.queue = Queue(config.rq_queue_name, connection=self.connection, serializer=JSONSerializer)
+        self.connection = connection
+        self.queue = Queue(config.rq_queue_name, connection=connection, serializer=JSONSerializer)
 
-    @staticmethod
-    def job_id(operation: dict) -> str:
-        return f"{operation['operation_id']}-{operation['delivery']}"
-
-    def status(self, operation: dict) -> str | None:
-        try:
-            return Job.fetch(self.job_id(operation), connection=self.connection,
-                             serializer=JSONSerializer).get_status(refresh=True).value
-        except NoSuchJobError:
+    def status(self, job_id: str | None) -> str | None:
+        if not job_id:
             return None
+        try:
+            return Job.fetch(job_id, connection=self.connection,
+                             serializer=JSONSerializer).get_status(refresh=False).value
+        except NoSuchJobError:
+            return None  # Connection failures must propagate, not look like missing jobs.
 
-    def enqueue(self, operation: dict) -> None:
-        kind = operation["kind"]
+    def enqueue(self, doc_id: str, job_id: str, kind: str, pipeline) -> None:
         timeout = (self.config.document_index_timeout_seconds if kind == "index"
                    else self.config.document_delete_timeout_seconds)
-        try:
-            self.queue.enqueue(
-                f"app.jobs.documents.{kind}_document", operation["operation_id"], operation["delivery"],
-                job_id=self.job_id(operation), unique=True, job_timeout=timeout,
-                retry=Retry(max=2, interval=[10, 30]), result_ttl=86400, failure_ttl=604800,
-            )
-        except DuplicateJobError:
-            pass  # The previous enqueue may have succeeded before its reply was lost.
-
-    def enqueue_cleanup(self, document: dict) -> None:
-        identifier = uuid5(NAMESPACE_URL, f"{document['doc_id']}/{document['cleanup_after']}")
-        try:
-            self.queue.enqueue(
-                "app.jobs.documents.cleanup_document", document["doc_id"], document["cleanup_after"],
-                job_id=f"cleanup-{identifier}", unique=True,
-                job_timeout=self.config.document_delete_timeout_seconds,
-                retry=Retry(max=2, interval=[10, 30]), result_ttl=60, failure_ttl=60,
-            )
-        except DuplicateJobError:
-            pass
-
-    def close(self) -> None:
-        self.connection.close()
+        # RQ 2.12 unique=True ignores the supplied pipeline. The repository's WATCH
+        # guards the document instead, so metadata and enqueue commit together.
+        self.queue.enqueue_call(
+            f"app.jobs.documents.{kind}_document", args=(doc_id,), job_id=job_id,
+            pipeline=pipeline, timeout=timeout, retry=Retry(max=2, interval=[10, 30]),
+            result_ttl=86400, failure_ttl=604800,
+        )

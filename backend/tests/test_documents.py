@@ -4,9 +4,7 @@ from uuid import uuid4
 import pytest
 from fastapi import HTTPException
 
-from app.core.config import AppConfig
 from app.routers import documents
-from app.services.document_repository import DocumentRepository
 from app.storage.base import RetrievedChunk
 
 DOC = str(uuid4())
@@ -74,13 +72,6 @@ def test_chat_rejects_unready_documents_before_rag(client, repository):
     assert client.post("/api/chat", json={"query": "hello", "doc_id": DOC}).status_code == 409
 
 
-async def test_repository_queries_always_include_owner_and_hide_deleted_documents():
-    repository = DocumentRepository(AppConfig())
-    repository.request = AsyncMock(return_value=[{"doc_id": DOC}])
-    await repository.get(OWNER, DOC)
-    assert repository.request.call_args.kwargs["params"]["user_id"] == f"eq.{OWNER}"
-    assert repository.request.call_args.kwargs["params"]["status"] == "neq.deleted"
-    await repository.list(OWNER, 20, 0)
-    params = repository.request.call_args.kwargs["params"]
-    assert params["user_id"] == f"eq.{OWNER}"
-    assert "storage_key" not in params["select"]
+def test_delete_conflict_is_returned_to_client(client, repository):
+    repository.queue.side_effect = HTTPException(409, "Wait for current job")
+    assert client.delete(f"/api/documents/{DOC}").status_code == 409
