@@ -1,10 +1,4 @@
-# Keep the repository byte-identical across Windows, macOS, and Linux checkouts.
-#
-# Without this file a local core.autocrlf=true rewrites text files to CRLF in the
-# working tree while the index stays LF, which produces "LF will be replaced by
-# CRLF" warnings on every git add and hides real whitespace diffs. The lines below
-# normalize to LF in the index and keep LF in the working tree, overriding any
-# local core.autocrlf or core.eol setting.
+# Keep text files LF across Windows, macOS and Linux; preserve binary bytes.
 
 * text=auto
 
@@ -27,7 +21,6 @@
 *.example text eol=lf
 
 Dockerfile       text eol=lf
-Caddyfile        text eol=lf
 .env             text eol=lf
 .env.example     text eol=lf
 .gitignore       text eol=lf

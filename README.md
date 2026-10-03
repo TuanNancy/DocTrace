@@ -24,6 +24,25 @@ Hỏi đáp PDF với nguồn trích dẫn có thể kiểm chứng. Giao diện
 
 Chi tiết luồng và các bất biến: [ARCHITECTURE.md](ARCHITECTURE.md).
 
+## Cấu trúc repo
+
+```text
+backend/
+  app/                 API, worker, RAG và các adapter Redis/Storage/Milvus
+  scripts/             Kiểm tra queue và công cụ chẩn đoán PDF/retrieval
+  tests/               Unit tests; fixtures/ dành cho Linux worker integration
+  requirements.txt     Dependency chạy API/worker
+  requirements-dev.txt Dependency runtime + kiểm thử
+frontend/
+  src/app/             Routes Next.js
+  src/assets/          Asset được bundle, gồm logo Baymax
+  src/components/      UI chat, upload, auth và workspace
+  src/lib/             API client, hooks, auth và tiện ích dùng chung
+  src/types/           Hợp đồng dữ liệu frontend/backend
+  tests/               Unit tests, E2E và Auth/API fixtures
+deploy/                Nginx, Certbot, systemd và kiểm thử deployment
+```
+
 ## Chạy local
 
 CI sử dụng Python **3.12** và Node **22**. Docker cần thiết cho Redis, worker Linux, Milvus local và kiểm thử tích hợp.
@@ -115,6 +134,7 @@ Sau upload: `queued → processing → ready / error`; xóa: `deleting → delet
 Từ `backend/` (pytest mock dịch vụ ngoài, không cần cloud credentials):
 
 ```sh
+python -m pip install -r requirements-dev.txt
 python -m pytest
 python -m pytest tests/test_chat.py::test_chat_sse_stream
 python -m pytest tests/test_documents.py tests/test_worker.py
@@ -136,10 +156,11 @@ npm run build
 
 E2E dùng Auth/API fixtures local ở cổng 4310/4311, kiểm tra desktop/mobile, không xác nhận kết nối cloud RAG/OAuth thật.
 
-Chẩn đoán retrieval với dịch vụ thật, từ `backend/`:
+Chẩn đoán thủ công từ `backend/`; retrieval gọi dịch vụ thật:
 
 ```sh
-python scripts/test_retrieval.py <user_id> <doc_id> "câu hỏi" --top-k 8 --min-score 0.32
+python scripts/inspect_pdf.py <path_to_pdf>
+python scripts/inspect_retrieval.py <user_id> <doc_id> "câu hỏi" --top-k 8 --min-score 0.32
 ```
 
 ## Deploy

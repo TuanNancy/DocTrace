@@ -37,6 +37,8 @@ RQ owns execution heartbeats, timeouts, abandoned-job maintenance and `Retry(max
 
 Redis is the sole source of library/queue state. AOF `everysec` and a persistent volume survive ordinary restarts but may lose recent writes on a crash; loss of the volume loses the library. PDFs/vectors do not rebuild it automatically. A dead worker's job waits for RQ heartbeat/registry maintenance before retry/failure; this is not immediate. Missing job keys allow manual retry from the library. There is no independent outbox, renewable SQL lease or periodic tombstone sweep. A process dying between Storage upload and Redis commit can leave an unlisted PDF; remote writes completing after a killed task can leave unused vectors requiring manual cleanup. Re-upload is the chosen cutover for the old PostgreSQL library.
 
+If the killed worker also owned the retry scheduler, its lock must expire before another scheduler takes over (about 61 seconds with RQ defaults). An idle worker can block on dequeue for 405 seconds before checking maintenance again, even though the configured maintenance interval is 30 seconds. Retry recovery after a hard kill can therefore take several minutes.
+
 ## Deletion
 
 `DELETE /api/documents/{id}` accepts ready/error/delete_error documents only after their RQ job is terminal or missing. Queued/started/scheduled/deferred jobs return `409`; the UI disables deletion while indexing. Acceptance atomically clears `active_index_id`, marks `deleting` and enqueues deletion. Chat/source reads are then rejected. The task removes every registered generation and the original PDF.
@@ -53,7 +55,7 @@ Cleanup is idempotent. Partial failures use RQ retry, then `delete_error`; manua
 
 Source payload: `{citation_id, chunk_id, doc_id, page, source, score}`. Summary scores are `null`, not a confidence percentage. Original text is fetched on demand from `/api/documents/{id}/chunks/{chunk_id}` using both owner and active-generation filters. `/file` returns a 300-second signed URL; the UI adds `#page=N`.
 
-`load_pdf_pages()` converts PyPDFLoader's zero-based page index to a one-based physical PDF page and replaces its temporary source path with the original filename. Downstream chunking preserves those values.
+`load_pdf_pages()` reads text directly with pypdf, numbers physical PDF pages from one (including blank pages), and retains the original filename. Recursive text splitting preserves those values. Indexing returns chunk counts/warnings; Redis owns document status and timestamps.
 
 ReactMarkdown + GFM render assistant messages without raw HTML. The citation plugin transforms text nodes, leaving code and existing links intact, and makes only known IDs interactive. Clear/document changes cancel streams; stopping retains a partial answer. Backend queries remain single-turn.
 
@@ -69,6 +71,6 @@ ReactMarkdown + GFM render assistant messages without raw HTML. The citation plu
 ## Verification and deployment
 
 - pytest uses isolated fakeredis for repository/RQ serialization, and mocks Storage/provider boundaries. Chat tests exercise the real pipeline/provider/SSE. TestClient overrides Auth; dedicated auth tests mock its upstream HTTP.
-- `python scripts/verify_document_queue.py` uses real Redis and two Linux RQ workers to exercise transactions, owner scope, restart/outage, retry/timeout, kill and deletion. Only PDF/embedding/S3/Milvus boundaries are faked. It builds a disposable image unless `--api-image` is supplied. Abandoned-job registry time is advanced after a container kill to shorten the test.
+- `python scripts/verify_document_queue.py` uses real Redis and two Linux RQ workers to exercise transactions, owner scope, restart/outage, retry/timeout, kill and deletion. Only PDF/embedding/S3/Milvus boundaries are faked. It builds a disposable image unless `--api-image` is supplied. The container-kill case targets the scheduler owner, advances abandoned-job registry time, and waits for the killed scheduler's lease to expire before restarting it.
 - Vitest covers transport, cancellation, Markdown and auth. Playwright runs real UI/cookies with loopback Auth/API fixtures; it does not validate real cloud services.
 - Root Compose runs Redis and vector infrastructure; profile `jobs` runs the Linux worker. Production Compose runs API, Redis, RQ worker, Nginx and on-demand Certbot. `/health` is API process liveness only. See `DEPLOYMENT.md`.
