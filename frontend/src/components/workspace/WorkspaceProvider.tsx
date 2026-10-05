@@ -2,7 +2,7 @@
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import type { User } from "@supabase/supabase-js";
-import { createClient } from "@/lib/client";
+import { createClient } from "@/lib/supabase/client";
 import { deleteDocument, listDocuments, retryDocument } from "@/lib/api";
 import { isPending } from "@/lib/documents";
 import { useChatSession } from "@/lib/use-chat-session";

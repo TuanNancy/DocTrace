@@ -2,8 +2,8 @@
 import type { CookieOptions } from "@supabase/ssr";
 import { NextRequest } from "next/server";
 import { beforeEach, expect, it, vi } from "vitest";
-import { updateSession } from "@/lib/middleware";
-import { getSupabaseConfig } from "@/lib/supabase-config";
+import { updateSession } from "@/lib/supabase/middleware";
+import { getSupabaseConfig } from "@/lib/supabase/config";
 
 type CookieAdapter = {
   getAll: () => { name: string; value: string }[];

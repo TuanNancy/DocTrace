@@ -8,7 +8,7 @@ import { useFormState } from "react-dom";
 import { loginAction, type AuthActionState } from "@/app/auth/actions";
 import { AuthSubmitButton } from "@/components/auth/AuthSubmitButton";
 import { BrandMark } from "@/components/BrandMark";
-import { createClient } from "@/lib/client";
+import { createClient } from "@/lib/supabase/client";
 
 const INITIAL_AUTH_ACTION_STATE: AuthActionState = {
   status: "idle",
