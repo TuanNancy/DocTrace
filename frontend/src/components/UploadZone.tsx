@@ -2,15 +2,12 @@
 
 import { useState } from "react";
 import { Check, CloudUpload, LoaderCircle } from "lucide-react";
-import { useUpload, type UploadSession } from "@/lib/use-upload";
-import type { LibraryDocument } from "@/types";
+import type { UploadSession } from "@/lib/use-upload";
 
-export function UploadZone({ onUploadComplete, mock = true, accessToken, compact = false, session }: {
-  onUploadComplete?: (result: LibraryDocument) => void; mock?: boolean; accessToken?: string | null;
-  compact?: boolean; session?: UploadSession;
+export function UploadZone({ compact = false, session: upload }: {
+  compact?: boolean;
+  session: UploadSession;
 }) {
-  const local = useUpload({ onUploadComplete, mock, accessToken, enabled: !session });
-  const upload = session ?? local;
   const [dragging, setDragging] = useState(false);
   const busy = upload.status === "uploading";
   return <div className={`upload-zone ${dragging ? "upload-zone-dragging" : ""}`}>
