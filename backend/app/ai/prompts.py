@@ -39,10 +39,6 @@ Principles:
 """
 
 
-class PromptTemplates:
-    """Collection of prompt templates."""
-
-    @classmethod
-    def get_system_prompt(cls, language: str = "vi") -> str:
-        """Get system prompt for specified language."""
-        return SYSTEM_PROMPT_VI if language == "vi" else SYSTEM_PROMPT_EN
+def get_system_prompt(language: str = "vi") -> str:
+    """Select the document-grounded prompt for the requested language."""
+    return SYSTEM_PROMPT_VI if language == "vi" else SYSTEM_PROMPT_EN

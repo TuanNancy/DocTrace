@@ -8,7 +8,7 @@ import type { ChatSource, LibraryDocument } from "@/types";
 const client = vi.hoisted(() => ({ auth: {
   getUser: vi.fn(), getSession: vi.fn(), onAuthStateChange: vi.fn(),
 } }));
-vi.mock("@/lib/client", () => ({ createClient: () => client }));
+vi.mock("@/lib/supabase/client", () => ({ createClient: () => client }));
 vi.mock("@/lib/api", async (importOriginal) => ({
   ...await importOriginal<typeof import("@/lib/api")>(),
   deleteDocument: vi.fn(), listDocuments: vi.fn(), streamChat: vi.fn(),

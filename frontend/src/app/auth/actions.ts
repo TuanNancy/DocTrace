@@ -2,7 +2,7 @@
 
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
-import { createClient } from "@/lib/server";
+import { createClient } from "@/lib/supabase/server";
 
 export type AuthActionState = {
   status: "idle" | "success" | "error";

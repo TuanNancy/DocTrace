@@ -1,19 +1,17 @@
 "use client";
 
-import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ArrowUp, Check, Copy, FileText, Sparkles, Square } from "lucide-react";
 import Link from "next/link";
 import type { ChatSource } from "@/types";
-import { useChatSession, type ChatSession } from "@/lib/use-chat-session";
+import type { ChatSession } from "@/lib/use-chat-session";
 import { MessageMarkdown } from "./MessageMarkdown";
 import { SourceCardList } from "./SourceCardList";
 
-export type ChatWindowHandle = { clearMessages: () => void; exportTranscript: () => void };
 interface ChatWindowProps {
   docId: string | null;
   mock?: boolean;
-  accessToken?: string | null;
-  session?: ChatSession;
+  session: ChatSession;
   onSelectSource?: (source: ChatSource) => void;
 }
 
@@ -31,15 +29,10 @@ function CopyMessage({ text }: { text: string }) {
   }} aria-label="Sao chép câu trả lời">{copied ? <Check size={13} /> : <Copy size={13} />}{copied ? "Đã sao chép" : failed ? "Không thể sao chép" : "Sao chép"}</button>;
 }
 
-export const ChatWindow = forwardRef<ChatWindowHandle, ChatWindowProps>(function ChatWindow(
-  { docId, mock = true, accessToken, session, onSelectSource }, ref
-) {
-  const local = useChatSession({ docId, mock, accessToken, enabled: !session });
-  const chat = session ?? local;
+export function ChatWindow({ docId, mock = false, session: chat, onSelectSource }: ChatWindowProps) {
   const scroll = useRef<HTMLDivElement>(null);
   const stickToBottom = useRef(true);
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  useImperativeHandle(ref, () => ({ clearMessages: chat.clearMessages, exportTranscript: chat.exportTranscript }), [chat.clearMessages, chat.exportTranscript]);
   useEffect(() => {
     if (stickToBottom.current) scroll.current?.scrollTo({ top: scroll.current.scrollHeight, behavior: "smooth" });
   }, [chat.messages]);
@@ -95,6 +88,4 @@ export const ChatWindow = forwardRef<ChatWindowHandle, ChatWindowProps>(function
       <p className="mt-2.5 text-center text-[10px] leading-4 text-slate-400">Câu trả lời dựa trên tài liệu của bạn · Bấm vào trích dẫn để xem nguồn</p>
     </div>
   </div>;
-});
-
-ChatWindow.displayName = "ChatWindow";
+}

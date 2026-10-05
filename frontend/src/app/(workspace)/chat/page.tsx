@@ -21,7 +21,7 @@ export default function ChatPage() {
           <span className="ml-1 hidden items-center gap-1.5 rounded-full bg-emerald-50 px-2.5 py-1 text-[10px] text-emerald-600 sm:inline-flex"><span className="h-1 w-1 rounded-full bg-emerald-500" />{workspace.chat.loading ? "Đang trả lời" : "Sẵn sàng"}</span>
         </div>
       </header>
-      <ChatWindow docId={workspace.docId} accessToken={workspace.accessToken} mock={workspace.mock} session={workspace.chat} onSelectSource={workspace.selectSource} />
+      <ChatWindow docId={workspace.docId} mock={workspace.mock} session={workspace.chat} onSelectSource={workspace.selectSource} />
     </section>
     <aside className="glass-panel hidden w-[290px] shrink-0 flex-col overflow-y-auto xl:flex 2xl:w-[320px]"><DocumentPanel /></aside>
     <div className="xl:hidden"><Drawer open={workspace.sourcesOpen} onOpenChange={workspace.setSourcesOpen} title={workspace.source ? "Trích dẫn nguồn" : "Tài liệu của bạn"}><DocumentPanel /></Drawer></div>

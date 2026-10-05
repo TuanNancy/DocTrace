@@ -1,11 +1,12 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { streamChat, streamChatSSEParser } from "@/lib/api";
+import { streamChat } from "@/lib/api";
+import { streamChatSSEParser } from "@/lib/sse";
 import type { ChatMessage, ChatSource } from "@/types";
 
-export function useChatSession({ docId, mock = false, accessToken, enabled = true }: {
-  docId: string | null; mock?: boolean; accessToken?: string | null; enabled?: boolean;
+export function useChatSession({ docId, mock = false, accessToken }: {
+  docId: string | null; mock?: boolean; accessToken?: string | null;
 }) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
@@ -28,10 +29,9 @@ export function useChatSession({ docId, mock = false, accessToken, enabled = tru
   }, [stop]);
 
   useEffect(() => {
-    if (!enabled) return;
     clearMessages();
     return () => { activeRequest.current?.abort(); activeRequest.current = null; };
-  }, [docId, enabled, clearMessages]);
+  }, [docId, clearMessages]);
 
   const submit = useCallback(async (question?: string) => {
     const query = (question ?? input).trim();
@@ -88,7 +88,7 @@ export function useChatSession({ docId, mock = false, accessToken, enabled = tru
 
   const exportTranscript = useCallback(() => {
     const text = messages.map((message) => `${message.role === "user" ? "Bạn" : "Baymax"}\n${message.content}\n${
-      (message.sources ?? []).map((source, i) => `[${source.citation_id ?? i + 1}] ${source.source} — trang ${source.page}`).join("\n")
+      (message.sources ?? []).map((source) => `[${source.citation_id}] ${source.source} — trang ${source.page}`).join("\n")
     }`).join("\n\n");
     const url = URL.createObjectURL(new Blob([text], { type: "text/markdown;charset=utf-8" }));
     const link = document.createElement("a");
