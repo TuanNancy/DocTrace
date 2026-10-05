@@ -29,7 +29,7 @@ beforeEach(() => { streamMock.mockReset(); });
 
 it("renders summary sources without inventing a similarity percentage", async () => {
   streamMock.mockResolvedValue(new Response(
-    'event: sources\ndata: [{"page":1,"source":"a.pdf","score":null}]\n\n'
+    'event: sources\ndata: [{"citation_id":1,"chunk_id":"chunk-a","doc_id":"a","page":1,"source":"a.pdf","score":null}]\n\n'
     + 'event: token\ndata: "Summary A"\n\nevent: done\ndata: "[DONE]"\n\n'
   ));
   render(<ChatHarness docId="a" mock={false} accessToken="token" />);

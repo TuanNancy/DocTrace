@@ -16,11 +16,11 @@ export function CitationPanel() {
     setExcerpt(null); setError(null); setFileError(null);
     if (!source) return;
     if (mock) {
-      setExcerpt({ doc_id: source.doc_id ?? "demo", chunk_id: "demo", source: source.source, page: source.page,
+      setExcerpt({ doc_id: source.doc_id, chunk_id: source.chunk_id, source: source.source, page: source.page,
         text: "Đây là đoạn trích minh họa. Khi kết nối API, Baymax hiển thị nguyên văn đoạn PDF đã được dùng làm nguồn cho câu trả lời." });
       return;
     }
-    if (!source.doc_id || !source.chunk_id || !accessToken) { setError("Nguồn này không có thông tin để mở đoạn trích."); return; }
+    if (!accessToken) { setError("Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại."); return; }
     const controller = new AbortController();
     void getSourceExcerpt(source, accessToken, controller.signal).then((result) => {
       if (!controller.signal.aborted) setExcerpt(result);
@@ -46,7 +46,7 @@ export function CitationPanel() {
     <p className="mt-3 text-[10px] leading-5 text-slate-400">{mock ? "Nội dung minh họa trong chế độ demo." : "Đoạn văn được trích từ PDF gốc. Số trang tính từ trang đầu của tệp."}</p>
     {!mock && <button className="secondary-button mt-5 w-full text-xs" disabled={opening || !excerpt} onClick={async () => {
       setOpening(true); setFileError(null);
-      try { await openDocumentFile(source.doc_id!, accessToken!, source.page); }
+      try { await openDocumentFile(source.doc_id, accessToken!, source.page); }
       catch (cause) { setFileError(cause instanceof Error ? cause.message : "Không thể mở PDF."); }
       finally { setOpening(false); }
     }}>{opening ? "Đang mở…" : `Mở PDF · trang ${source.page}`}<ArrowUpRight size={14} /></button>}
