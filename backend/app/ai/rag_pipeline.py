@@ -9,7 +9,7 @@ from starlette.concurrency import run_in_threadpool
 from anyio import CancelScope
 
 from app.ai.document_summary import is_document_overview, pack_contexts
-from app.ai.prompts import PromptTemplates
+from app.ai.prompts import get_system_prompt
 from app.core.config import AppConfig, get_config
 from app.providers.base import ChatProvider
 from app.providers.embeddings import get_embedder
@@ -144,7 +144,7 @@ class RAGPipeline:
                         f"Write at most {max_chars // 4} characters."
                     ),
                     context=context,
-                    system_prompt=PromptTemplates.get_system_prompt(language),
+                    system_prompt=get_system_prompt(language),
                     temperature=0,
                     max_tokens=min(self.config.max_tokens, max(64, max_chars // 8)),
                     # Keep the small summary budget for visible text, not reasoning.
@@ -191,7 +191,7 @@ class RAGPipeline:
                 if overview
                 else self._build_context(retrieved_chunks)
             )
-            system_prompt = PromptTemplates.get_system_prompt(language)
+            system_prompt = get_system_prompt(language)
 
             async for text_delta in self.chat_provider.stream_with_context(
                 query=query,

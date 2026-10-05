@@ -5,6 +5,15 @@ from abc import ABC, abstractmethod
 from typing import AsyncIterator, Dict, List, Optional
 
 
+def _context_messages(query: str, context: str, system_prompt: Optional[str]) -> List[Dict[str, str]]:
+    messages = []
+    if system_prompt:
+        messages.append({"role": "system", "content": system_prompt})
+    user_content = f"Context:\n{context}\n\nQuestion: {query}" if context else query
+    messages.append({"role": "user", "content": user_content})
+    return messages
+
+
 class ChatProvider(ABC):
     def __init__(self, api_key: str, model: str):
         self.api_key = api_key
@@ -39,15 +48,8 @@ class ChatProvider(ABC):
         temperature: Optional[float] = None,
         **kwargs
     ) -> str:
-        messages = []
-        if system_prompt:
-            messages.append({"role": "system", "content": system_prompt})
-
-        user_content = f"Context:\n{context}\n\nQuestion: {query}" if context else query
-        messages.append({"role": "user", "content": user_content})
-
         return await self.generate_completion(
-            messages=messages,
+            messages=_context_messages(query, context, system_prompt),
             max_tokens=max_tokens,
             temperature=temperature,
             **kwargs
@@ -62,15 +64,8 @@ class ChatProvider(ABC):
         temperature: Optional[float] = None,
         **kwargs
     ) -> AsyncIterator[str]:
-        messages = []
-        if system_prompt:
-            messages.append({"role": "system", "content": system_prompt})
-
-        user_content = f"Context:\n{context}\n\nQuestion: {query}" if context else query
-        messages.append({"role": "user", "content": user_content})
-
         async for text_delta in self.stream_completion(
-            messages=messages,
+            messages=_context_messages(query, context, system_prompt),
             max_tokens=max_tokens,
             temperature=temperature,
             **kwargs
