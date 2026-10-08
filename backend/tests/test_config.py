@@ -43,6 +43,33 @@ def test_invalid_numeric_value_is_not_exposed():
     assert "private-value" not in str(error.value)
 
 
+@pytest.mark.parametrize("raw,expected", [("true", True), ("false", False), (" FALSE ", False), ("1", True), ("0", False)])
+def test_rate_limit_boolean_is_explicit(raw, expected):
+    assert AppConfig.from_env({"RATE_LIMIT_ENABLED": raw}).rate_limit_enabled is expected
+
+
+def test_invalid_rate_limit_boolean_is_rejected():
+    with pytest.raises(ValueError, match="RATE_LIMIT_ENABLED"):
+        AppConfig.from_env({"RATE_LIMIT_ENABLED": "maybe"})
+
+
+@pytest.mark.parametrize("action", ["UPLOAD", "CHAT", "INDEX_RETRY"])
+@pytest.mark.parametrize("suffix", ["REQUESTS", "WINDOW_SECONDS"])
+@pytest.mark.parametrize("value", ["0", "-1", "1.5"])
+def test_rate_limit_settings_require_positive_integers(action, suffix, value):
+    key = f"RATE_LIMIT_{action}_{suffix}"
+    with pytest.raises(ValueError, match=key):
+        AppConfig.from_env({key: value})
+
+
+def test_rate_limit_defaults_and_overrides():
+    config = AppConfig.from_env({"RATE_LIMIT_CHAT_REQUESTS": "20", "RATE_LIMIT_CHAT_WINDOW_SECONDS": "120"})
+    assert config.rate_limit_enabled is True
+    assert (config.rate_limit_chat_requests, config.rate_limit_chat_window_seconds) == (20, 120)
+    assert (config.rate_limit_upload_requests, config.rate_limit_upload_window_seconds) == (5, 600)
+    assert (config.rate_limit_index_retry_requests, config.rate_limit_index_retry_window_seconds) == (3, 600)
+
+
 def test_s3_can_be_disabled_but_partial_credentials_are_rejected():
     AppConfig.from_env({"SUPABASE_STORAGE_BUCKET": "pdfs"})
     with pytest.raises(ValueError, match="SUPABASE_S3_SECRET_ACCESS_KEY"):

@@ -21,6 +21,7 @@ config_module._config = config_module.AppConfig(
 from app.core.auth import require_supabase_user
 from app.main import app
 from app.services.document_repository import DocumentRepository, get_document_repository
+from app.services.rate_limiter import RateLimiter, get_rate_limiter
 
 
 async def _fake_supabase_user():
@@ -51,9 +52,11 @@ def client(repository) -> TestClient:
     """FastAPI TestClient for router tests."""
     app.dependency_overrides[require_supabase_user] = _fake_supabase_user
     app.dependency_overrides[get_document_repository] = lambda: repository
+    app.dependency_overrides[get_rate_limiter] = lambda: AsyncMock(spec=RateLimiter)
     try:
         with TestClient(app) as test_client:
             yield test_client
     finally:
         app.dependency_overrides.pop(require_supabase_user, None)
         app.dependency_overrides.pop(get_document_repository, None)
+        app.dependency_overrides.pop(get_rate_limiter, None)

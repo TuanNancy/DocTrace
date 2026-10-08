@@ -8,6 +8,7 @@ from starlette.concurrency import run_in_threadpool
 from app.core.auth import require_supabase_user
 from app.services.document_repository import DocumentRepository, get_document_repository, public_document
 from app.services.supabase_pdf_storage import signed_pdf_url
+from app.services.rate_limiter import RateLimiter, get_rate_limiter
 from app.storage.factory import create_connected_vector_store
 
 router = APIRouter(prefix="/api/documents", tags=["documents"])
@@ -28,10 +29,13 @@ async def get_document(doc_id: UUID, user: dict = Depends(require_supabase_user)
 
 @router.post("/{doc_id}/retry", status_code=202)
 async def retry_document(doc_id: UUID, user: dict = Depends(require_supabase_user),
-                         repository: DocumentRepository = Depends(get_document_repository)):
+                         repository: DocumentRepository = Depends(get_document_repository),
+                         limiter: RateLimiter = Depends(get_rate_limiter)):
     document = await repository.get(user["id"], str(doc_id))
     if document["status"] not in ("error", "delete_error"):
         raise HTTPException(409, "Chỉ có thể thử lại tài liệu bị lỗi.")
+    if document["status"] == "error":
+        await limiter.check(user["id"], action="index-retry")
     return public_document(await repository.queue(user["id"], str(doc_id),
                            "delete" if document["status"] == "delete_error" else "index"))
 

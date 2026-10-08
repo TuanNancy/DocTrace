@@ -23,6 +23,13 @@ class AppConfig:
     scanned_page_ratio_threshold: float = 0.5
     upload_max_size_mb: int = 50
     upload_max_concurrent: int = 1
+    rate_limit_enabled: bool = True
+    rate_limit_upload_requests: int = 5
+    rate_limit_upload_window_seconds: int = 600
+    rate_limit_chat_requests: int = 10
+    rate_limit_chat_window_seconds: int = 60
+    rate_limit_index_retry_requests: int = 3
+    rate_limit_index_retry_window_seconds: int = 600
     max_chunks_per_document: int = 2000
     upload_allowed_content_types: Tuple[str, ...] = field(
         default=("application/pdf",), metadata={"env": None},
@@ -87,6 +94,11 @@ class AppConfig:
                         if env.get(name, "").strip()), None)
             if raw is None:
                 continue
+            if isinstance(item.default, bool):
+                if raw.lower() not in ("true", "false", "1", "0"):
+                    raise ValueError(f"{key} must be true, false, 1 or 0.")
+                values[item.name] = raw.lower() in ("true", "1")
+                continue
             try:
                 if isinstance(item.default, int):
                     value = int(raw)
@@ -112,6 +124,14 @@ class AppConfig:
 
     def validate(self) -> list[str]:
         errors = []
+        if not isinstance(self.rate_limit_enabled, bool):
+            errors.append("RATE_LIMIT_ENABLED must be a boolean")
+        for action in ("upload", "chat", "index_retry"):
+            for suffix in ("requests", "window_seconds"):
+                attr = f"rate_limit_{action}_{suffix}"
+                value = getattr(self, attr)
+                if type(value) is not int or value <= 0:
+                    errors.append(f"{attr.upper()} must be a positive integer")
         for attr, key in (
             ("chunk_size", "CHUNK_SIZE"), ("min_chars_per_page", "MIN_CHARS_PER_PAGE"),
             ("upload_max_size_mb", "UPLOAD_MAX_SIZE_MB"), ("upload_max_concurrent", "UPLOAD_MAX_CONCURRENT"),
