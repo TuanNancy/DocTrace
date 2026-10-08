@@ -13,6 +13,7 @@ from app.ai.rag_pipeline import create_initialized_rag_pipeline
 from app.core.auth import require_supabase_user
 from app.schemas import ChatRequest
 from app.services.document_repository import DocumentRepository, get_document_repository
+from app.services.rate_limiter import RateLimiter, get_rate_limiter
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +87,7 @@ async def chat(
     request: ChatRequest,
     user: dict = Depends(require_supabase_user),
     repository: DocumentRepository = Depends(get_document_repository),
+    limiter: RateLimiter = Depends(get_rate_limiter),
 ) -> StreamingResponse:
     try:
         query = request.query.strip()
@@ -102,6 +104,7 @@ async def chat(
         if document["status"] != "ready" or not document.get("active_index_id"):
             raise HTTPException(409, "Tài liệu chưa sẵn sàng để hỏi đáp.")
 
+        await limiter.check(user_id, action="chat")
         return StreamingResponse(
             _stream_chat_sse(query, document["active_index_id"], user_id, language, document_id=doc_id),
             media_type="text/event-stream",

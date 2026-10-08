@@ -11,8 +11,20 @@ function authorization(accessToken: string) {
   return { Authorization: `Bearer ${accessToken}` };
 }
 
+function retryAfterSeconds(value: string | null): number | null {
+  const raw = value?.trim() ?? "";
+  const seconds = /^\d+$/.test(raw) ? Number(raw)
+    : /^(Mon|Tue|Wed|Thu|Fri|Sat|Sun), /.test(raw) ? Math.ceil((Date.parse(raw) - Date.now()) / 1000)
+    : NaN;
+  return Number.isSafeInteger(seconds) && seconds >= 0 ? Math.max(1, seconds) : null;
+}
+
 async function checkResponse(response: Response) {
   if (response.ok) return;
+  if (response.status === 429) {
+    const wait = retryAfterSeconds(response.headers.get("Retry-After"));
+    throw new Error(`Bạn gửi yêu cầu quá nhanh. Vui lòng thử lại sau${wait === null ? "" : ` ${wait} giây`}.`);
+  }
   let message = `Yêu cầu thất bại (HTTP ${response.status}).`;
   try {
     const body = await response.json();
@@ -47,7 +59,10 @@ export async function uploadPDF(
       xhr.onload = async () => {
         cleanup();
         try {
-          const response = new Response(xhr.responseText, { status: xhr.status });
+          const headers = new Headers();
+          const retryAfter = xhr.getResponseHeader("Retry-After");
+          if (retryAfter) headers.set("Retry-After", retryAfter);
+          const response = new Response(xhr.responseText, { status: xhr.status, headers });
           await checkResponse(response);
           resolve(await response.json());
         } catch (error) { reject(error); }

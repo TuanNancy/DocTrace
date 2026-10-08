@@ -11,6 +11,7 @@ from starlette.concurrency import run_in_threadpool
 from app.core.auth import require_supabase_user
 from app.core.config import get_config
 from app.core.limits import require_upload_slot
+from app.services.rate_limiter import RateLimiter, get_rate_limiter
 from app.services.document_repository import DocumentRepository, get_document_repository, public_document
 from app.services.supabase_pdf_storage import (
     build_pdf_object_key, upload_pdf_to_supabase_storage, is_pdf_storage_configured, delete_pdf,
@@ -27,6 +28,7 @@ async def upload_pdf(
     user: dict = Depends(require_supabase_user),
     _slot: None = Depends(require_upload_slot),
     repository: DocumentRepository = Depends(get_document_repository),
+    limiter: RateLimiter = Depends(get_rate_limiter),
 ) -> Dict[str, Any]:
     """
     Retain a PDF, then atomically create its Redis catalog record and RQ job.
@@ -81,6 +83,7 @@ async def upload_pdf(
 
     key = build_pdf_object_key(uid, doc_id, filename)
     await repository.check_available()
+    await limiter.check(uid, action="upload")
     try:
         await run_in_threadpool(upload_pdf_to_supabase_storage, file_content, key)
     except Exception:

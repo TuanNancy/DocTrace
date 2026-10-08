@@ -1,20 +1,20 @@
-# Deploy FastAPI + Redis/RQ với Nginx + Certbot trên EC2
+# Deploy: VPS Docker + Vercel + Supabase + Zilliz
 
 ```text
 Browser / frontend trên Vercel
           │ HTTPS
           ▼
-EC2: Nginx container ──→ api:8000 (FastAPI container)
-          │                   └── dịch vụ auth/storage/vector/LLM
+VPS: Nginx container ──→ api:8000 (FastAPI container)
+          │                   └── Supabase Auth / Storage, Zilliz, OpenRouter
           └── certificate volume ← Certbot (chạy khi cấp/gia hạn)
 
-FastAPI → Redis (thư viện + queue) → RQ worker → Storage/Milvus
+FastAPI → Redis (thư viện + queue + quota) → RQ worker → Supabase S3 / Zilliz
                                       └──────→ cập nhật metadata Redis
 ```
 
 ## Trạng thái checkout
 
-Bộ deploy đóng gói API, worker xử lý PDF và reverse proxy. Frontend cấu hình trên Vercel theo `frontend/.env.example` và `frontend/README.md`. Milvus hỗ trợ host/port hoặc `MILVUS_URI`/`MILVUS_TOKEN`; URI mode mặc định AUTOINDEX.
+Bộ deploy chạy API, Redis, worker xử lý PDF và Nginx/Certbot bằng Docker Compose trên VPS Linux. Frontend deploy riêng trên Vercel; Supabase cung cấp Auth và bucket PDF private qua S3; Zilliz Cloud giữ vector/chunk qua `MILVUS_URI`/`MILVUS_TOKEN` (mặc định AUTOINDEX). Cấu hình frontend tham chiếu `frontend/.env.example` và `frontend/README.md`.
 
 Tạo bucket PDF private, cấu hình Supabase Auth cùng S3 keys trong `backend/.env`, rồi chạy Redis và worker. Thư viện không cần SQL migration hay service-role key. Bản PostgreSQL cũ chuyển sang thư viện Redis mới theo quy trình bên dưới và tải lại PDF.
 
@@ -34,14 +34,14 @@ Tạo bucket PDF private, cấu hình Supabase Auth cùng S3 keys trong `backend
 
 Root `docker-compose.yml` chạy Redis + cụm Milvus; profile `jobs` thêm worker. Production chạy API + Redis + worker + Nginx; Certbot ở profile `tools`.
 
-## 2. Chuẩn bị EC2, DNS và env
+## 2. Chuẩn bị VPS, DNS và env
 
-Các lệnh vận hành bên dưới dùng shell Linux trên EC2. Cài Docker Engine và Compose v2 hỗ trợ `up --wait`.
+Các lệnh vận hành bên dưới dùng shell Linux trên VPS. Cài Docker Engine và Compose v2 hỗ trợ `up --wait`.
 
 1. Đặt repository tại `/opt/DocTrace` (hoặc sửa đường dẫn trong systemd service nếu dùng chỗ khác).
-2. Trỏ DNS `api.YOUR-DOMAIN` tới địa chỉ public ổn định của EC2.
+2. Trỏ DNS `api.YOUR-DOMAIN` tới địa chỉ public ổn định của VPS.
 3. Cho phép inbound TCP **80 và 443**. Port 80 cần giữ mở để HTTP-01 renewal hoạt động.
-4. API port 8000 chỉ nằm trong Docker network; không publish ra EC2.
+4. API port 8000 chỉ nằm trong Docker network; không publish ra VPS.
 
 Nếu đang có container Caddy phục vụ domain này, xác định nó bằng `docker ps` và dừng trước khi bootstrap Nginx để nhả cổng 80/443. Giữ lại cấu hình/volumes cũ cho rollback; bộ deploy mới dùng certificate volumes riêng.
 
@@ -59,19 +59,54 @@ ACME_EMAIL=YOUR-EMAIL
 TLS_MODE=https
 ```
 
-Tạo `backend/.env` theo phần cấu hình backend trong README. Điền OpenRouter, Supabase Auth/Storage và Milvus endpoint mà code hiện hỗ trợ. Đặt:
+Copy `backend/.env.example` thành `backend/.env`, giữ các giá trị tuning mặc định rồi điền:
+
+| Nhóm | Biến / giá trị |
+|---|---|
+| Supabase Auth | `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY` từ project |
+| PDF private | `SUPABASE_S3_ENDPOINT`, `SUPABASE_S3_REGION`, `SUPABASE_S3_ACCESS_KEY_ID`, `SUPABASE_S3_SECRET_ACCESS_KEY`, `SUPABASE_STORAGE_BUCKET` theo S3 settings của cùng project |
+| Zilliz Cloud | `MILVUS_URI` là endpoint HTTPS của cluster; `MILVUS_TOKEN` là credential được cấp quyền truy cập; `MILVUS_COLLECTION=pdf_chunks_owned_v1` |
+| OpenRouter | `OPENROUTER_API_KEY`, `RAG_MODEL`, `EMBEDDING_MODEL` theo model bạn chọn |
+| Queue | `RQ_QUEUE_NAME=documents-v2`; Compose đã override `REDIS_URL` cho API/worker |
+
+S3 access key/secret là credential riêng của Storage, không phải Supabase publishable key. Giữ `MILVUS_INDEX_TYPE` không khai báo để URI mode chọn AUTOINDEX. Dùng collection mới cho bộ embedding mới; không trộn vector từ hai model hoặc recreate collection đang có dữ liệu.
+
+Đặt đúng origin frontend Vercel (không có path):
 
 ```dotenv
 CORS_ALLOW_ORIGINS=https://YOUR-FRONTEND
 ```
 
-**Networking:** `localhost` trong API container là chính container đó. Nếu Milvus ở cùng Docker network, dùng `MILVUS_HOST=milvus`; nếu Milvus ở máy khác, dùng hostname/IP truy cập được. Trên Docker Desktop, có thể dùng `host.docker.internal` để đi qua cổng của host. Không chạy thêm cả cụm Milvus trên EC2 t3.small theo cấu hình này mà chưa đo tài nguyên.
+**Networking:** `MILVUS_URI` được ưu tiên hơn host/port, nên VPS dùng endpoint Zilliz thay vì chạy cụm Milvus local. Dùng `compose.production.yml` cho production; `docker compose up -d` không chỉ định file sẽ chạy stack phát triển gồm Milvus/etcd/MinIO. `localhost` trong API container là chính container đó.
 
 API và worker có giới hạn riêng `1400m`; Redis `256m`, Nginx `128m` (tổng khoảng 3.1 GiB chưa tính OS). Redis `maxmemory=128mb` chừa dung lượng cho persistence; khi đầy nó từ chối ghi và API báo lỗi để người dùng thử lại. Redis chỉ truy cập qua mạng Docker, không publish port production. Metadata tài liệu không có TTL; theo dõi RAM và backup volume vì Redis giữ toàn bộ thư viện.
 
 Compose đặt `REDIS_URL=redis://redis:6379/0` cho API và worker. Cả hai phải dùng cùng `RQ_QUEUE_NAME` (mặc định `documents-v2`). `DOCUMENT_INDEX_TIMEOUT_SECONDS=900`, `DOCUMENT_DELETE_TIMEOUT_SECONDS=300`; tăng timeout cần điều chỉnh `stop_grace_period` (mặc định 16 phút) tương ứng. RQ graceful shutdown chờ job hiện tại; force kill cần chờ RQ phát hiện job bị bỏ dở và lên lịch retry.
 
 `backend/.env` được inject lúc chạy; không copy vào image. `.env.production` chứa domain/cấu hình Compose và được Git ignore. Các giá trị `NEXT_PUBLIC_*` của frontend được cấu hình trên Vercel; API URL phải dùng HTTPS.
+
+### Vercel và kết nối Auth/API
+
+Import repository vào Vercel, chọn framework Next.js và **Root Directory `frontend`**. Dùng build command `npm run build` và Node 22 như CI. Đặt các biến trong môi trường Production:
+
+```dotenv
+NEXT_PUBLIC_SUPABASE_URL=https://YOUR-PROJECT.supabase.co
+NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY=YOUR-PUBLISHABLE-KEY
+NEXT_PUBLIC_SITE_URL=https://YOUR-FRONTEND
+NEXT_PUBLIC_API_URL=https://api.YOUR-DOMAIN
+```
+
+API URL là origin, không thêm `/api`; để trống sẽ bật demo upload/chat. Browser gọi trực tiếp HTTPS API trên VPS, gồm upload và SSE. Không đưa S3 credentials, Zilliz token hoặc OpenRouter key vào biến frontend.
+
+Trong Supabase Auth, đặt Site URL bằng origin frontend, allowlist `https://YOUR-FRONTEND/auth/callback` cho OAuth và `https://YOUR-FRONTEND/auth/login` cho email confirmation. Nếu dùng Google login, bật Google provider. CORS backend phải chứa cùng origin. Nếu dùng Vercel Preview, cấu hình origin/redirect riêng cho URL preview cần thử.
+
+Sau khi API đã có HTTPS, deploy/redeploy frontend; thay `NEXT_PUBLIC_*` cần rebuild trên Vercel. Kiểm tra thực tế theo luồng: đăng nhập → upload PDF → chờ ready → chat/citation → mở PDF → xóa tài liệu.
+
+### Rate limit theo user
+
+API mặc định giới hạn upload 5/600 giây, chat 10/60 giây và retry indexing 3/600 giây qua Redis dùng chung. `RATE_LIMIT_*` nằm trong `backend/.env`; mọi API instance cần cùng cấu hình. Đổi env phải recreate API để Compose inject lại giá trị (lệnh cập nhật ở mục 5). `RATE_LIMIT_ENABLED=false` tắt quota; không cần xóa Redis.
+
+Hết quota trả `429` + `Retry-After`; Redis lỗi trả `503`. Key quota tự hết TTL, còn catalog không có TTL. Quota này độc lập với model và không phải giới hạn số lần worker gọi OpenRouter. Chạy `python scripts/verify_rate_limits.py` từ `backend/` để kiểm tra bằng Redis Docker riêng trước deploy.
 
 ## 3. Lần đầu: bootstrap HTTP → cấp certificate → bật HTTPS
 
@@ -89,7 +124,7 @@ Bootstrap chỉ phục vụ:
 - `/nginx-health`: kiểm tra process Nginx.
 - Các đường dẫn khác: **503**, vì API chưa được mở qua HTTP.
 
-Kiểm tra DNS/firewall từ bên ngoài EC2:
+Kiểm tra DNS/firewall từ bên ngoài VPS:
 
 ```sh
 curl --fail http://api.YOUR-DOMAIN/nginx-health
