@@ -51,6 +51,48 @@ describe("API transport", () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ status: "ok" })));
     await expect(streamChat("q", "a", "token")).rejects.toThrow("stream chat");
   });
+
+  it("shows the Retry-After wait for fetch without opening SSE", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ detail: "Too many requests" }, {
+      status: 429, headers: { "Retry-After": "12" },
+    })));
+    await expect(streamChat("q", "a", "token")).rejects.toThrow("thử lại sau 12 giây");
+  });
+
+  it.each([null, "nonsense", "-1", "1.5"])("has a friendly fallback for invalid Retry-After %s", async (value) => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("", {
+      status: 429, headers: value === null ? {} : { "Retry-After": value },
+    })));
+    await expect(streamChat("q", "a", "token")).rejects.toThrow("Vui lòng thử lại sau.");
+  });
+
+  it("does not duplicate a wait message from the API", async () => {
+    const detail = "Bạn gửi yêu cầu quá nhanh. Vui lòng thử lại sau 12 giây.";
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ detail }, {
+      status: 429, headers: { "Retry-After": "12" },
+    })));
+    await expect(streamChat("q", "a", "token")).rejects.toThrow(new Error(detail));
+  });
+
+  it("accepts HTTP-date Retry-After", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(Date.parse("Thu, 08 Oct 2026 10:00:00 GMT"));
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("", {
+      status: 429, headers: { "Retry-After": "Thu, 08 Oct 2026 10:00:12 GMT" },
+    })));
+    await expect(streamChat("q", "a", "token")).rejects.toThrow("thử lại sau 12 giây");
+  });
+
+  it("preserves Retry-After for progress uploads through XHR", async () => {
+    const xhr = {
+      open: vi.fn(), setRequestHeader: vi.fn(), upload: {}, status: 429,
+      responseText: JSON.stringify({ detail: "Too many requests" }),
+      getResponseHeader: vi.fn((name: string) => name.toLowerCase() === "retry-after" ? "17" : null),
+      onload: () => {}, send() { this.onload(); },
+    };
+    vi.stubGlobal("XMLHttpRequest", vi.fn(() => xhr));
+    await expect(uploadPDF(new File(["%PDF"], "a.pdf"), "token", undefined, vi.fn()))
+      .rejects.toThrow("thử lại sau 17 giây");
+  });
 });
 
 describe("SSE decoding", () => {

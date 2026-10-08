@@ -13,6 +13,47 @@ const file = (name = "a.pdf") => ({ name, mimeType: "application/pdf", buffer: B
 
 test.beforeEach(async ({ request }) => { await request.post("http://127.0.0.1:4311/test/reset"); });
 
+test("rate-limited uploads, indexing retries and chat show the wait time", async ({ page }) => {
+  const deny = (seconds: number) => ({
+    status: 429, contentType: "application/json",
+    headers: {
+      "Retry-After": String(seconds), "Access-Control-Expose-Headers": "Retry-After",
+      "Access-Control-Allow-Origin": "http://localhost:4310",
+    },
+    body: JSON.stringify({ detail: "Too many requests" }),
+  });
+  await login(page);
+  await page.getByRole("navigation", { name: "Điều hướng chính" }).getByRole("link", { name: /Thư viện/ }).click();
+  const uploadUrl = "http://127.0.0.1:4311/api/upload";
+  await page.route(uploadUrl, (route) => route.request().method() === "OPTIONS" ? route.continue() : route.fulfill(deny(12)));
+  await page.getByLabel("Chọn file", { exact: true }).setInputFiles(file());
+  await expect(page.getByText("Bạn gửi yêu cầu quá nhanh. Vui lòng thử lại sau 12 giây.")).toBeVisible();
+  await expect(page.getByTestId("document-row")).toHaveCount(0);
+  await page.unroute(uploadUrl);
+  await page.getByLabel("Thử lại", { exact: true }).setInputFiles(file("error.pdf"));
+  const row = page.getByTestId("document-row");
+  await expect(row.getByText("Lỗi xử lý", { exact: true })).toBeVisible({ timeout: 15000 });
+
+  const retryUrl = "http://127.0.0.1:4311/api/documents/*/retry";
+  await page.route(retryUrl, (route) => route.request().method() === "OPTIONS" ? route.continue() : route.fulfill(deny(25)));
+  await row.getByRole("button", { name: "Thử lại", exact: true }).click();
+  await expect(page.getByText("Bạn gửi yêu cầu quá nhanh. Vui lòng thử lại sau 25 giây.")).toBeVisible();
+  await expect(row.getByText("Lỗi xử lý", { exact: true })).toBeVisible();
+  await page.unroute(retryUrl);
+  await row.getByRole("button", { name: "Thử lại", exact: true }).click();
+  await expect(row.getByText("Sẵn sàng", { exact: true })).toBeVisible({ timeout: 15000 });
+  await row.getByRole("button", { name: "Hỏi đáp", exact: true }).click();
+
+  await page.route("http://127.0.0.1:4311/api/chat", (route) =>
+    route.request().method() === "OPTIONS" ? route.continue() : route.fulfill(deny(8)));
+  const input = page.getByLabel("Câu hỏi của bạn");
+  await input.fill("Câu hỏi bị giới hạn");
+  await page.getByRole("button", { name: "Gửi", exact: true }).click();
+  await expect(page.getByText("Bạn gửi yêu cầu quá nhanh. Vui lòng thử lại sau 8 giây.")).toBeVisible();
+  await expect(input).toBeEnabled();
+  await expect(page.getByRole("button", { name: "Dừng trả lời" })).not.toBeVisible();
+});
+
 test("library lifecycle, streaming, citations and transient chat across navigation", async ({ page, request }) => {
   await page.setViewportSize({ width: 1440, height: 960 });
   await login(page);
