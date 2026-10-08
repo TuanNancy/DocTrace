@@ -23,6 +23,8 @@ jobs:
           cache-dependency-path: backend/requirements*.txt
       - run: python -m pip install -r requirements-dev.txt
       - run: python -m pytest
+      - name: Verify rate limit windows and concurrency against real Redis
+        run: python scripts/verify_rate_limits.py
       - name: Verify Redis library transactions and real Linux RQ workers
         run: python scripts/verify_document_queue.py
 
