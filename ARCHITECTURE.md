@@ -61,6 +61,10 @@ ReactMarkdown + GFM render assistant messages without raw HTML. The citation plu
 
 ## Configuration and storage invariants
 
+- `services/rate_limiter.py` gates valid authenticated upload/chat/index-retry attempts using Redis-time sliding windows: 5/600s, 10/60s and 3/600s per owner by default. `RATE_LIMIT_*` settings are shared by all API instances; `RATE_LIMIT_ENABLED=false` bypasses quota checks. Changing models does not change these quotas.
+- Lua atomically prunes/counts/adds unique admissions in `doctrace:ratelimit:v1` sorted sets with TTL. Denials neither add events nor renew expiry. Admitted attempts are not refunded after downstream errors, and uncertain Redis replies are not retried. Quota exhaustion is HTTP 429 with `Retry-After`; Redis failure is 503. Check before Storage/enqueue and before SSE starts; delete retries and library reads are exempt. The existing upload capacity limiter remains per-process, not a worker limit.
+- API CORS exposes `Retry-After`; both fetch and XHR preserve it for the frontend's wait message. User quotas do not bound provider calls per indexing job or IP traffic before multipart parsing/Auth.
+
 - `AppConfig(...)` is environment-independent. `from_env()` parses a mapping/environment. `get_config()` loads root `.env`, then overriding `backend/.env`, once per process.
 - `RAG_MODEL` and `EMBEDDING_MODEL` have no implicit model fallback. Embedding dimensions come from API vectors; constructing an embedder also probes the API.
 - Milvus supports host/port and URI/token. URI defaults to AUTOINDEX. Requests own their connection alias; reads use Strong consistency so newly published uploads are immediately queryable.
@@ -71,6 +75,7 @@ ReactMarkdown + GFM render assistant messages without raw HTML. The citation plu
 ## Verification and deployment
 
 - pytest uses isolated fakeredis for repository/RQ serialization, and mocks Storage/provider boundaries. Chat tests exercise the real pipeline/provider/SSE. TestClient overrides Auth; dedicated auth tests mock its upstream HTTP.
+- Router tests also override `get_rate_limiter`; `python scripts/verify_rate_limits.py` verifies the actual Lua against disposable Docker Redis, including cross-process quota, concurrent admission, expiry and outage behavior.
 - `python scripts/verify_document_queue.py` uses real Redis and two Linux RQ workers to exercise transactions, owner scope, restart/outage, retry/timeout, kill and deletion. Only PDF/embedding/S3/Milvus boundaries are faked. It builds a disposable image unless `--api-image` is supplied. The container-kill case targets the scheduler owner, advances abandoned-job registry time, and waits for the killed scheduler's lease to expire before restarting it.
 - Vitest covers transport, cancellation, Markdown and auth. Playwright runs real UI/cookies with loopback Auth/API fixtures; it does not validate real cloud services.
 - Root Compose runs Redis and vector infrastructure; profile `jobs` runs the Linux worker. Production Compose runs API, Redis, RQ worker, Nginx and on-demand Certbot. `/health` is API process liveness only. See `DEPLOYMENT.md`.

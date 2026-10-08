@@ -129,6 +129,14 @@ SSE: `sources` chứa `{citation_id, chunk_id, doc_id, page, source, score}`, `t
 
 Sau upload: `queued → processing → ready / error`; xóa: `deleting → deleted / delete_error`. Retry theo lịch vẫn là `queued` (hoặc `deleting`). Lỗi indexing thuộc trạng thái tài liệu, không thuộc request upload đã nhận `202`.
 
+### Giới hạn yêu cầu theo tài khoản
+
+API dùng Redis sliding window: tối đa **5 upload/600 giây**, **10 chat/60 giây**, **3 retry indexing/600 giây** cho mỗi user, dùng chung giữa các tab và API process. Tóm tắt tính như chat; retry xóa và đọc thư viện không dùng quota này. `UPLOAD_MAX_CONCURRENT` vẫn giới hạn riêng số request upload đang xử lý trong mỗi process.
+
+Chỉnh `RATE_LIMIT_*` trong `backend/.env` theo mẫu `backend/.env.example`, rồi restart API; mọi API instance phải dùng cùng Redis và cấu hình. `RATE_LIMIT_ENABLED=false` tắt kiểm tra quota. Model LLM/embedding không ảnh hưởng cấu hình này. Lượt được cấp phép vẫn tính nếu xử lý tiếp theo thất bại; quota mới sau khi đổi window chỉ phản ánh lịch sử còn lưu, không khôi phục lượt đã hết TTL.
+
+Hết quota trả `429` + `Retry-After` (giây); frontend hiển thị thời gian chờ. Redis lỗi trả `503` trước Storage/enqueue/provider. Chat kiểm tra trước khi mở SSE. Key `doctrace:ratelimit:v1` có TTL riêng, không thay đổi TTL catalog hoặc RQ. Quota này giới hạn thao tác user, không giới hạn request theo IP hay số lần worker gọi provider.
+
 ## Kiểm tra
 
 Từ `backend/` (pytest mock dịch vụ ngoài, không cần cloud credentials):
@@ -138,8 +146,11 @@ python -m pip install -r requirements-dev.txt
 python -m pytest
 python -m pytest tests/test_chat.py::test_chat_sse_stream
 python -m pytest tests/test_documents.py tests/test_worker.py
+python scripts/verify_rate_limits.py
 python scripts/verify_document_queue.py
 ```
+
+`verify_rate_limits.py` cần Docker, tạo Redis riêng để kiểm tra Lua/sliding window, TTL, quota qua nhiều process và tranh lượt cuối bằng request đồng thời; tự dọn container, không dùng Redis ứng dụng.
 
 Lệnh cuối cần Docker; build image rồi chạy Redis và hai RQ workers thật trên Linux. Nó kiểm tra transaction thư viện/queue, owner scope, Redis restart/outage, retry/timeout, kill worker và xóa; tự dọn tài nguyên. Có thể truyền `--api-image doctrace-api:verify` để dùng image đã build. Pytest dùng fake Redis và mocks; integration thay PDF/AI/S3/Milvus bằng fixture.
 
