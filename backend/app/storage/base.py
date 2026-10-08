@@ -3,7 +3,7 @@ Vector store interface for indexing and retrieving document chunks.
 """
 import logging
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 from app.core.config import AppConfig
 
@@ -18,22 +18,14 @@ class RetrievedChunk:
     page: int
     source: str
     score: Optional[float]
-    metadata: Dict[str, Any] = None
-
-    def __post_init__(self):
-        if self.metadata is None:
-            self.metadata = {}
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
 class InsertResult:
     doc_id: str
     chunks_inserted: int
-    warnings: List[str] = None
-
-    def __post_init__(self):
-        if self.warnings is None:
-            self.warnings = []
+    warnings: List[str] = field(default_factory=list)
 
 
 class VectorStore(ABC):

@@ -37,7 +37,8 @@ frontend/
   src/app/             Routes Next.js
   src/assets/          Asset được bundle, gồm logo Baymax
   src/components/      UI chat, upload, auth và workspace
-  src/lib/             API client, hooks, auth và tiện ích dùng chung
+  src/lib/             API client, SSE parser, hooks và tiện ích dùng chung
+    supabase/          Auth clients, cấu hình public và session middleware
   src/types/           Hợp đồng dữ liệu frontend/backend
   tests/               Unit tests, E2E và Auth/API fixtures
 deploy/                Nginx, Certbot, systemd và kiểm thử deployment

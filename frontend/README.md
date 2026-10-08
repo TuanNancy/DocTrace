@@ -29,7 +29,9 @@ Supabase Auth needs Site URL and allowlisted `/auth/callback` for OAuth and `/au
 - Chat uses only a selected ready PDF. `useChatSession` owns streaming, clear/stop, export and cancellation. Switching PDFs clears messages; navigation between workspace pages preserves them.
 - ReactMarkdown/GFM renders assistant output. Source IDs become buttons only when present in the response. The citation panel fetches original text and opens a short-lived PDF URL at the cited page.
 - The workspace is light independently of the public landing/auth pages' theme. Sidebar collapses below 1024px, source panel below 1280px; Base UI dialogs provide focus management.
-- `src/lib/middleware.ts` protects both workspace routes using verified Auth and refreshed cookies. `src/lib/` has explicit exceptions to the root Python `lib/` ignore rule.
+- `src/lib/supabase/` contains browser/server clients, public configuration and session middleware. `src/lib/` has explicit exceptions to the root Python `lib/` ignore rule.
+- `src/lib/api.ts` owns HTTP transport; `src/lib/sse.ts` validates and decodes the chat event contract, including required citation IDs and explicit completion.
+- `ChatWindow` and `UploadZone` receive sessions from the workspace provider. Their hooks own requests and cancellation; components only render the shared state and dispatch user actions.
 
 ## Verification
 

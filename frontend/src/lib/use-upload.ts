@@ -4,8 +4,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { uploadPDF } from "@/lib/api";
 import type { LibraryDocument } from "@/types";
 
-export function useUpload({ accessToken, mock, onUploadComplete, enabled = true }: {
-  accessToken?: string | null; mock?: boolean; onUploadComplete?: (result: LibraryDocument) => void; enabled?: boolean;
+export function useUpload({ accessToken, mock, onUploadComplete }: {
+  accessToken?: string | null; mock?: boolean; onUploadComplete?: (result: LibraryDocument) => void;
 }) {
   const [status, setStatus] = useState<"idle" | "uploading" | "success" | "error">("idle");
   const [progress, setProgress] = useState(0);
@@ -13,10 +13,9 @@ export function useUpload({ accessToken, mock, onUploadComplete, enabled = true 
   const [filename, setFilename] = useState("");
   const active = useRef<AbortController | null>(null);
   useEffect(() => {
-    if (!enabled) return;
     setStatus("idle"); setProgress(0); setError(null); setFilename("");
     return () => { active.current?.abort(); active.current = null; };
-  }, [enabled, accessToken]);
+  }, [accessToken]);
   const upload = useCallback(async (file: File) => {
     if (active.current) return;
     if (!file.name.toLowerCase().endsWith(".pdf") || (file.type && file.type !== "application/pdf")) {

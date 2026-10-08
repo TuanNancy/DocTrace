@@ -1,8 +1,8 @@
 /** Single citation source from SSE event "sources" */
 export interface ChatSource {
-  citation_id?: number;
-  chunk_id?: string;
-  doc_id?: string;
+  citation_id: number;
+  chunk_id: string;
+  doc_id: string;
   page: number;
   source: string;
   /** Similarity score; null for document summaries retrieved without vector search. */
