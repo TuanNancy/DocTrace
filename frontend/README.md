@@ -15,11 +15,24 @@ From `frontend/`, run `npm ci`, copy `.env.example` to `.env.local`, then `npm r
 | `NEXT_PUBLIC_SUPABASE_URL` | Supabase project URL |
 | `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY` | Public key; legacy `NEXT_PUBLIC_SUPABASE_ANON_KEY` also works |
 | `NEXT_PUBLIC_SITE_URL` | Frontend origin, e.g. `http://localhost:3000` |
+| `NEXT_PUBLIC_GOOGLE_CLIENT_ID` | Google OAuth **Web application** Client ID; same ID as the Supabase Google provider. Empty disables Google login, leaving email/password available. |
 | `NEXT_PUBLIC_API_URL` | Backend origin, e.g. `http://localhost:8000`, without `/api` |
 
 Public env is embedded at build time; rebuild after changes. S3 and OpenRouter keys belong in backend env. Empty API URL enables explicitly labelled demo upload/chat; authentication still uses Supabase and demo documents disappear on reload.
 
-Supabase Auth needs Site URL and allowlisted `/auth/callback` for OAuth and `/auth/login` for the current email-confirmation flow. Enable Google provider for Google login. Backend CORS must allow the frontend origin.
+Supabase Auth needs Site URL and allowlisted `/auth/login` for the current email-confirmation flow. Backend CORS must allow the frontend origin.
+
+### Google login (Google Identity Services)
+
+`GoogleSignInButton` renders the official Google button through `@react-oauth/google`. Google returns an ID token to the browser callback; `signInWithIdToken` on the shared `@/lib/supabase/client` creates the cookie-based Supabase session, then navigates to `/chat`. The Google SDK loads only on the login page when a Client ID is configured. No automatic One Tap or redirect-based fallback is enabled.
+
+1. **Google Auth Platform → Clients → Web client:** add `https://YOUR-FRONTEND` under **Authorized JavaScript origins** (origin only, no path/trailing slash). For local development add `http://localhost` and `http://localhost:3000`. Register each preview origin separately if testing there.
+2. This popup flow needs **no Vercel redirect URI** in Google Console. Keep `https://YOUR-PROJECT.supabase.co/auth/v1/callback` for legacy Supabase OAuth. The app's existing `/auth/callback` exchanges a Supabase PKCE code; it does not accept Google ID tokens or Google's authorization codes directly.
+3. **Supabase → Authentication → Providers → Google:** enable Google and configure the same Web Client ID. Keep the existing Client Secret there; never put it in frontend env. Keep **Skip nonce checks** off: the button supplies a SHA-256 nonce to Google and the raw nonce to Supabase.
+4. Set `NEXT_PUBLIC_GOOGLE_CLIENT_ID` in `frontend/.env.local` and in Vercel's deployment environment, then restart dev/rebuild and redeploy. The Supabase URL/key remain unchanged.
+5. If the Google app audience is **Testing**, add the accounts you intend to use under **Test users**. Test a real Google login on the deployed origin, reload `/chat`, visit `/documents`, then sign out. Google's displayed app/domain depends on its Branding and popup/FedCM UI; automated tests do not establish the exact text Google will display.
+
+The login route sets `Cross-Origin-Opener-Policy: same-origin-allow-popups` for Google's popup. Missing Client ID, SDK load errors, and token exchange errors are shown inline; email login remains available. If Google reports an origin error, check the exact scheme/host/port. An audience mismatch from Supabase usually means the Web Client IDs differ. Changes in Google Console may take time to propagate.
 
 ## Workspace
 
@@ -48,4 +61,4 @@ Focused unit test: `npm test -- tests/ChatWindow.test.tsx`.
 
 Playwright owns `localhost:4310` (Next) and `127.0.0.1:4311` (Auth/API fixtures); keep them free. Tests cover desktop/mobile library lifecycle, retry/filtering, streaming/stop, citation navigation, transient chat and logout. Screenshots go to ignored `test-results/`.
 
-Build requires public Supabase settings; CI uses placeholders. Browser and unit tests do not call real Supabase, Milvus or OpenRouter. Verify live OAuth/RAG separately when deploying.
+Build requires public Supabase settings; CI uses placeholders. Browser tests intercept the Google SDK and use local Auth/API fixtures, including ID-token exchange, nonce matching and session-cookie persistence across reloads. Focused Google checks: `npm test -- tests/GoogleSignInButton.test.tsx` and `npm run test:e2e -- tests/e2e/google-auth.spec.ts`. Tests do not call real Google, Supabase, Milvus or OpenRouter. Verify live OAuth/RAG separately when deploying.

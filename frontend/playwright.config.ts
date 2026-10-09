@@ -27,6 +27,7 @@ export default defineConfig({
         NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY: "sb_publishable_e2e_placeholder",
         NEXT_PUBLIC_SUPABASE_ANON_KEY: "",
         NEXT_PUBLIC_SITE_URL: "http://localhost:4310",
+        NEXT_PUBLIC_GOOGLE_CLIENT_ID: "e2e-placeholder.apps.googleusercontent.com",
         NEXT_PUBLIC_API_URL: "http://127.0.0.1:4311",
       },
     },

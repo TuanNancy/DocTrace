@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./fixtures";
 
 test("landing demo can pause, replay, switch questions and reveal sources without API calls", async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 1000 });
