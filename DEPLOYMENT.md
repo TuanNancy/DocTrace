@@ -93,12 +93,15 @@ Import repository vào Vercel, chọn framework Next.js và **Root Directory `fr
 NEXT_PUBLIC_SUPABASE_URL=https://YOUR-PROJECT.supabase.co
 NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY=YOUR-PUBLISHABLE-KEY
 NEXT_PUBLIC_SITE_URL=https://YOUR-FRONTEND
+NEXT_PUBLIC_GOOGLE_CLIENT_ID=YOUR-WEB-CLIENT-ID.apps.googleusercontent.com
 NEXT_PUBLIC_API_URL=https://api.YOUR-DOMAIN
 ```
 
 API URL là origin, không thêm `/api`; để trống sẽ bật demo upload/chat. Browser gọi trực tiếp HTTPS API trên VPS, gồm upload và SSE. Không đưa S3 credentials, Zilliz token hoặc OpenRouter key vào biến frontend.
 
-Trong Supabase Auth, đặt Site URL bằng origin frontend, allowlist `https://YOUR-FRONTEND/auth/callback` cho OAuth và `https://YOUR-FRONTEND/auth/login` cho email confirmation. Nếu dùng Google login, bật Google provider. CORS backend phải chứa cùng origin. Nếu dùng Vercel Preview, cấu hình origin/redirect riêng cho URL preview cần thử.
+Trong Supabase Auth, đặt Site URL bằng origin frontend và allowlist `https://YOUR-FRONTEND/auth/login` cho email confirmation. Google login dùng Google Identity Services: thêm origin frontend vào **Google Auth Platform → Clients → Authorized JavaScript origins**, bật Google provider trong Supabase với cùng Web Client ID. Giữ Client Secret ở Supabase; giữ **Skip nonce checks** tắt. Đặt `NEXT_PUBLIC_GOOGLE_CLIENT_ID` trên Vercel rồi rebuild/redeploy; bỏ trống thì chỉ có đăng nhập email.
+
+Popup trả ID token trực tiếp cho frontend, không dùng Vercel redirect URI trong Google Console. Giữ callback `https://YOUR-PROJECT.supabase.co/auth/v1/callback` nếu còn cần OAuth cũ; allowlist `/auth/callback` trong Supabase cho luồng cũ đó. Route `/auth/callback` không nhận Google ID token trực tiếp. Nếu Audience của Google ở Testing, thêm tài khoản vào Test users. Xem [frontend/README.md](frontend/README.md#google-login-google-identity-services) để cấu hình local và kiểm tra đăng nhập thật. CORS backend phải chứa origin frontend; Vercel Preview cần đăng ký riêng origin Google và URL email redirect tương ứng.
 
 Sau khi API đã có HTTPS, deploy/redeploy frontend; thay `NEXT_PUBLIC_*` cần rebuild trên Vercel. Kiểm tra thực tế theo luồng: đăng nhập → upload PDF → chờ ready → chat/citation → mở PDF → xóa tài liệu.
 

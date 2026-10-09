@@ -3,12 +3,11 @@
 import Link from "next/link";
 import Image from "next/image";
 import logo from "@/assets/baymax.png";
-import { useMemo, useState } from "react";
 import { useFormState } from "react-dom";
 import { loginAction, type AuthActionState } from "@/app/auth/actions";
 import { AuthSubmitButton } from "@/components/auth/AuthSubmitButton";
 import { BrandMark } from "@/components/BrandMark";
-import { createClient } from "@/lib/supabase/client";
+import { GoogleSignInButton } from "@/components/auth/GoogleSignInButton";
 
 const INITIAL_AUTH_ACTION_STATE: AuthActionState = {
   status: "idle",
@@ -16,32 +15,10 @@ const INITIAL_AUTH_ACTION_STATE: AuthActionState = {
 };
 
 export function LoginForms() {
-  const supabase = useMemo(() => createClient(), []);
-  const [oauthLoading, setOauthLoading] = useState(false);
-  const [oauthError, setOauthError] = useState<string | null>(null);
   const [loginState, loginFormAction] = useFormState(
     loginAction,
     INITIAL_AUTH_ACTION_STATE
   );
-
-  const handleGoogleSignIn = async () => {
-    setOauthLoading(true);
-    setOauthError(null);
-
-    const redirectTo = `${window.location.origin}/auth/callback?next=/chat`;
-    const { error } = await supabase.auth.signInWithOAuth({
-      provider: "google",
-      options: {
-        redirectTo,
-        queryParams: { prompt: "select_account" },
-      },
-    });
-
-    if (error) {
-      setOauthError(error.message);
-      setOauthLoading(false);
-    }
-  };
 
   return (
     <main className="mx-auto flex min-h-screen w-full max-w-5xl items-center bg-[#f7f7f4] px-4 dark:bg-slate-900">
@@ -80,26 +57,19 @@ export function LoginForms() {
           </form>
 
           <div className="my-4 text-center text-sm text-slate-500 dark:text-slate-400">
-            Or continue with
+            Hoặc tiếp tục với
           </div>
-          <button
-            type="button"
-            onClick={handleGoogleSignIn}
-            disabled={oauthLoading}
-            className="w-full rounded-lg border border-slate-300 bg-white px-4 py-2 font-medium text-slate-700 hover:bg-slate-100 disabled:opacity-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700"
-          >
-            {oauthLoading ? "Redirecting to Google..." : "Continue with Google"}
-          </button>
+          <GoogleSignInButton />
 
-          {(oauthError || loginState.message) && (
+          {loginState.message && (
             <p
               className={`mt-3 text-sm ${
-                (oauthError || loginState.status === "error")
+                loginState.status === "error"
                   ? "text-red-600 dark:text-red-400"
                   : "text-emerald-700 dark:text-emerald-400"
               }`}
             >
-              {oauthError || loginState.message}
+              {loginState.message}
             </p>
           )}
 

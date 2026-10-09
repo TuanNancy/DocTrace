@@ -1,6 +1,6 @@
 // Loopback-only Auth/API fixture. Never used by application code or production.
 import { createServer } from "node:http";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 const user = {
   id: "11111111-1111-4111-8111-111111111111",
@@ -73,7 +73,13 @@ createServer(async (request, response) => {
   const body = Buffer.concat(parts).toString();
   if (url.pathname === "/auth/v1/token") {
     const credentials = JSON.parse(body);
-    if (credentials.email !== user.email || credentials.password !== "fixture-password") {
+    const google = url.searchParams.get("grant_type") === "id_token";
+    const valid = google
+      ? credentials.provider === "google" && typeof credentials.nonce === "string"
+        && /^[a-f0-9]{64}$/.test(credentials.nonce)
+        && credentials.id_token === `fixture-google:${createHash("sha256").update(credentials.nonce).digest("hex")}`
+      : credentials.email === user.email && credentials.password === "fixture-password";
+    if (!valid) {
       return json(response, 400, { error: "invalid_grant", error_description: "Invalid login credentials" });
     }
     return json(response, 200, {
