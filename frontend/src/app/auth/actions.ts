@@ -2,7 +2,7 @@
 
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
-import { createClient } from "@/lib/supabase/server";
+import { createClient, createSignupClient } from "@/lib/supabase/server";
 
 export type AuthActionState = {
   status: "idle" | "success" | "error";
@@ -79,7 +79,7 @@ export async function signupAction(
     return { status: "error", message: "Mật khẩu tối thiểu 6 ký tự." };
   }
 
-  const supabase = await createClient();
+  const { client: supabase, commitCookies } = await createSignupClient();
   const emailRedirectTo = await resolveRedirectUrl("/auth/login");
   const { error } = await supabase.auth.signUp({
     email,
@@ -96,9 +96,9 @@ export async function signupAction(
 
   // Keep signup flow deterministic: always continue from login screen.
   await supabase.auth.signOut();
+  commitCookies();
 
-  return {
-    status: "success",
-    message: "Đăng ký thành công. Đang chuyển sang trang đăng nhập...",
-  };
+  // Cookie mutations can remount the form. Navigate with the action response
+  // instead of relying on a client effect and a short-lived success message.
+  redirect("/auth/login?registered=1");
 }

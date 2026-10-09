@@ -1,10 +1,12 @@
-# Baymax frontend
+# DocTrace frontend
 
 Next.js 14 App Router, React 18, Tailwind, ReactMarkdown/GFM. The authenticated workspace uses a light glass design with responsive navigation and source drawers.
 
 Inter is the shared font across all pages, headings, branding and Markdown. It is loaded with Latin/Vietnamese support through `next/font` and connected to Tailwind's `font-sans` via `--font-sans`.
 
-The logo lives in `src/assets/baymax.png` and is bundled through `next/image`; frontend builds are self-contained.
+`BrandMark` pairs a purple document-search icon with the DocTrace wordmark. Login and signup share `AuthShell`, `AuthField` and `Auth.module.css`: light neutral/purple styling, Vietnamese labels, password visibility controls and password-manager autocomplete.
+
+Signup stages Supabase cookie writes until success so failed submissions retain their fields and inline error. Successful signup signs out and redirects from the server to `/auth/login?registered=1`, which shows a persistent confirmation notice.
 
 ## Setup
 

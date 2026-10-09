@@ -51,7 +51,7 @@ export function ChatWindow({ docId, mock = false, session: chat, onSelectSource 
         <div className="mb-6 flex h-16 w-16 items-center justify-center rounded-[22px] border border-white bg-gradient-to-br from-blue-50 to-white text-blue-500 shadow-[0_8px_30px_-10px_#93baff]"><Sparkles size={28} strokeWidth={1.4} /></div>
         <span className="mb-3 text-[10px] font-semibold uppercase tracking-[0.23em] text-blue-500">Một câu hỏi, nhiều khám phá</span>
         <h2 className="font-sans text-[27px] font-semibold leading-tight tracking-tight sm:text-[32px]">Bạn muốn tìm hiểu điều gì?</h2>
-        <p className="mt-4 max-w-sm text-sm leading-6 text-slate-500">{hasDoc ? "Cùng tìm những ý chính, làm rõ thông tin và khám phá tài liệu — luôn có nguồn để đối chiếu." : "Tải lên một tệp PDF và đặt câu hỏi. Baymax sẽ giúp bạn tìm câu trả lời kèm trích dẫn nguồn."}</p>
+        <p className="mt-4 max-w-sm text-sm leading-6 text-slate-500">{hasDoc ? "Cùng tìm những ý chính, làm rõ thông tin và khám phá tài liệu — luôn có nguồn để đối chiếu." : "Tải lên một tệp PDF và đặt câu hỏi. DocTrace sẽ giúp bạn tìm câu trả lời kèm trích dẫn nguồn."}</p>
         {!hasDoc && <Link href="/documents" className="secondary-button mt-5 text-xs"><FileText size={15} /> Chọn tài liệu từ thư viện</Link>}
         <div className="mt-7 flex flex-wrap justify-center gap-2">
           {["Tóm tắt tài liệu", "Các điểm quan trọng là gì?", "Liệt kê các mốc thời gian"].map((question) =>
@@ -61,7 +61,7 @@ export function ChatWindow({ docId, mock = false, session: chat, onSelectSource 
         {chat.messages.map((message) => <li key={message.id} className={message.role === "user" ? "flex justify-end" : ""}>
           {message.role === "user" ? <div className="max-w-[88%] whitespace-pre-wrap break-words rounded-[20px] rounded-br-md border border-blue-100/70 bg-[#eaf2ff] px-5 py-3 text-sm leading-6 text-slate-700">{message.content}</div>
             : <div className="min-w-0">
-              <div className="mb-3 flex items-center gap-2 text-xs font-semibold text-slate-700"><span className="flex h-6 w-6 items-center justify-center rounded-lg bg-blue-500 text-white"><Sparkles size={13} /></span>Baymax
+              <div className="mb-3 flex items-center gap-2 text-xs font-semibold text-slate-700"><span className="flex h-6 w-6 items-center justify-center rounded-lg bg-blue-500 text-white"><Sparkles size={13} /></span>DocTrace
                 {message.isStreaming && <span className="ml-1 text-[10px] font-normal text-blue-500">Đang đọc tài liệu…</span>}</div>
               {message.content ? <MessageMarkdown content={message.content} sources={message.sources} onSelectSource={onSelectSource} />
                 : message.isStreaming ? <div className="flex gap-1 py-2" aria-label="Đang tạo câu trả lời">{[0, 1, 2].map((dot) => <span key={dot} className="h-1.5 w-1.5 animate-pulse rounded-full bg-blue-300" style={{ animationDelay: `${dot * 150}ms` }} />)}</div> : null}

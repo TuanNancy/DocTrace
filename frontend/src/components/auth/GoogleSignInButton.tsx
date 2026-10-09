@@ -80,7 +80,7 @@ function GoogleSignIn({ scriptFailed }: { scriptFailed: boolean }) {
   return (
     <div aria-busy={submitting}>
       {submitting ? (
-        <p role="status" className="py-2 text-center text-sm text-slate-600 dark:text-slate-300">Đang đăng nhập…</p>
+        <p role="status" className="py-2 text-center text-sm text-slate-600">Đang đăng nhập…</p>
       ) : nonce && scriptLoadedSuccessfully ? (
         <GoogleLogin
           key={nonce.hashed}
@@ -93,7 +93,7 @@ function GoogleSignIn({ scriptFailed }: { scriptFailed: boolean }) {
           onSuccess={signIn}
           onError={() => retry("Google chưa hoàn tất đăng nhập. Vui lòng thử lại.")}
         />
-      ) : !error && <p role="status" className="py-2 text-center text-sm text-slate-600 dark:text-slate-300">Đang tải đăng nhập Google…</p>}
+      ) : !error && <p role="status" className="py-2 text-center text-sm text-slate-600">Đang tải đăng nhập Google…</p>}
       {error && <p role="alert" className="mt-3 text-center text-sm text-red-600">{error}</p>}
     </div>
   );
@@ -104,7 +104,7 @@ export function GoogleSignInButton() {
   const [scriptFailed, setScriptFailed] = useState(false);
 
   if (!clientId) {
-    return <p role="status" className="text-center text-sm text-slate-600 dark:text-slate-300">Đăng nhập Google chưa được cấu hình. Bạn có thể đăng nhập bằng email.</p>;
+    return <p role="status" className="text-center text-sm text-slate-600">Đăng nhập Google chưa được cấu hình. Bạn có thể đăng nhập bằng email.</p>;
   }
 
   return (

@@ -6,8 +6,8 @@ import { cn } from "@/lib/utils";
 const inter = Inter({ subsets: ["latin", "vietnamese"], variable: "--font-sans" });
 
 export const metadata: Metadata = {
-  title: "Baymax · Hỏi đáp tài liệu",
-  description: "Khám phá tài liệu PDF cùng Baymax — câu trả lời rõ ràng, trích dẫn nguồn có thể kiểm chứng.",
+  title: "DocTrace · Hỏi đáp tài liệu",
+  description: "Khám phá tài liệu PDF cùng DocTrace — câu trả lời rõ ràng, trích dẫn nguồn có thể kiểm chứng.",
 };
 
 export default function RootLayout({

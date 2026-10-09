@@ -1,5 +1,4 @@
-import Image from "next/image";
-import logo from "@/assets/baymax.png";
+import { FileSearch2 } from "lucide-react";
 
 interface BrandMarkProps {
   compact?: boolean;
@@ -10,9 +9,7 @@ export function BrandMark({
   compact = false,
   variant = "default",
 }: BrandMarkProps) {
-  const imageClass = compact
-    ? "h-8 w-8 rounded-md object-contain"
-    : "h-10 w-10 rounded-md object-contain";
+  const iconClass = compact ? "h-8 w-8 rounded-lg" : "h-10 w-10 rounded-xl";
   const textClass =
     variant === "onDark"
       ? compact
@@ -24,8 +21,10 @@ export function BrandMark({
 
   return (
     <div className="flex items-center gap-2">
-      <Image src={logo} alt="Baymax logo" width={compact ? 32 : 40} height={compact ? 32 : 40} className={imageClass} />
-      <span className={textClass}>Baymax</span>
+      <div className={`flex shrink-0 items-center justify-center bg-[#7546d9] text-white ${iconClass}`}>
+        <FileSearch2 size={compact ? 19 : 23} strokeWidth={1.7} aria-hidden="true" />
+      </div>
+      <span className={textClass}>DocTrace</span>
     </div>
   );
 }

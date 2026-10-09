@@ -77,7 +77,7 @@ export function ChatPreview() {
   return (
     <div className={styles.previewFrame} ref={preview}>
       <div className={styles.previewToolbar}>
-        <div className={styles.previewTitle}><span className={styles.windowDots} aria-hidden="true"><i /><i /><i /></span><span>Baymax <span className={styles.toolbarSlash}>/</span> Hỏi đáp tài liệu</span></div>
+        <div className={styles.previewTitle}><span className={styles.windowDots} aria-hidden="true"><i /><i /><i /></span><span>DocTrace <span className={styles.toolbarSlash}>/</span> Hỏi đáp tài liệu</span></div>
         <span className={styles.demoBadge}>Bản minh họa</span>
       </div>
       <div className={styles.previewBody}>
@@ -103,7 +103,7 @@ export function ChatPreview() {
             <div className={styles.assistantMessage}>
               <span className={styles.assistantAvatar}><Sparkles size={17} aria-hidden="true" /></span>
               <div className={styles.assistantContent}>
-                <div className={styles.assistantName}>Baymax <span>Dựa trên tài liệu</span></div>
+                <div className={styles.assistantName}>DocTrace <span>Dựa trên tài liệu</span></div>
                 <div className={styles.answer}>
                   <p aria-hidden="true">{example.answer.slice(0, characters)}{!complete && <span className={styles.typingCursor} data-paused={paused || !inView || !pageVisible} />}</p>
                   <p className="sr-only">{example.answer}</p>
@@ -131,7 +131,7 @@ export function ChatPreview() {
               {EXAMPLES.map((item, index) => <button type="button" key={item.label} aria-pressed={index === exampleIndex} onClick={() => selectExample(index)}><MessageSquareText size={12} aria-hidden="true" />{item.label}</button>)}
             </div>
             <Link href="/chat" className={styles.composerLink}><span>Đặt câu hỏi cho tài liệu của bạn…</span><span className={styles.sendIcon}><ArrowUp size={17} aria-hidden="true" /></span></Link>
-            <p>Baymax có thể mắc lỗi. Hãy đối chiếu với nguồn trích dẫn.</p>
+            <p>DocTrace có thể mắc lỗi. Hãy đối chiếu với nguồn trích dẫn.</p>
           </div>
         </div>
       </div>

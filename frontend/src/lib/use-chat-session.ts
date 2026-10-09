@@ -56,7 +56,7 @@ export function useChatSession({ docId, mock = false, accessToken }: {
       if (mock) {
         const sources: ChatSource[] = [{ citation_id: 1, doc_id: docId ?? "demo", chunk_id: "demo-chunk", page: 1, source: "Tài liệu mẫu.pdf", score: null }];
         update({ sources });
-        const text = "## Câu trả lời minh họa\n\nBaymax giúp bạn **tìm hiểu tài liệu** và kiểm tra nguồn ngay trong cuộc trò chuyện. [1]\n\n- Hỏi về các ý chính\n- Đối chiếu đoạn trích gốc\n\n*Đây là nội dung demo, chưa phân tích PDF của bạn.*";
+        const text = "## Câu trả lời minh họa\n\nDocTrace giúp bạn **tìm hiểu tài liệu** và kiểm tra nguồn ngay trong cuộc trò chuyện. [1]\n\n- Hỏi về các ý chính\n- Đối chiếu đoạn trích gốc\n\n*Đây là nội dung demo, chưa phân tích PDF của bạn.*";
         for (const part of text.match(/.{1,8}|\n/g) ?? []) {
           await new Promise((resolve) => setTimeout(resolve, 25));
           if (controller.signal.aborted) return;
@@ -87,13 +87,13 @@ export function useChatSession({ docId, mock = false, accessToken }: {
   }, [input, docId, mock, accessToken]);
 
   const exportTranscript = useCallback(() => {
-    const text = messages.map((message) => `${message.role === "user" ? "Bạn" : "Baymax"}\n${message.content}\n${
+    const text = messages.map((message) => `${message.role === "user" ? "Bạn" : "DocTrace"}\n${message.content}\n${
       (message.sources ?? []).map((source) => `[${source.citation_id}] ${source.source} — trang ${source.page}`).join("\n")
     }`).join("\n\n");
     const url = URL.createObjectURL(new Blob([text], { type: "text/markdown;charset=utf-8" }));
     const link = document.createElement("a");
     link.href = url;
-    link.download = `baymax-${new Date().toISOString().slice(0, 10)}.md`;
+    link.download = `doctrace-${new Date().toISOString().slice(0, 10)}.md`;
     link.click();
     URL.revokeObjectURL(url);
   }, [messages]);
