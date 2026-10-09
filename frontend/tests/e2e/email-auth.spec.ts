@@ -7,9 +7,12 @@ test("signup redirects with persistent confirmation and allows email login", asy
   await page.getByLabel("Mật khẩu", { exact: true }).fill("fixture-password");
   await page.getByRole("button", { name: "Tạo tài khoản", exact: true }).click();
   await expect(page).toHaveURL(/\/auth\/login\?registered=1$/);
-  await expect(page.getByRole("main").getByRole("status")).toContainText("Tạo tài khoản thành công");
+  // Google SDK loading has its own status; identify the signup notice even
+  // when both live regions are present immediately after navigation.
+  const confirmation = page.getByRole("status").filter({ hasText: "Tạo tài khoản thành công" });
+  await expect(confirmation).toBeVisible();
   await page.reload();
-  await expect(page.getByRole("main").getByRole("status")).toContainText("email xác nhận");
+  await expect(confirmation).toContainText("email xác nhận");
   await page.getByLabel("Địa chỉ email", { exact: true }).fill("student@example.test");
   await page.getByLabel("Mật khẩu", { exact: true }).fill("fixture-password");
   await page.getByRole("button", { name: "Đăng nhập", exact: true }).click();

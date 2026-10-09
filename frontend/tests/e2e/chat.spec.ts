@@ -25,6 +25,9 @@ test("rate-limited uploads, indexing retries and chat show the wait time", async
   });
   await login(page);
   await page.getByRole("navigation", { name: "Điều hướng chính" }).getByRole("link", { name: /Thư viện/ }).click();
+  // Both routes have a "Chọn file" input. Wait for the destination so the
+  // upload cannot start on the outgoing chat page during client navigation.
+  await expect(page).toHaveURL(/\/documents$/);
   const uploadUrl = "http://127.0.0.1:4311/api/upload";
   await page.route(uploadUrl, (route) => route.request().method() === "OPTIONS" ? route.continue() : route.fulfill(deny(12)));
   await page.getByLabel("Chọn file", { exact: true }).setInputFiles(file());
@@ -59,6 +62,7 @@ test("library lifecycle, streaming, citations and transient chat across navigati
   await page.setViewportSize({ width: 1440, height: 960 });
   await login(page);
   await page.getByRole("link", { name: "Thư viện", exact: false }).first().click();
+  await expect(page).toHaveURL(/\/documents$/);
   await page.getByLabel("Chọn file", { exact: true }).setInputFiles(file());
   await expect(page.getByText("Tải lên thành công")).toBeVisible();
   const row = page.getByTestId("document-row").filter({ hasText: "a.pdf" });
@@ -112,6 +116,7 @@ test("failed documents can be filtered, retried and selected", async ({ page }) 
   await page.setViewportSize({ width: 1440, height: 960 });
   await login(page);
   await page.getByRole("navigation", { name: "Điều hướng chính" }).getByRole("link", { name: /Thư viện/ }).click();
+  await expect(page).toHaveURL(/\/documents$/);
   await page.getByLabel("Chọn file", { exact: true }).setInputFiles(file("error.pdf"));
   const row = page.getByTestId("document-row");
   await expect(row.getByText("Lỗi xử lý", { exact: true })).toBeVisible({ timeout: 15000 });
@@ -129,6 +134,7 @@ test("failed documents can be filtered, retried and selected", async ({ page }) 
 test("deletion waits for indexing to finish", async ({ page }) => {
   await login(page);
   await page.getByRole("navigation", { name: "Điều hướng chính" }).getByRole("link", { name: /Thư viện/ }).click();
+  await expect(page).toHaveURL(/\/documents$/);
   await page.getByLabel("Chọn file", { exact: true }).setInputFiles(file("slow.pdf"));
   const row = page.getByTestId("document-row");
   const remove = row.getByRole("button", { name: "Xóa slow.pdf", exact: true });
@@ -143,6 +149,7 @@ test("mobile navigation and citation drawers remain usable without horizontal ov
   await login(page);
   await page.getByRole("button", { name: "Mở điều hướng" }).click();
   await page.getByRole("dialog").getByRole("link", { name: /Thư viện/ }).click();
+  await expect(page).toHaveURL(/\/documents$/);
   await page.getByLabel("Chọn file", { exact: true }).setInputFiles(file("mobile.pdf"));
   const row = page.getByTestId("document-row");
   await expect(row.getByText("Sẵn sàng", { exact: true })).toBeVisible({ timeout: 15000 });

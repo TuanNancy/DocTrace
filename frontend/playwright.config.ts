@@ -5,6 +5,7 @@ export default defineConfig({
   forbidOnly: !!process.env.CI,
   workers: 1,
   timeout: 60000,
+  reporter: process.env.CI ? [["line"], ["github"]] : "list",
   use: {
     baseURL: "http://localhost:4310",
     trace: "retain-on-failure",
@@ -18,9 +19,12 @@ export default defineConfig({
       reuseExistingServer: false,
     },
     {
-      command: "npm run dev -- --hostname 127.0.0.1 --port 4310",
+      // Compile every route before testing: a cold next dev /chat compilation
+      // can exceed the login assertion timeout on CI. Both commands inherit
+      // these fixture values because NEXT_PUBLIC_* is embedded at build time.
+      command: "npm run build && npm run start -- --hostname 127.0.0.1 --port 4310",
       url: "http://localhost:4310",
-      timeout: 120000,
+      timeout: 240000,
       reuseExistingServer: false,
       env: {
         NEXT_PUBLIC_SUPABASE_URL: "http://127.0.0.1:4311",
