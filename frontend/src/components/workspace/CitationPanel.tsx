@@ -17,7 +17,7 @@ export function CitationPanel() {
     if (!source) return;
     if (mock) {
       setExcerpt({ doc_id: source.doc_id, chunk_id: source.chunk_id, source: source.source, page: source.page,
-        text: "Đây là đoạn trích minh họa. Khi kết nối API, Baymax hiển thị nguyên văn đoạn PDF đã được dùng làm nguồn cho câu trả lời." });
+        text: "Đây là đoạn trích minh họa. Khi kết nối API, DocTrace hiển thị nguyên văn đoạn PDF đã được dùng làm nguồn cho câu trả lời." });
       return;
     }
     if (!accessToken) { setError("Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại."); return; }

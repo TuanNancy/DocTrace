@@ -10,7 +10,7 @@ const FEATURES = [
     icon: MessageSquareText,
     number: "01",
     title: "Hỏi tự nhiên. Hiểu rõ hơn.",
-    description: "Đặt câu hỏi bằng tiếng Việt. Baymax tìm các đoạn liên quan trong PDF bạn chọn để tạo câu trả lời.",
+    description: "Đặt câu hỏi bằng tiếng Việt. DocTrace tìm các đoạn liên quan trong PDF bạn chọn để tạo câu trả lời.",
     detail: "Câu trả lời hiện dần theo thời gian thực",
   },
   {
@@ -31,7 +31,7 @@ const FEATURES = [
 
 const STEPS = [
   { icon: Upload, title: "Thêm PDF vào thư viện", description: "Đăng nhập, tải lên PDF có nội dung văn bản và chờ tài liệu chuyển sang Sẵn sàng." },
-  { icon: MessageSquareText, title: "Chọn tài liệu. Đặt câu hỏi.", description: "Hỏi về một chi tiết cụ thể hoặc yêu cầu Baymax tóm tắt tài liệu đang chọn." },
+  { icon: MessageSquareText, title: "Chọn tài liệu. Đặt câu hỏi.", description: "Hỏi về một chi tiết cụ thể hoặc yêu cầu DocTrace tóm tắt tài liệu đang chọn." },
   { icon: BookOpen, title: "Đọc và đối chiếu nguồn", description: "Theo dõi câu trả lời, mở trích dẫn để kiểm chứng, sao chép hoặc xuất cuộc trò chuyện." },
 ];
 
@@ -41,7 +41,7 @@ export default function Home() {
       <a href="#noi-dung" className={styles.skipLink}>Đến nội dung chính</a>
       <header className={styles.header}>
         <div className={`${styles.container} ${styles.headerInner}`}>
-          <Link href="/" aria-label="Baymax — Trang chủ" className={styles.brand}><BrandMark /></Link>
+          <Link href="/" aria-label="DocTrace — Trang chủ" className={styles.brand}><BrandMark /></Link>
           <nav aria-label="Điều hướng trang chủ" className={styles.navigation}>
             <a href="#tinh-nang">Tính năng</a>
             <a href="#cach-hoat-dong">Cách hoạt động</a>
@@ -62,7 +62,7 @@ export default function Home() {
           <h1 id="hero-title">Tài liệu của bạn.<br /><span>Câu trả lời rõ ràng.</span></h1>
           <p className={styles.heroDescription}>
             Biến những trang PDF thành cuộc trò chuyện.<br className={styles.desktopBreak} />
-            Hỏi, tóm tắt và tìm lại nguồn — cùng trợ lý AI Baymax.
+            Hỏi, tóm tắt và tìm lại nguồn — cùng trợ lý AI DocTrace.
           </p>
           <div className={styles.heroActions}>
             <Link href="/chat" className={styles.primaryButton}>Dùng thử ngay <ArrowRight size={17} aria-hidden="true" /></Link>
@@ -128,7 +128,7 @@ export default function Home() {
           <div className={styles.closingCard}>
             <span className={styles.closingIcon}><Sparkles size={25} strokeWidth={1.5} aria-hidden="true" /></span>
             <h2 id="closing-title">Câu hỏi của bạn.<br />Điểm bắt đầu của mọi khám phá.</h2>
-            <p>Thêm PDF đầu tiên và cùng Baymax tìm hiểu điều bạn quan tâm.</p>
+            <p>Thêm PDF đầu tiên và cùng DocTrace tìm hiểu điều bạn quan tâm.</p>
             <Link href="/chat" className={styles.primaryButton}>Dùng thử ngay <ArrowRight size={17} aria-hidden="true" /></Link>
             <span className={styles.closingNote}>Đăng nhập để bắt đầu với tài liệu của bạn.</span>
           </div>

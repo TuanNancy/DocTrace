@@ -4,9 +4,9 @@ import { expect, test } from "./fixtures";
 async function login(page: Page) {
   await page.goto("/documents");
   await expect(page).toHaveURL(/\/auth\/login$/);
-  await page.getByPlaceholder("Email", { exact: true }).fill("student@example.test");
-  await page.getByPlaceholder("Password", { exact: true }).fill("fixture-password");
-  await page.getByRole("button", { name: "Login", exact: true }).click();
+  await page.getByLabel("Địa chỉ email", { exact: true }).fill("student@example.test");
+  await page.getByLabel("Mật khẩu", { exact: true }).fill("fixture-password");
+  await page.getByRole("button", { name: "Đăng nhập", exact: true }).click();
   await expect(page).toHaveURL(/\/chat$/);
 }
 

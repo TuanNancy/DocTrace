@@ -71,6 +71,13 @@ createServer(async (request, response) => {
   const parts = [];
   for await (const part of request) parts.push(part);
   const body = Buffer.concat(parts).toString();
+  if (url.pathname === "/auth/v1/signup") {
+    const credentials = JSON.parse(body);
+    if (credentials.email !== user.email || credentials.password !== "fixture-password" || credentials.data?.full_name !== "Test Student") {
+      return json(response, 400, { code: "validation_failed", message: "Không thể tạo tài khoản với thông tin này." });
+    }
+    return json(response, 200, { user });
+  }
   if (url.pathname === "/auth/v1/token") {
     const credentials = JSON.parse(body);
     const google = url.searchParams.get("grant_type") === "id_token";
