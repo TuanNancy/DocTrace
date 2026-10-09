@@ -2,12 +2,12 @@
 
 ## Commands and verification
 
-- CI uses Python 3.12 / Node 22. Run Python/npm commands in `backend/`/`frontend/`; Docker/deploy commands run at root.
+- CI uses Ubuntu 24.04, Python 3.12 / Node 22; Actions run on Node 24. Run Python/npm commands in `backend/`/`frontend/`; Docker/deploy commands run at root.
 - Backend setup: `python -m pip install -r requirements-dev.txt` includes runtime + tests. API: `uvicorn app.main:app --reload --port 8000`. Linux worker: `python -m app.worker`; on macOS use `docker compose --profile jobs up -d --build worker` for Linux RQ fork behavior.
 - Backend tests: `python -m pytest`; focused: `python -m pytest tests/test_document_repository.py tests/test_worker.py` or `python -m pytest tests/test_chat.py::test_chat_sse_stream`. `tests/conftest.py` seeds isolated config before app import. Repository tests use fakeredis; router tests override Auth, repository and `get_rate_limiter` to avoid developer services.
 - Redis integration: `python scripts/verify_rate_limits.py` checks real Lua/TTL/concurrency; `python scripts/verify_document_queue.py` checks transactions and Linux RQ workers with PDF/AI/S3/Milvus fixtures. Both need running Docker and use disposable Redis. Queue verification builds an image unless given `--api-image doctrace-api:verify`.
 - Frontend: `npm ci`; CI order: `npm run typecheck`, `npm run lint`, `npm test`, `npm run test:e2e`, `npm run build`. Focused: `npm test -- tests/ChatWindow.test.tsx`. Build needs public Supabase settings; `.github/workflows/verify.yml` supplies placeholders.
-- Before E2E: `npx playwright install chromium` (`--with-deps` on Linux CI). Playwright owns ports 4310/4311 for Next + fake Auth/API; screenshots go to ignored `test-results/`. Headless shell downloads PDFs; assert the URL/page fragment rather than Chrome's viewer.
+- Before E2E: `npx playwright install chromium` (`--with-deps` on Linux CI). Playwright builds then starts Next in production mode with fixture env for both steps; keep ports 4310/4311 free for Next + fake Auth/API. E2E replaces `.next`; rebuild with deployment env before normal `npm start`/deployment. Screenshots go to ignored `test-results/`. Headless shell downloads PDFs; assert the URL/page fragment rather than Chrome's viewer.
 - Validate production Compose with fixture env: `BACKEND_ENV_FILE=./deploy/tests/api.env docker compose --env-file .env.production.example -f compose.production.yml config --quiet`.
 - Proxy verification: `docker build -t doctrace-api:verify ./backend`, then `python deploy/tests/verify_nginx.py --api-image doctrace-api:verify`. It uses disposable containers/self-signed TLS. Use the certificate-test Docker command in `.github/workflows/verify.yml`; the production image excludes test dependencies, scripts and fixtures, so deploy tests are mounted.
 
@@ -31,7 +31,7 @@
 - Supabase helpers live in `frontend/src/lib/supabase/`. Browser singleton is SDK-managed; server clients are per request. Middleware verifies `getUser()` for both workspace routes and preserves refreshed cookies on redirects plus `private, no-store` headers.
 - Google login uses GIS `GoogleLogin` → `signInWithIdToken` on that shared SSR browser client; a plain supabase-js client loses middleware-visible cookies. `NEXT_PUBLIC_GOOGLE_CLIENT_ID` must match the Supabase provider; authorize frontend origins in Google. `/auth/callback` handles legacy Supabase PKCE, not Google credentials. GIS receives a hashed nonce, Supabase the raw nonce; Playwright intercepts GIS locally (see `frontend/README.md`).
 - `NEXT_PUBLIC_*` changes require rebuild. API URL is an origin without `/api`; empty enables demo upload/chat while Auth still uses Supabase.
-- Workspace styling stays light independently of the landing-page theme; Inter via `--font-sans` applies throughout.
+- Workspace styling stays light independently of the landing-page theme; Inter via `--font-sans` applies throughout. `@fontsource-variable/inter` bundles font files locally; builds must not fetch Google Fonts.
 - Route moves can leave stale `.next/types`; regenerate ignored Next output rather than changing TypeScript paths. Preserve root `.gitignore` exceptions for `frontend/src/lib/` (Python's `lib/` rule otherwise hides it).
 
 ## Configuration and operations

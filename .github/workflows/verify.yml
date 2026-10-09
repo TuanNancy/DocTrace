@@ -10,14 +10,14 @@ permissions:
 
 jobs:
   backend:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     defaults:
       run:
         working-directory: backend
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           cache: pip
@@ -30,7 +30,7 @@ jobs:
         run: python scripts/verify_document_queue.py
 
   frontend:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     defaults:
       run:
@@ -43,8 +43,8 @@ jobs:
       NEXT_PUBLIC_GOOGLE_CLIENT_ID: ci-placeholder.apps.googleusercontent.com
       NEXT_PUBLIC_API_URL: http://localhost:8000
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
         with:
           node-version: "22"
           cache: npm
@@ -54,9 +54,11 @@ jobs:
       - run: npm run lint
       - run: npm test
       - run: npx playwright install --with-deps chromium
-      - run: npm run test:e2e
-      - run: npm run build
-      - uses: actions/upload-artifact@v4
+      - name: Build and test frontend with local Auth/API fixtures
+        run: npm run test:e2e
+      - name: Verify build with deployment environment
+        run: npm run build
+      - uses: actions/upload-artifact@v6
         if: failure()
         with:
           name: frontend-browser-failures
@@ -64,13 +66,13 @@ jobs:
           retention-days: 7
 
   deployment:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     env:
       BACKEND_ENV_FILE: ./deploy/tests/api.env
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - name: Validate production Compose
@@ -87,14 +89,14 @@ jobs:
   deploy:
     needs: [backend, frontend, deployment]
     if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Includes image build and up to 16m waiting for an active RQ job to finish.
     timeout-minutes: 45
     concurrency:
       group: doctrace-production
       cancel-in-progress: false
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Deploy verified commit over SSH
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}

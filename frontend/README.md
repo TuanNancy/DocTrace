@@ -2,7 +2,7 @@
 
 Next.js 14 App Router, React 18, Tailwind, ReactMarkdown/GFM. The authenticated workspace uses a light glass design with responsive navigation and source drawers.
 
-Inter is the shared font across all pages, headings, branding and Markdown. It is loaded with Latin/Vietnamese support through `next/font` and connected to Tailwind's `font-sans` via `--font-sans`.
+Inter is the shared font across all pages, headings, branding and Markdown. `@fontsource-variable/inter` bundles the font locally (including Latin/Vietnamese glyphs) and connects to Tailwind's `font-sans` via `--font-sans`. Builds and browsers do not need Google Fonts network access.
 
 `BrandMark` pairs a purple document-search icon with the DocTrace wordmark. Login and signup share `AuthShell`, `AuthField` and `Auth.module.css`: light neutral/purple styling, Vietnamese labels, password visibility controls and password-manager autocomplete.
 
@@ -61,6 +61,6 @@ npm run build
 
 Focused unit test: `npm test -- tests/ChatWindow.test.tsx`.
 
-Playwright owns `localhost:4310` (Next) and `127.0.0.1:4311` (Auth/API fixtures); keep them free. Tests cover desktop/mobile library lifecycle, retry/filtering, streaming/stop, citation navigation, transient chat and logout. Screenshots go to ignored `test-results/`.
+Playwright owns `localhost:4310` (Next) and `127.0.0.1:4311` (Auth/API fixtures); keep them free. It runs `next build` followed by `next start`, with fixture env applied to both commands, so tests never wait for on-demand route compilation. This replaces `.next` with a fixture-configured build: run `npm run build` again with deployment env before a regular `npm start` or deployment. CI performs this final build explicitly. Tests cover desktop/mobile library lifecycle, retry/filtering, streaming/stop, citation navigation, transient chat and logout. Screenshots go to ignored `test-results/`; CI also publishes Playwright failure annotations through its GitHub reporter.
 
 Build requires public Supabase settings; CI uses placeholders. Browser tests intercept the Google SDK and use local Auth/API fixtures, including ID-token exchange, nonce matching and session-cookie persistence across reloads. Focused Google checks: `npm test -- tests/GoogleSignInButton.test.tsx` and `npm run test:e2e -- tests/e2e/google-auth.spec.ts`. Tests do not call real Google, Supabase, Milvus or OpenRouter. Verify live OAuth/RAG separately when deploying.

@@ -1,9 +1,6 @@
 import type { Metadata } from "next";
+import "@fontsource-variable/inter";
 import "./globals.css";
-import { Inter } from "next/font/google";
-import { cn } from "@/lib/utils";
-
-const inter = Inter({ subsets: ["latin", "vietnamese"], variable: "--font-sans" });
 
 export const metadata: Metadata = {
   title: "DocTrace · Hỏi đáp tài liệu",
@@ -16,7 +13,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="vi" suppressHydrationWarning className={cn("font-sans", inter.variable)}>
+    <html lang="vi" suppressHydrationWarning className="font-sans">
       <body className="min-h-screen bg-[var(--bg)]">{children}</body>
     </html>
   );
