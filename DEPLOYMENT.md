@@ -184,7 +184,7 @@ sudo journalctl -u doctrace-cert-renew.service
 
 ## 5. Cập nhật và quan sát
 
-Sau lần cấp certificate đầu tiên:
+Sau lần cấp certificate đầu tiên, nếu chưa bật CD:
 
 ```sh
 docker compose --env-file .env.production -f compose.production.yml up -d --build --wait api worker nginx
@@ -200,6 +200,8 @@ docker compose --env-file .env.production -f compose.production.yml up -d --forc
 ```
 
 Certificate renewal chỉ đổi file PEM, nên graceful reload là đủ. Giữ nguyên tên project Compose giữa các lệnh và timer để dùng đúng volumes. `down` giữ named volumes; **`down -v` xóa certificate/account state**. Không dùng bootstrap cho một deployment đã chạy HTTPS.
+
+Khi đã bật CD (mục 8), cập nhật code qua workflow hoặc `deploy/deploy.sh`. Script quản lý checkout detached và tag `API_IMAGE` theo commit; không chạy `git pull` hoặc `up --build` trên tag release đã ghi nhận. Sau khi chỉ sửa `backend/.env`, dùng `up -d --no-build --wait api worker` với cùng production Compose/env để inject lại cấu hình.
 
 `POST /api/upload` trả `202` sau khi giữ PDF và xác nhận Redis đã ghi metadata/enqueue. Redis tắt thì trả `503`. RQ thực thi và retry sau 10/30 giây; tối đa ba lần mỗi job. API đối chiếu metadata với RQ khi đọc thư viện, để lỗi trước task hoặc job bị mất trở thành lỗi có thể thử lại. Job `started` bị bỏ dở phải chờ RQ heartbeat/registry maintenance trước khi retry; restart worker không có nghĩa hoàn tất ngay. Xóa/retry trả `409` khi còn job đang chạy hoặc chờ.
 
@@ -249,4 +251,101 @@ Integration test dùng production Compose/templates với project name ngẫu nh
 
 CI chạy backend tests, deployment checks và frontend typecheck/lint/Vitest/Chromium/build. Frontend checks dùng cấu hình public giả và Auth/API fixtures local; chưa chứng minh dịch vụ cloud thực đã được kết nối đúng.
 
+Kiểm tra script CD trên Linux (Python 3.12, Git, Bash và `flock`; Docker CLI/HTTPS được giả lập):
+
+```sh
+python3 -m unittest discover -s deploy/tests -p test_deploy.py -v
+```
+
+Các test dùng repository Git tạm và kiểm tra đúng SHA, lượt CI đến muộn, khóa deploy, bảo toàn file local, lỗi build/health/worker và rollback về cả phiên bản trước khi có CD. Trên macOS, chạy trong Linux container; test sẽ skip khi thiếu `flock`.
+
 Kiểm tra thư viện/queue độc lập với cloud: từ `backend/`, chạy `python scripts/verify_document_queue.py`. Script build image (hoặc dùng `--api-image`), tạo Redis và hai Linux RQ workers thật; PDF/AI/Storage/Milvus được giả lập. Kiểm tra transaction, owner scope, outage/restart, timeout/retry, kill và xóa. Script đẩy thời điểm maintenance RQ sau khi kill container để rút ngắn thời gian chờ; tự dọn tài nguyên test.
+
+## 8. CI/CD: GitHub Actions → VPS, Vercel Git Integration
+
+`.github/workflows/verify.yml` chạy ba job `backend`, `frontend`, `deployment` cho push/PR. Chỉ push vào `main` (hoặc **Actions → Verify and deploy → Run workflow** chọn `main`) mới chạy job `deploy`, sau khi cả ba job thành công. PR và các nhánh khác chỉ chạy CI.
+
+### Chuẩn bị VPS một lần
+
+CD dùng checkout hiện có tại `/opt/DocTrace`, với HTTPS đã được bootstrap và API/worker đang dùng cùng image. Checkout phải tương ứng phiên bản đang chạy, không có sửa đổi tracked chưa lưu. Trên Ubuntu 24.04, bên cạnh Docker Engine/Compose v2 cần:
+
+```sh
+apt-get update
+apt-get install -y git curl python3 util-linux
+```
+
+User SSH cần quyền ghi repository, đọc `.env.production`/`backend/.env` và chạy Docker. Có thể dùng user `root` đang vận hành VPS. Script dùng tên project Compose được resolve từ cấu hình hiện tại; nếu trước đây dùng `-p`, ghi đúng tên đó vào `COMPOSE_PROJECT_NAME` trong `.env.production` để cả CD và timer certificate dùng chung volumes.
+
+Script lấy commit qua `git fetch origin main` trên VPS. Với repository public, origin HTTPS hiện tại dùng được. Nếu repository private, thêm **read-only GitHub deploy key** riêng trên VPS, đăng ký public key ở Repository → Settings → Deploy keys rồi đổi origin sang `git@github.com:OWNER/REPO.git`. Kiểm tra `GIT_TERMINAL_PROMPT=0 git ls-remote origin refs/heads/main` chạy được bằng user deploy mà không hỏi mật khẩu. Key VPS → GitHub này khác key Actions → VPS bên dưới.
+
+### Tạo SSH key cho GitHub Actions
+
+Trên Mac, tạo key riêng, không có passphrase để runner dùng không tương tác:
+
+```sh
+ssh-keygen -t ed25519 -C doctrace-github-actions -f ~/.ssh/doctrace_actions -N ''
+```
+
+Thêm public key vào VPS (thay `VPS_IP` bằng IP thật; lệnh có thể hỏi mật khẩu SSH):
+
+```sh
+cat ~/.ssh/doctrace_actions.pub | ssh root@VPS_IP 'umask 077; mkdir -p ~/.ssh; cat >> ~/.ssh/authorized_keys'
+```
+
+Lấy host key đã xác nhận của VPS qua phiên SSH đang tin cậy:
+
+```sh
+ssh root@VPS_IP 'cat /etc/ssh/ssh_host_ed25519_key.pub'
+```
+
+Kết quả là `ssh-ed25519 AAAA... comment`. Giá trị `VPS_KNOWN_HOSTS` cần một dòng dạng **`VPS_IP ssh-ed25519 AAAA...`** (thêm IP ở đầu; comment cuối không bắt buộc). CI bật strict host-key checking, không tự tin cậy key lấy qua `ssh-keyscan` trong mỗi lần deploy.
+
+Nếu VPS không có file Ed25519 nhưng đang dùng host key RSA, lấy `/etc/ssh/ssh_host_rsa_key.pub` thay thế và dùng dòng **`VPS_IP ssh-rsa AAAA...`**. Host key RSA của VPS vẫn dùng được với key đăng nhập Ed25519 của Actions; đây là hai bộ key độc lập.
+
+Trong **GitHub → Repository → Settings → Secrets and variables → Actions → Repository secrets**, thêm:
+
+| Secret | Giá trị |
+|---|---|
+| `VPS_HOST` | IP hoặc hostname VPS, không có `https://`; SSH port 22 |
+| `VPS_USER` | User SSH, ví dụ `root` |
+| `VPS_SSH_KEY` | Toàn bộ nội dung `~/.ssh/doctrace_actions`, gồm BEGIN/END OPENSSH PRIVATE KEY |
+| `VPS_KNOWN_HOSTS` | Dòng host key đã xác nhận theo định dạng trên |
+
+Tạo secrets trước khi push cấu hình CD lên `main`. Nếu thiếu, job deploy báo tên secret cần thêm; các job CI vẫn chạy bình thường. Supabase/S3/OpenRouter/Zilliz credentials tiếp tục nằm ở `backend/.env` trên VPS; không cần đưa chúng vào Actions.
+
+### Mỗi lượt deploy
+
+1. Runner gửi script từ đúng checkout đã kiểm tra qua SSH; VPS fetch và checkout **chính xác `github.sha`**, không tự deploy HEAD mới nhất của `main`.
+2. Build image `doctrace-api:sha-<SHA>` trên VPS. Nếu tag đã tồn tại, dùng lại image đó. Build xong mới đổi `API_IMAGE` trong `.env.production`, để lệnh Compose và certificate timer dùng đúng release.
+3. Cập nhật API/worker với `--no-build --wait`, giữ thời gian dừng worker **16 phút**; recreate Nginx để render lại mounted templates. Đây là cập nhật tại chỗ, có thể có gián đoạn ngắn.
+4. Kiểm tra Nginx config, worker của **chính container hiện tại** đăng ký heartbeat/queue trong Redis, rồi gọi HTTPS `/health` qua domain cấu hình.
+5. Ghi release thành công và release trước vào `.git/doctrace-deploy/`. Image đang chạy trước lần CD đầu được giữ dưới tag `doctrace-api:retained-<image-id>`.
+
+GitHub concurrency và host `flock` ngăn deploy chồng nhau. Một run CI cũ đến sau release mới hơn sẽ được bỏ qua bằng kiểm tra Git ancestry. Job có timeout 45 phút để chừa thời gian build và graceful shutdown. Script không dọn image/volume khi deploy. Theo dõi `docker system df` trên VPS 40 GB; khi dọn image cũ, giữ các tag trong `.git/doctrace-deploy/current` và `previous` để rollback.
+
+### Khi deploy thất bại / rollback
+
+Job in trạng thái và log cuối của containers. Nếu lỗi sau khi bắt đầu thay checkout, file `pending` đánh dấu lượt chưa hoàn tất; lần deploy sau yêu cầu phục hồi trước. Trên VPS:
+
+```sh
+cd /opt/DocTrace
+bash .git/doctrace-deploy/recover.sh rollback
+```
+
+Lệnh này dùng script đã lưu ngoài checkout, nên hoạt động cả khi release cũ chưa có `deploy/deploy.sh`. Nếu đang có `pending`, nó khôi phục release thành công gần nhất; nếu deployment đã hoàn tất, nó quay về release `previous`. Rollback dùng lại image đã giữ, checkout code/Compose/templates tương ứng và chạy lại health checks. Khi còn script trong checkout, `bash deploy/deploy.sh rollback` cũng tương đương.
+
+Sau phục hồi, sửa lỗi rồi push commit mới, hoặc chạy lại workflow nếu chỉ sửa env trên VPS. Nếu cần deploy thủ công một commit đã qua CI:
+
+```sh
+bash .git/doctrace-deploy/recover.sh deploy FULL_40_CHARACTER_COMMIT_SHA
+```
+
+Rollback không đảo dữ liệu Redis, PDF, vector hay nội dung `backend/.env`; giữ thay đổi schema/queue tương thích giữa hai phiên bản. Không xóa `.git/doctrace-deploy/` hoặc prune image đang được release state tham chiếu. Cả health check CD cũng chưa thay thế kiểm tra upload → ready → chat với dịch vụ cloud thật.
+
+### Vercel và quy tắc merge
+
+Vercel project liên kết repository này, Root Directory `frontend`, Production Branch **`main`**. Giữ các biến public trong Vercel Production như mục 2; frontend không cần SSH key hay Vercel token trong GitHub Actions.
+
+Vercel Git Integration bắt đầu deployment khi có push, **không chờ job `deploy` hoặc CI trên push**. Trong GitHub Settings → Rules → Rulesets (hoặc Branch protection), đặt `main` yêu cầu Pull Request và ba status checks `backend`, `frontend`, `deployment` trước merge, cùng nhánh đã cập nhật với `main`. Không chọn job `deploy` làm required check cho PR vì job đó chỉ chạy trên `main`.
+
+Luồng thường ngày: tạo nhánh → push → PR → CI xanh → merge → backend CD và Vercel production deploy. Frontend/backend có thể lên phiên bản mới ở thời điểm khác nhau, nên giữ API tương thích trong khoảng cập nhật.
