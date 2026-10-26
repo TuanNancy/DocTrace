@@ -8,6 +8,8 @@ COPY requirements.txt ./
 RUN python -m pip install -r requirements.txt \
     && useradd --uid 10001 --create-home appuser
 COPY --chown=appuser:appuser app ./app
+COPY --chown=appuser:appuser alembic.ini ./
+COPY --chown=appuser:appuser migrations ./migrations
 USER appuser
 EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \

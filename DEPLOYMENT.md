@@ -16,14 +16,15 @@ FastAPI → Redis (thư viện + queue + quota) → RQ worker → Supabase S3 / 
 
 Bộ deploy chạy API, Redis, worker xử lý PDF và Nginx/Certbot bằng Docker Compose trên VPS Linux. Frontend deploy riêng trên Vercel; Supabase cung cấp Auth và bucket PDF private qua S3; Zilliz Cloud giữ vector/chunk qua `MILVUS_URI`/`MILVUS_TOKEN` (mặc định AUTOINDEX). Cấu hình frontend tham chiếu `frontend/.env.example` và `frontend/README.md`.
 
-Tạo bucket PDF private, cấu hình Supabase Auth cùng S3 keys trong `backend/.env`, rồi chạy Redis và worker. Thư viện không cần SQL migration hay service-role key. Bản PostgreSQL cũ chuyển sang thư viện Redis mới theo quy trình bên dưới và tải lại PDF.
+Tạo bucket PDF private, cấu hình Supabase Auth cùng S3 keys trong `backend/.env`, rồi chạy Redis và worker. Postgres giữ control plane (`doctrace` schema: workspace, membership, plan/quota, transcript, usage); Redis vẫn giữ thư viện/queue và PDF nằm trong Storage. Không dùng service-role key cho database. Bản PostgreSQL cũ chuyển sang thư viện Redis mới theo quy trình bên dưới và tải lại PDF.
 
-`GET /health` là liveness của API process, không kiểm tra worker, Supabase, Milvus hay OpenRouter. Theo dõi log worker và trạng thái tài liệu để kiểm tra xử lý nền.
+`GET /health` là liveness của API process. `GET /ready` kiểm tra Redis và Postgres/schema với timeout ngắn, không gọi worker, Supabase, Milvus hay OpenRouter. Theo dõi log worker và trạng thái tài liệu để kiểm tra xử lý nền.
 
 ## 1. Hiểu các image và service
 
 | Service | Nguồn image | Vai trò |
 |---|---|---|
+| `migrate` | Cùng image API; `alembic upgrade head` | Một lần mỗi deploy: tạo/cập nhật schema `doctrace` trước API/worker |
 | `api` | Build từ `backend/Dockerfile` + context `backend/` | Python, dependency và code FastAPI |
 | `worker` | Cùng image API; `python -m app.worker` | RQ + scheduler: indexing, xóa, timeout/retry |
 | `redis` | `redis:7.4.8-alpine` | Thư viện + queue/RQ; AOF `everysec`, volume `redis_data`, `noeviction` |
@@ -64,12 +65,21 @@ Copy `backend/.env.example` thành `backend/.env`, giữ các giá trị tuning 
 | Nhóm | Biến / giá trị |
 |---|---|
 | Supabase Auth | `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY` từ project |
+| Postgres control plane | `DATABASE_URL` (runtime/pooled) và `DIRECT_DATABASE_URL` (migration/DDL). Có thể bỏ trống `DIRECT_DATABASE_URL` để dùng chung `DATABASE_URL`; cả hai phải là PostgreSQL URL |
 | PDF private | `SUPABASE_S3_ENDPOINT`, `SUPABASE_S3_REGION`, `SUPABASE_S3_ACCESS_KEY_ID`, `SUPABASE_S3_SECRET_ACCESS_KEY`, `SUPABASE_STORAGE_BUCKET` theo S3 settings của cùng project |
 | Zilliz Cloud | `MILVUS_URI` là endpoint HTTPS của cluster; `MILVUS_TOKEN` là credential được cấp quyền truy cập; `MILVUS_COLLECTION=pdf_chunks_owned_v1` |
 | OpenRouter | `OPENROUTER_API_KEY`, `RAG_MODEL`, `EMBEDDING_MODEL` theo model bạn chọn |
 | Queue | `RQ_QUEUE_NAME=documents-v2`; Compose đã override `REDIS_URL` cho API/worker |
 
 S3 access key/secret là credential riêng của Storage, không phải Supabase publishable key. Giữ `MILVUS_INDEX_TYPE` không khai báo để URI mode chọn AUTOINDEX. Dùng collection mới cho bộ embedding mới; không trộn vector từ hai model hoặc recreate collection đang có dữ liệu.
+
+Postgres dùng schema riêng `doctrace`; không expose schema này qua Supabase Data API. Nên tách role migration (DDL) và role runtime (chỉ DML trên `doctrace`). `DIRECT_DATABASE_URL` được Alembic ưu tiên; API/worker dùng `DATABASE_URL`. Migration chạy tự động qua service `migrate` trong `compose.production.yml` và `deploy/deploy.sh`; nếu migration lỗi, API/worker cũ vẫn chạy và deployment dừng trước khi recreate service. Có thể chạy tay:
+
+```sh
+docker compose --env-file .env.production -f compose.production.yml run --rm --no-deps migrate
+```
+
+Schema được tạo/xóa bằng Alembic. Không chạy `down -v` để "làm sạch" database; `down -v` chỉ xóa volume Redis/certificate. Không auto-downgrade khi rollback image: migration dùng expand/contract để image cũ vẫn đọc được schema mới trong thời gian chuyển tiếp.
 
 Đặt đúng origin frontend Vercel (không có path):
 
@@ -190,6 +200,7 @@ sudo journalctl -u doctrace-cert-renew.service
 Sau lần cấp certificate đầu tiên, nếu chưa bật CD:
 
 ```sh
+docker compose --env-file .env.production -f compose.production.yml run --rm --no-deps migrate
 docker compose --env-file .env.production -f compose.production.yml up -d --build --wait api worker nginx
 docker compose --env-file .env.production -f compose.production.yml ps
 docker compose --env-file .env.production -f compose.production.yml logs --tail=100 api worker redis nginx
@@ -214,14 +225,14 @@ Quan sát queue mặc định bằng:
 docker compose --env-file .env.production -f compose.production.yml exec worker rq info --url redis://redis:6379/0
 ```
 
-Theo dõi worker heartbeat, queue `documents-v2`, RAM Redis và trạng thái `error/delete_error`. Log nối được bằng `doc`, `job`, `attempt`. `/health` thành công không chứng minh worker/Redis hoạt động. `down -v` cũng xóa thư viện và queue trong Redis. AOF `everysec` có cửa sổ mất ghi gần nhất khi crash; PDF/vector riêng không tự khôi phục được danh mục nếu mất volume. Sau sự cố Storage/Redis ở thời điểm không xác định, có thể cần dọn PDF/vector không còn trong thư viện bằng tay; không có periodic cleanup service.
+Theo dõi worker heartbeat, queue `documents-v2`, RAM Redis và trạng thái `error/delete_error`. Log nối được bằng `doc`, `job`, `attempt`; mỗi response có `X-Request-ID` và log JSON (khi `LOG_JSON=true`) mang cùng ID. `/health` chỉ là liveness; `/ready` kiểm tra Redis và Postgres/schema. `down -v` xóa thư viện và queue trong Redis. AOF `everysec` có cửa sổ mất ghi gần nhất khi crash; PDF/vector riêng không tự khôi phục được danh mục nếu mất volume. Sau sự cố Storage/Redis ở thời điểm không xác định, có thể cần dọn PDF/vector không còn trong thư viện bằng tay; không có periodic cleanup service.
 
 ### Chuyển từ thư viện PostgreSQL sang Redis
 
 1. Giữ image/cấu hình cũ để có thể quay lại. Trên checkout cũ, dừng API và dispatcher; chờ hoặc dừng worker có kiểm soát. Xác nhận các process cũ đã dừng trước khi đổi code.
 2. Đặt `RQ_QUEUE_NAME=documents-v2` trong `backend/.env` cho API/worker; bỏ biến service-role và dispatch-poll cũ. Namespace metadata mới là `doctrace:library:v2`. Queue mới tránh nhận payload của worker cũ; không dùng lại tên queue `documents` khi cutover.
-3. Deploy API/worker mới bằng lệnh cập nhật ở trên. Gỡ container dispatcher cũ đã dừng bằng `docker compose --env-file .env.production -f compose.production.yml up -d --remove-orphans`; giữ nguyên Compose project và volumes.
-4. Thư viện mới bắt đầu trống. Tải lại PDF cần dùng, xác nhận ready → chat/citation → xóa. Các bảng PostgreSQL, PDF và vector cũ không bị tự động xóa. Không cần chạy migration hoặc import metadata.
+3. Deploy API/worker mới bằng lệnh cập nhật ở trên; service `migrate` tạo schema control plane trước khi API/worker start. Gỡ container dispatcher cũ đã dừng bằng `docker compose --env-file .env.production -f compose.production.yml up -d --remove-orphans`; giữ nguyên Compose project và volumes.
+4. Thư viện Redis mới bắt đầu trống. Tải lại PDF cần dùng, xác nhận ready → chat/citation → xóa. Các bảng PostgreSQL, PDF và vector cũ không bị tự động xóa; không import metadata cũ và không dùng chúng làm control plane.
 
 Rollback: dừng API/worker mới rồi dùng lại checkout/image và cấu hình cũ với database cũ. Tài liệu tải lên thư viện Redis mới không tự xuất hiện trong thư viện cũ. Không chạy hai phiên bản worker trên cùng queue và không dùng `FLUSHDB`/`down -v` để chuyển phiên bản.
 

@@ -1,5 +1,8 @@
 # Only used by verify_nginx.py with a random project name and isolated volumes.
 services:
+  migrate:
+    # Proxy tests replace the one-shot migration with a harmless command.
+    command: ["python", "-c", "pass"]
   api:
     command: ["python", "/checks/upstream.py"]
     environment:

@@ -56,9 +56,17 @@ CI sử dụng Python **3.12** và Node **22**. Docker cần thiết cho Redis, 
    - Toàn bộ các biến `SUPABASE_S3_*` và `SUPABASE_STORAGE_BUCKET`: giữ PDF gốc.
    - `OPENROUTER_API_KEY`, `RAG_MODEL`, `EMBEDDING_MODEL`.
    - Milvus host/port hoặc `MILVUS_URI` + `MILVUS_TOKEN` cho Zilliz.
+   - `DATABASE_URL` (pooled) và `DIRECT_DATABASE_URL` (DDL/migration) cho control plane Postgres.
    - `REDIS_URL=redis://localhost:6379/0`, `RQ_QUEUE_NAME=documents-v2`.
 
-Thư viện dùng Redis, không cần SQL migration hay service-role key. Supabase cung cấp Auth và Storage.
+Thư viện tài liệu vẫn dùng Redis và không cần service-role key. Postgres giữ control plane (workspace, thành viên, plan/quota, transcript, usage); schema nằm trong `doctrace` và không expose qua Supabase Data API. Chạy migration một lần sau khi cấu hình DB:
+
+```sh
+cd backend
+alembic upgrade head
+```
+
+`/ready` kiểm tra Redis và Postgres/schema; `/health` chỉ là liveness của process.
 
 Root `.env` được hỗ trợ; `backend/.env` ghi đè cả root và biến process. `get_config()` cache một lần, nên khởi động lại API/worker sau khi đổi cấu hình.
 
