@@ -82,7 +82,9 @@ docker compose --env-file .env.production -f compose.production.yml run --rm --n
 
 Schema được tạo/xóa bằng Alembic. Không chạy `down -v` để "làm sạch" database; `down -v` chỉ xóa volume Redis/certificate. Không auto-downgrade khi rollback image: migration dùng expand/contract để image cũ vẫn đọc được schema mới trong thời gian chuyển tiếp.
 
-`provider_calls` ghi usage/cost theo từng lượt provider. API và worker phải cùng có `DATABASE_URL` để ghi; nếu thiếu, tính năng chat/indexing vẫn chạy nhưng không lưu cost. Ghi usage là best effort nên lỗi Postgres không làm hỏng request; cost thiếu được lưu `unknown`/`NULL`, không phải `0`. Bảng này không chứa nội dung PDF hay prompt.
+`provider_calls` ghi usage/cost theo từng lượt provider. API và worker phải cùng có `DATABASE_URL` để ghi; nếu thiếu thì không lưu cost (workspace/quota vẫn yêu cầu Postgres). Ghi usage là best effort nên lỗi Postgres không làm hỏng request; cost thiếu được lưu `unknown`/`NULL`, không phải `0`. Bảng này không chứa nội dung PDF hay prompt.
+
+P2b dùng lại `plan_limits`, `usage_counters` và `chat_requests` đã có trong migration `0001`, không cần migration mới. Seed mặc định: free `10` câu hỏi/tháng, `5` tài liệu, `1` workspace; pro `100`, `50`, `10`. Chat reserve quota trong một transaction Postgres nên nhiều API instance/request đồng thời không vượt giới hạn; upload kiểm tra lại số tài liệu trong transaction Redis. Thiếu hoặc lỗi Postgres trả `503 quota_unavailable` trước khi mở SSE/lưu PDF. Hạn mức chat reset theo tháng UTC; `GET /api/usage` trả plan, kỳ hiện tại, `chat`, `documents` và breakdown theo user (member chỉ thấy mình). Muốn đổi giới hạn cho demo, cập nhật `doctrace.plan_limits` bằng migration/DDL có kiểm soát, không sửa trực tiếp Redis.
 
 Đặt đúng origin frontend Vercel (không có path):
 
@@ -120,9 +122,9 @@ Sau khi API đã có HTTPS, deploy/redeploy frontend; thay `NEXT_PUBLIC_*` cần
 
 ### Rate limit theo user
 
-API mặc định giới hạn upload 5/600 giây, chat 10/60 giây và retry indexing 3/600 giây qua Redis dùng chung. `RATE_LIMIT_*` nằm trong `backend/.env`; mọi API instance cần cùng cấu hình. Đổi env phải recreate API để Compose inject lại giá trị (lệnh cập nhật ở mục 5). `RATE_LIMIT_ENABLED=false` tắt quota; không cần xóa Redis.
+API mặc định giới hạn upload 5/600 giây, chat 10/60 giây và retry indexing 3/600 giây qua Redis dùng chung. Đây là burst limit, tách biệt với hạn mức tháng của plan trong Postgres. `RATE_LIMIT_*` nằm trong `backend/.env`; mọi API instance cần cùng cấu hình. Đổi env phải recreate API để Compose inject lại giá trị (lệnh cập nhật ở mục 5). `RATE_LIMIT_ENABLED=false` tắt burst limit; không cần xóa Redis.
 
-Hết quota trả `429` + `Retry-After`; Redis lỗi trả `503`. Key quota tự hết TTL, còn catalog không có TTL. Quota này độc lập với model và không phải giới hạn số lần worker gọi OpenRouter. Chạy `python scripts/verify_rate_limits.py` từ `backend/` để kiểm tra bằng Redis Docker riêng trước deploy.
+Hết burst limit trả `429` (`code: "rate_limited"`) + `Retry-After`; Redis lỗi trả `503`. Hết hạn mức tháng trả `429` (`code: "quota_exceeded"`) kèm `reset_at`. Key burst tự hết TTL, còn catalog không có TTL. Các giới hạn này độc lập với model và không phải giới hạn số lần worker gọi OpenRouter. Chạy `python scripts/verify_rate_limits.py` từ `backend/` để kiểm tra bằng Redis Docker riêng trước deploy.
 
 ## 3. Lần đầu: bootstrap HTTP → cấp certificate → bật HTTPS
 

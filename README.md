@@ -132,7 +132,7 @@ API URL trống bật demo upload/chat; Auth vẫn dùng Supabase. Tài liệu d
 
 ## API chính
 
-Các endpoint `/api/*` đều yêu cầu `Authorization: Bearer <Supabase access token>`. Upload, thư viện, file/chunk và chat còn yêu cầu `X-Workspace-Id: <uuid>`; server kiểm tra membership đang hoạt động, không tin header tự nó. Thiếu header trả `400 workspace_required`; workspace không tồn tại, đã archive hoặc người dùng không còn là thành viên trả `404`. Endpoint quản lý workspace chọn workspace bằng path ID.
+Các endpoint `/api/*` đều yêu cầu `Authorization: Bearer <Supabase access token>`. Upload, thư viện, file/chunk, chat và usage còn yêu cầu `X-Workspace-Id: <uuid>`; server kiểm tra membership đang hoạt động, không tin header tự nó. Thiếu header trả `400 workspace_required`; workspace không tồn tại, đã archive hoặc người dùng không còn là thành viên trả `404`. Endpoint quản lý workspace chọn workspace bằng path ID.
 
 | Method | Endpoint | Kết quả |
 |---|---|---|
@@ -149,7 +149,8 @@ Các endpoint `/api/*` đều yêu cầu `Authorization: Bearer <Supabase access
 | DELETE | `/api/documents/{doc_id}` | `202` và xếp tác vụ xóa; `409` nếu job hiện tại chưa kết thúc |
 | GET | `/api/documents/{doc_id}/file` | URL PDF riêng tư, hiệu lực 300 giây |
 | GET | `/api/documents/{doc_id}/chunks/{chunk_id}` | Đoạn trích gốc, tên PDF, trang |
-| POST | `/api/chat` | `{query, doc_id, language: "vi"}` + workspace header → SSE |
+| POST | `/api/chat` | `{query, doc_id, language: "vi", request_id}` + workspace header → SSE |
+| GET | `/api/usage` | Plan, kỳ tháng hiện tại, lượt chat/tài liệu và cost theo user |
 
 Mỗi user có workspace cá nhân với `id` bằng user id. Tài liệu chỉ thuộc về người tải (`owner_user_id`) và workspace đã chọn; owner workspace hay platform admin không đọc nội dung PDF/transcript, chỉ xem metadata và tổng hợp. Frontend hiện hỗ trợ chọn workspace; tạo/quản lý nhóm dùng API ở trên.
 
@@ -157,13 +158,30 @@ SSE: `sources` chứa `{citation_id, chunk_id, doc_id, page, source, score}`, `t
 
 Sau upload: `queued → processing → ready / error`; xóa: `deleting → deleted / delete_error`. Retry theo lịch vẫn là `queued` (hoặc `deleting`). Lỗi indexing thuộc trạng thái tài liệu, không thuộc request upload đã nhận `202`.
 
-### Giới hạn yêu cầu theo tài khoản
+### Hạn mức theo gói
 
-API dùng Redis sliding window: tối đa **5 upload/600 giây**, **10 chat/60 giây**, **3 retry indexing/600 giây** cho mỗi user, dùng chung giữa các tab và API process. Tóm tắt tính như chat; retry xóa và đọc thư viện không dùng quota này. `UPLOAD_MAX_CONCURRENT` vẫn giới hạn riêng số request upload đang xử lý trong mỗi process.
+Workspace là đơn vị tính hạn mức; giới hạn seed trong bảng `doctrace.plan_limits`:
 
-Chỉnh `RATE_LIMIT_*` trong `backend/.env` theo mẫu `backend/.env.example`, rồi restart API; mọi API instance phải dùng cùng Redis và cấu hình. `RATE_LIMIT_ENABLED=false` tắt kiểm tra quota. Model LLM/embedding không ảnh hưởng cấu hình này. Lượt được cấp phép vẫn tính nếu xử lý tiếp theo thất bại; quota mới sau khi đổi window chỉ phản ánh lịch sử còn lưu, không khôi phục lượt đã hết TTL.
+| Plan | Câu hỏi/tháng | Tài liệu | Workspace |
+|---|---|---|---|
+| Free | 10 | 5 | 1 |
+| Pro | 100 | 50 | 10 |
 
-Hết quota trả `429` + `Retry-After` (giây); frontend hiển thị thời gian chờ. Redis lỗi trả `503` trước Storage/enqueue/provider. Chat kiểm tra trước khi mở SSE. Key `doctrace:ratelimit:v1` có TTL riêng, không thay đổi TTL catalog hoặc RQ. Quota này giới hạn thao tác user, không giới hạn request theo IP hay số lần worker gọi provider.
+- Lượt chat tính theo workspace và kỳ lịch UTC, reset lúc `00:00` ngày 1 tháng sau (`reset_at`). Đây là hạn mức tháng, tách biệt với giới hạn tần suất Redis bên dưới.
+- Frontend sinh `request_id` UUID cho mỗi lần gửi và giữ nguyên khi retry cùng một câu hỏi. Server kiểm tra trùng trước burst limiter, rồi mới reserve quota trong một transaction Postgres (`chat_requests` + `usage_counters`), nên request đồng thời không thể vượt giới hạn.
+- Request trùng không trừ thêm lượt: `409 request_completed`, `409 request_in_progress`, hoặc `409 request_failed` (request đã lỗi/bị hủy; phải gửi `request_id` mới).
+- Hết lượt trả `429` với `code: "quota_exceeded"`, `metric`, `limit`, `used`, `reset_at`, `retry_after` và header `Retry-After`. Burst limit trả `429` với `code: "rate_limited"`; hai lỗi này được frontend hiển thị khác nhau.
+- Lượt đã admit vẫn tính nếu stream lỗi hoặc người dùng dừng giữa chừng. Chat không trừ lượt khi tài liệu chưa ready hoặc không thuộc owner hiện tại.
+- Tài liệu: upload pre-check `ZCARD` trước khi lưu Storage; `create()` kiểm tra lại trong `WATCH/MULTI`. Nếu hai upload tranh slot cuối, upload thua nhận `429 quota_exceeded` và PDF vừa lưu được xóa. Slot chỉ được giải phóng khi tài liệu đạt `deleted`; `error`/`delete_error` vẫn tính.
+- `GET /api/usage` trả `{plan, period_start, reset_at, chat, documents, by_user}`. Owner thấy breakdown của mọi user; member chỉ thấy chính mình. Cost lấy từ `provider_calls`, gồm cả số call có cost `unknown`.
+
+### Giới hạn tần suất (burst)
+
+API dùng Redis sliding window: tối đa **5 upload/600 giây**, **10 chat/60 giây**, **3 retry indexing/600 giây** cho mỗi user, dùng chung giữa các tab và API process. Tóm tắt tính như chat; retry xóa và đọc thư viện không dùng giới hạn này. `UPLOAD_MAX_CONCURRENT` vẫn giới hạn riêng số request upload đang xử lý trong mỗi process.
+
+Chỉnh `RATE_LIMIT_*` trong `backend/.env` theo mẫu `backend/.env.example`, rồi restart API; mọi API instance phải dùng cùng Redis và cấu hình. `RATE_LIMIT_ENABLED=false` tắt kiểm tra burst. Model LLM/embedding không ảnh hưởng cấu hình này. Lượt được cấp phép vẫn tính nếu xử lý tiếp theo thất bại; giới hạn mới sau khi đổi window chỉ phản ánh lịch sử còn lưu, không khôi phục lượt đã hết TTL.
+
+Hết lượt burst trả `429` (`code: "rate_limited"`) + `Retry-After` (giây); frontend hiển thị thời gian chờ. Redis lỗi trả `503` trước Storage/enqueue/provider. Chat kiểm tra trước khi mở SSE. Key `doctrace:ratelimit:v1` có TTL riêng, không thay đổi TTL catalog hoặc RQ. Giới hạn này chỉ chặn thao tác user, không giới hạn request theo IP hay số lần worker gọi provider.
 
 ### Chi phí provider (OpenRouter)
 
