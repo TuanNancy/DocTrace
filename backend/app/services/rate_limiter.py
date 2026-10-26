@@ -10,6 +10,7 @@ from redis.retry import Retry
 from starlette.concurrency import run_in_threadpool
 
 from app.core.config import AppConfig, get_config
+from app.core.errors import api_error
 
 Action = Literal["upload", "chat", "index-retry"]
 PREFIX = "doctrace:ratelimit:v1"
@@ -64,8 +65,11 @@ class RateLimiter:
         except RedisError as exc:
             raise HTTPException(503, "Không thể kiểm tra giới hạn yêu cầu. Vui lòng thử lại sau.") from exc
         if wait:
-            raise HTTPException(429, f"Bạn gửi yêu cầu quá nhanh. Vui lòng thử lại sau {wait} giây.",
-                                headers={"Retry-After": str(wait)})
+            raise api_error(
+                429, "rate_limited",
+                f"Bạn gửi yêu cầu quá nhanh. Vui lòng thử lại sau {wait} giây.",
+                retry_after=wait, headers={"Retry-After": str(wait)},
+            )
 
 
 def get_rate_limiter() -> RateLimiter:
