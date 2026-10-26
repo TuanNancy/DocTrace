@@ -48,10 +48,11 @@ def test_pdf_link_is_short_lived_and_uses_server_owned_key(client, repository, m
     signer.assert_called_once_with(f"{OWNER}/{DOC}/sample.pdf")
 
 
-def test_delete_queues_cleanup_under_verified_owner(client, repository):
+def test_delete_queues_cleanup_under_verified_owner(client, repository, transcripts):
     response = client.delete(f"/api/documents/{DOC}")
     assert response.status_code == 202
     assert response.json()["status"] == "deleting"
+    transcripts.hide_for_document.assert_awaited_once_with(WORKSPACE, OWNER, DOC)
     repository.queue.assert_awaited_once_with(WORKSPACE, OWNER, DOC, "delete")
 
 
