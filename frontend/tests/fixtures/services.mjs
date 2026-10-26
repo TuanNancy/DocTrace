@@ -25,13 +25,44 @@ const teamWorkspace = {
 const workspaces = [personalWorkspace, teamWorkspace];
 let uploads = 0;
 let cancelledStreams = 0;
+let chatQuestions = 0;
 const documents = new Map();
+const conversations = new Map();
 const chunkId = "22222222-2222-4222-8222-222222222222";
 const excerpt = "Baymax giúp bạn tra cứu nội dung tài liệu. Mỗi câu trả lời có trích dẫn để đối chiếu với văn bản gốc.";
 
 function publicDocument(document) {
   const { workspace_id, ...item } = document;
   return item;
+}
+
+function publicConversation(conversation) {
+  return {
+    id: conversation.id, workspace_id: conversation.workspace_id,
+    doc_id: conversation.doc_id, created_at: conversation.created_at,
+    updated_at: conversation.updated_at, messages: conversation.messages,
+  };
+}
+
+function conversationSummary(conversation) {
+  return {
+    id: conversation.id, doc_id: conversation.doc_id,
+    created_at: conversation.created_at, updated_at: conversation.updated_at,
+    message_count: conversation.messages.length,
+  };
+}
+
+function findConversation(workspaceId, docId) {
+  return [...conversations.values()].find((conversation) => conversation.workspace_id === workspaceId
+    && conversation.doc_id === docId && !conversation.hidden_at);
+}
+
+function hideConversations(workspaceId, docId) {
+  for (const conversation of conversations.values()) {
+    if (conversation.workspace_id === workspaceId && conversation.doc_id === docId) {
+      conversation.hidden_at = new Date().toISOString();
+    }
+  }
 }
 
 function workspaceFor(request) {
@@ -80,6 +111,7 @@ createServer(async (request, response) => {
   response.setHeader("Access-Control-Allow-Origin", "http://localhost:4310");
   response.setHeader("Access-Control-Allow-Headers", "authorization, apikey, content-type, x-client-info, x-supabase-api-version, x-workspace-id");
   response.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
+  response.setHeader("Access-Control-Expose-Headers", "Retry-After, X-Conversation-Id");
   if (request.method === "OPTIONS") {
     response.writeHead(204).end();
     return;
@@ -87,7 +119,10 @@ createServer(async (request, response) => {
   const url = new URL(request.url, "http://127.0.0.1:4311");
   if (url.pathname === "/health") return json(response, 200, { status: "ok" });
   if (url.pathname === "/test/status") return json(response, 200, { uploads, cancelledStreams });
-  if (url.pathname === "/test/reset") { documents.clear(); uploads = 0; cancelledStreams = 0; return json(response, 200, {}); }
+  if (url.pathname === "/test/reset") {
+    documents.clear(); conversations.clear(); uploads = 0; cancelledStreams = 0; chatQuestions = 0;
+    return json(response, 200, {});
+  }
   if (url.pathname === "/fixture.pdf" && url.searchParams.get("signature") === "fixture") {
     response.writeHead(200, { "Content-Type": "application/pdf", "Content-Disposition": "inline" });
     return response.end(fixturePDF());
@@ -166,6 +201,7 @@ createServer(async (request, response) => {
         return json(response, 409, { detail: "Chờ xử lý hoàn tất trước khi xóa." });
       }
       document.status = "deleting";
+      hideConversations(scope.workspaceId, document.doc_id);
       setTimeout(() => documents.delete(document.doc_id), 500);
       return json(response, 202, publicDocument(document));
     }
@@ -176,6 +212,66 @@ createServer(async (request, response) => {
     if (action === "/file") return json(response, 200, { url: "http://127.0.0.1:4311/fixture.pdf?signature=fixture", expires_in: 300 });
     if (action === `/chunks/${chunkId}`) return json(response, 200, { doc_id: document.doc_id, chunk_id: chunkId, source: document.name, page: 1, text: excerpt });
     return json(response, 200, publicDocument(document));
+  }
+  if (url.pathname === "/api/conversations") {
+    const scope = workspaceFor(request);
+    if (scope.error) return json(response, ...scope.error);
+    const docId = url.searchParams.get("doc_id");
+    const items = [...conversations.values()]
+      .filter((conversation) => conversation.workspace_id === scope.workspaceId
+        && !conversation.hidden_at && (!docId || conversation.doc_id === docId))
+      .sort((left, right) => right.updated_at.localeCompare(left.updated_at)
+        || right.created_at.localeCompare(left.created_at))
+      .slice(0, 20)
+      .map(conversationSummary);
+    return json(response, 200, { items });
+  }
+  const conversationRoute = url.pathname.match(/^\/api\/conversations\/([^/]+)$/);
+  if (conversationRoute) {
+    const scope = workspaceFor(request);
+    if (scope.error) return json(response, ...scope.error);
+    const conversation = conversations.get(conversationRoute[1]);
+    if (!conversation || conversation.workspace_id !== scope.workspaceId || conversation.hidden_at) {
+      return json(response, 404, { detail: { code: "conversation_not_found", message: "Không tìm thấy hội thoại." } });
+    }
+    if (request.method === "DELETE") {
+      conversations.delete(conversation.id);
+      response.writeHead(204).end();
+      return;
+    }
+    const document = documents.get(conversation.doc_id);
+    const activeIndex = document?.status === "ready" ? document.doc_id : null;
+    return json(response, 200, {
+      ...publicConversation(conversation),
+      messages: conversation.messages.map((message) => {
+        const stale = message.role === "assistant"
+          ? !activeIndex || message.index_id !== activeIndex
+          : undefined;
+        return {
+          ...message,
+          ...(message.role === "assistant" ? { stale } : {}),
+          sources: (message.sources ?? []).map((source) => ({ ...source, stale: !!stale })),
+        };
+      }),
+    });
+  }
+  if (url.pathname === "/api/usage") {
+    const scope = workspaceFor(request);
+    if (scope.error) return json(response, ...scope.error);
+    const now = new Date();
+    const documentCount = [...documents.values()]
+      .filter((document) => document.workspace_id === scope.workspaceId).length;
+    return json(response, 200, {
+      workspace_id: scope.workspaceId, plan: "free",
+      period_start: new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString(),
+      reset_at: new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1)).toISOString(),
+      chat: { used: chatQuestions, limit: 10, remaining: Math.max(0, 10 - chatQuestions), metric: "chat_questions_month" },
+      documents: { used: documentCount, limit: 5, remaining: Math.max(0, 5 - documentCount), metric: "documents" },
+      by_user: chatQuestions ? [{
+        user_id: user.id, chat_questions: chatQuestions,
+        cost_micros: chatQuestions * 250000, cost_unknown_calls: 0,
+      }] : [],
+    });
   }
   if (url.pathname === "/api/chat") {
     const scope = workspaceFor(request);
@@ -190,20 +286,60 @@ createServer(async (request, response) => {
     if (!document || document.workspace_id !== scope.workspaceId || document.status !== "ready") {
       return json(response, 409, { detail: "Tài liệu chưa sẵn sàng." });
     }
-    response.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" });
+
+    const now = new Date().toISOString();
+    let conversation = findConversation(scope.workspaceId, document.doc_id);
+    if (!conversation) {
+      conversation = {
+        id: randomUUID(), workspace_id: scope.workspaceId, doc_id: document.doc_id,
+        created_at: now, updated_at: now, messages: [],
+      };
+      conversations.set(conversation.id, conversation);
+    }
+    const source = {
+      citation_id: 1, doc_id: document.doc_id, chunk_id: chunkId, page: 1,
+      source: document.name, score: 0.95,
+    };
+    const userMessage = {
+      id: randomUUID(), role: "user", content: chat.query, sources: [], index_id: null,
+      status: "complete", created_at: now, updated_at: now,
+    };
+    const assistantMessage = {
+      id: randomUUID(), role: "assistant", content: "", sources: [source],
+      index_id: document.doc_id, status: "streaming", created_at: now, updated_at: now,
+    };
+    conversation.messages.push(userMessage, assistantMessage);
+    conversation.updated_at = now;
+    chatQuestions += 1;
+
+    response.writeHead(200, {
+      "Content-Type": "text/event-stream", "Cache-Control": "no-cache",
+      "X-Conversation-Id": conversation.id,
+    });
     const event = (type, data) => response.write(`event: ${type}\ndata: ${JSON.stringify(data)}\n\n`);
-    event("sources", [{ citation_id: 1, doc_id: document.doc_id, chunk_id: chunkId, page: 1, source: document.name, score: 0.95 }]);
-    event("token", "## Kết quả\n\nĐang đọc tài liệu");
+    const first = "## Kết quả\n\nĐang đọc tài liệu";
+    const second = ": **nội dung kiểm thử**. [1]\n\n| Nội dung | Kết quả |\n|---|---|\n| Kiểm tra | Thành công |\n";
+    event("sources", [source]);
+    event("token", first);
+    assistantMessage.content = first;
     let finished = false;
     const timer = setTimeout(() => {
-      event("token", ": **nội dung kiểm thử**. [1]\n\n| Nội dung | Kết quả |\n|---|---|\n| Kiểm tra | Thành công |\n");
+      event("token", second);
+      assistantMessage.content += second;
+      assistantMessage.status = "complete";
+      assistantMessage.updated_at = new Date().toISOString();
+      conversation.updated_at = assistantMessage.updated_at;
       event("done", "[DONE]");
       finished = true;
       response.end();
     }, 2000);
     response.on("close", () => {
       clearTimeout(timer);
-      if (!finished) cancelledStreams += 1;
+      if (finished) return;
+      cancelledStreams += 1;
+      assistantMessage.status = "interrupted";
+      assistantMessage.updated_at = new Date().toISOString();
+      conversation.updated_at = assistantMessage.updated_at;
     });
     return;
   }

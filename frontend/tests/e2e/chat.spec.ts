@@ -58,7 +58,7 @@ test("rate-limited uploads, indexing retries and chat show the wait time", async
   await expect(page.getByRole("button", { name: "Dừng trả lời" })).not.toBeVisible();
 });
 
-test("library lifecycle, streaming, citations and transient chat across navigation", async ({ page, request }) => {
+test("library lifecycle, streaming, citations and transcript restore across navigation", async ({ page, request }) => {
   await page.setViewportSize({ width: 1440, height: 960 });
   await login(page);
   await page.getByRole("link", { name: "Thư viện", exact: false }).first().click();
@@ -94,11 +94,21 @@ test("library lifecycle, streaming, citations and transient chat across navigati
   await expect(row).toBeVisible();
   await page.getByRole("link", { name: "Hỏi đáp tài liệu", exact: true }).click();
   await expect(page.getByText("Câu hỏi thứ hai", { exact: true })).toBeVisible();
+  // P3 restores the latest saved transcript after a full reload.
   await page.reload();
-  await expect(page.getByText("Câu hỏi thứ hai", { exact: true })).not.toBeVisible();
-  await expect(page.getByRole("button", { name: /a.pdf/ })).toBeVisible();
-  await page.getByRole("button", { name: /a.pdf/ }).click();
+  await expect(page.getByText("Câu hỏi thứ hai", { exact: true })).toBeVisible({ timeout: 15000 });
+  await expect(page.getByText("Câu hỏi đầu tiên", { exact: true })).toBeVisible();
   await expect(input).toBeEnabled();
+  await expect(page.getByRole("button", { name: "a.pdf Sẵn sàng" })).toBeVisible();
+
+  // "Chat mới" deletes the server-side transcript, so a later reload must not
+  // resurrect it.
+  await page.getByRole("button", { name: "Chat mới", exact: true }).click();
+  await expect(page.getByText("Câu hỏi thứ hai", { exact: true })).not.toBeVisible();
+  await page.reload();
+  await expect(page.getByText("Bạn muốn tìm hiểu điều gì?")).toBeVisible();
+  await expect(page.getByText("Câu hỏi thứ hai", { exact: true })).not.toBeVisible();
+
   await page.getByRole("navigation", { name: "Điều hướng chính" }).getByRole("link", { name: /Thư viện/ }).click();
   await row.getByRole("button", { name: "Xóa a.pdf", exact: true }).click();
   await page.getByRole("button", { name: "Xóa tài liệu", exact: true }).click();
@@ -110,6 +120,19 @@ test("library lifecycle, streaming, citations and transient chat across navigati
   await page.screenshot({ path: "test-results/soft-glass-chat-desktop.png", fullPage: true });
   await page.getByRole("button", { name: "Đăng xuất", exact: true }).click();
   await expect(page).toHaveURL(/\/auth\/login$/);
+});
+
+test("usage page shows plan counters and owner-scoped costs", async ({ page }) => {
+  await login(page);
+  await page.getByRole("navigation", { name: "Điều hướng chính" })
+    .getByRole("link", { name: /Mức sử dụng/ }).click();
+  await expect(page).toHaveURL(/\/usage$/);
+  await expect(page.getByText("Gói Free")).toBeVisible();
+  await expect(page.getByRole("progressbar", { name: "Câu hỏi trong tháng" })).toBeVisible();
+  await expect(page.getByRole("progressbar", { name: "Tài liệu trong workspace" })).toBeVisible();
+  await expect(page.getByText("Chưa có dữ liệu sử dụng trong tháng này.")).toBeVisible();
+  await expect(page.getByText(/Chủ workspace chỉ thấy số liệu tổng hợp/)).toBeVisible();
+  await page.screenshot({ path: "test-results/usage-desktop.png", fullPage: true });
 });
 
 test("failed documents can be filtered, retried and selected", async ({ page }) => {
