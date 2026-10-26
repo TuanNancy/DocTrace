@@ -165,6 +165,17 @@ Chỉnh `RATE_LIMIT_*` trong `backend/.env` theo mẫu `backend/.env.example`, r
 
 Hết quota trả `429` + `Retry-After` (giây); frontend hiển thị thời gian chờ. Redis lỗi trả `503` trước Storage/enqueue/provider. Chat kiểm tra trước khi mở SSE. Key `doctrace:ratelimit:v1` có TTL riêng, không thay đổi TTL catalog hoặc RQ. Quota này giới hạn thao tác user, không giới hạn request theo IP hay số lần worker gọi provider.
 
+### Chi phí provider (OpenRouter)
+
+Khi `DATABASE_URL` được cấu hình, API và worker ghi mỗi lượt gọi tính tiền vào `doctrace.provider_calls`: embedding truy vấn, embedding lúc index, từng lượt tóm tắt và câu trả lời. Mỗi dòng lưu workspace/user/document/job/request, model, token (gồm cached/reasoning), latency, `generation_id` và `cost_micros` dạng số nguyên micro-USD.
+
+- Thiếu cost được ghi `cost_status='unknown'`, `cost_micros=NULL`; không bao giờ ghi `0` thay thế.
+- Generation trùng được upsert, không tạo dòng thứ hai. Nếu response thiếu cost, server tra `GET /generation` một lần (best effort) và đánh dấu `reconciled`.
+- Embedding nhiều batch gộp vào một dòng; nếu một batch thiếu cost, tổng được đánh dấu `unknown`. Dimension probe không tính.
+- Không gửi cost qua SSE; dữ liệu để dành cho usage/admin UI.
+- Ghi usage là best effort: lỗi Postgres không làm hỏng chat/indexing. Bỏ `DATABASE_URL` thì tắt ghi usage.
+- `SUMMARY_MAX_CALLS` (mặc định 8) chặn tóm tắt quá lớn trước khi tốn thêm lượt gọi. SDK OpenRouter tắt retry tự động để một lượt logic không tạo request tính tiền ẩn.
+
 ## Kiểm tra
 
 Từ `backend/` (pytest mock dịch vụ ngoài, không cần cloud credentials):

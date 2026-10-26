@@ -69,6 +69,7 @@ Copy `backend/.env.example` thành `backend/.env`, giữ các giá trị tuning 
 | PDF private | `SUPABASE_S3_ENDPOINT`, `SUPABASE_S3_REGION`, `SUPABASE_S3_ACCESS_KEY_ID`, `SUPABASE_S3_SECRET_ACCESS_KEY`, `SUPABASE_STORAGE_BUCKET` theo S3 settings của cùng project |
 | Zilliz Cloud | `MILVUS_URI` là endpoint HTTPS của cluster; `MILVUS_TOKEN` là credential được cấp quyền truy cập; `MILVUS_COLLECTION=pdf_chunks_owned_v1` |
 | OpenRouter | `OPENROUTER_API_KEY`, `RAG_MODEL`, `EMBEDDING_MODEL` theo model bạn chọn |
+| Usage/cost | Giữ `DATABASE_URL` cho cả API và worker để ghi `doctrace.provider_calls`; `SUMMARY_MAX_CALLS=8` giới hạn lượt tóm tắt mỗi request |
 | Queue | `RQ_QUEUE_NAME=documents-v2`; Compose đã override `REDIS_URL` cho API/worker |
 
 S3 access key/secret là credential riêng của Storage, không phải Supabase publishable key. Giữ `MILVUS_INDEX_TYPE` không khai báo để URI mode chọn AUTOINDEX. Dùng collection mới cho bộ embedding mới; không trộn vector từ hai model hoặc recreate collection đang có dữ liệu.
@@ -80,6 +81,8 @@ docker compose --env-file .env.production -f compose.production.yml run --rm --n
 ```
 
 Schema được tạo/xóa bằng Alembic. Không chạy `down -v` để "làm sạch" database; `down -v` chỉ xóa volume Redis/certificate. Không auto-downgrade khi rollback image: migration dùng expand/contract để image cũ vẫn đọc được schema mới trong thời gian chuyển tiếp.
+
+`provider_calls` ghi usage/cost theo từng lượt provider. API và worker phải cùng có `DATABASE_URL` để ghi; nếu thiếu, tính năng chat/indexing vẫn chạy nhưng không lưu cost. Ghi usage là best effort nên lỗi Postgres không làm hỏng request; cost thiếu được lưu `unknown`/`NULL`, không phải `0`. Bảng này không chứa nội dung PDF hay prompt.
 
 Đặt đúng origin frontend Vercel (không có path):
 
