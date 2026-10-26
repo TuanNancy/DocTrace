@@ -236,6 +236,20 @@ Theo dõi worker heartbeat, queue `documents-v2`, RAM Redis và trạng thái `e
 
 Rollback: dừng API/worker mới rồi dùng lại checkout/image và cấu hình cũ với database cũ. Tài liệu tải lên thư viện Redis mới không tự xuất hiện trong thư viện cũ. Không chạy hai phiên bản worker trên cùng queue và không dùng `FLUSHDB`/`down -v` để chuyển phiên bản.
 
+### Backfill workspace P1
+
+P1 đọc được bản ghi cũ thiếu `workspace_id`/`owner_user_id` bằng cách gán về workspace cá nhân của người tải. Backfill chỉ cần khi nâng cấp một thư viện Redis đã có tài liệu; script giữ nguyên `user_id`, ghi metadata chuẩn hóa và dựng lại sorted set workspace/global. Mặc định dry run, chạy lại an toàn, không xóa Redis hay Milvus.
+
+Từ root checkout deploy, chạy dry run trong container API (image production không chứa `scripts/`, nên mount file):
+
+```sh
+docker compose --env-file .env.production -f compose.production.yml run --rm --no-deps \
+  -v "$PWD/backend/scripts/backfill_workspaces.py:/app/backfill_workspaces.py:ro" \
+  api python /app/backfill_workspaces.py
+```
+
+Kiểm tra `scanned`, `hashes_updated`, `personal_workspaces`, `skipped_invalid`; sau đó chạy lại với `--apply`. `.env.production` phải trỏ đúng Redis và `DATABASE_URL`; API/worker có thể tiếp tục chạy vì mọi ghi đều idempotent. Index per-user cũ vẫn được duy trì trong P1 để rollback image.
+
 ## 6. Upload và SSE
 
 Nginx được cấu hình:

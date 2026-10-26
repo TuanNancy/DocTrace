@@ -7,6 +7,7 @@ from fastapi import HTTPException
 
 PDF = b"%PDF-1.4\nfixture"
 OWNER = "00000000-0000-0000-0000-000000000001"
+WORKSPACE = "00000000-0000-0000-0000-0000000000ab"
 
 
 @pytest.fixture(autouse=True)
@@ -48,10 +49,13 @@ def test_upload_returns_accepted_only_after_original_is_retained(client, reposit
     assert body["chunks_count"] == 0
     record = repository.create.call_args.args[0]
     assert record["user_id"] == OWNER
+    assert record["owner_user_id"] == OWNER
+    assert record["workspace_id"] == WORKSPACE
     assert record["size_bytes"] == len(PDF)
     storage.assert_called_once_with(PDF, record["storage_key"])
     repository.check_available.assert_awaited_once()
     assert "storage_key" not in body and "user_id" not in body
+    assert "workspace_id" not in body and "owner_user_id" not in body
 
 
 def test_storage_failure_never_creates_a_job(client, repository, storage):

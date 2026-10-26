@@ -11,6 +11,7 @@ from app.main import app
 from app.services.rate_limiter import RateLimiter, get_rate_limiter
 
 OWNER = "00000000-0000-0000-0000-000000000001"
+WORKSPACE = "00000000-0000-0000-0000-0000000000ab"
 DOC = str(uuid4())
 
 
@@ -53,7 +54,7 @@ def test_denied_chat_is_json_before_sse_and_exposes_retry_header(client, reposit
     assert response.headers["retry-after"] == "12"
     assert "retry-after" in response.headers["access-control-expose-headers"].lower()
     assert response.json() == {"detail": "Try later"}
-    repository.get.assert_awaited_once_with(OWNER, DOC)
+    repository.get.assert_awaited_once_with(WORKSPACE, OWNER, DOC)
     limiter.check.assert_awaited_once_with(OWNER, action="chat")
     create.assert_not_awaited()
 
@@ -89,7 +90,7 @@ def test_allowed_index_retry_checks_verified_user(client, repository, limiter):
     repository.get.return_value = {"status": "error"}
     assert client.post(f"/api/documents/{DOC}/retry").status_code == 202
     limiter.check.assert_awaited_once_with(OWNER, action="index-retry")
-    repository.queue.assert_awaited_once_with(OWNER, DOC, "index")
+    repository.queue.assert_awaited_once_with(WORKSPACE, OWNER, DOC, "index")
 
 
 def test_cleanup_retry_and_reads_are_not_limited(client, repository, limiter):
@@ -103,13 +104,16 @@ def test_cleanup_retry_and_reads_are_not_limited(client, repository, limiter):
 
 def test_no_auth_does_not_consume_quota(client, limiter):
     from app.core.auth import require_supabase_user
-    override = app.dependency_overrides.pop(require_supabase_user)
+    from app.core.workspace import require_workspace
+    user_override = app.dependency_overrides.pop(require_supabase_user)
+    workspace_override = app.dependency_overrides.pop(require_workspace)
     try:
         assert client.post("/api/chat", json={"query": "q", "doc_id": DOC}).status_code == 401
         assert client.post(f"/api/documents/{DOC}/retry").status_code == 401
         assert client.post("/api/upload", files={"file": ("a.pdf", b"%PDF", "application/pdf")}).status_code == 401
     finally:
-        app.dependency_overrides[require_supabase_user] = override
+        app.dependency_overrides[require_supabase_user] = user_override
+        app.dependency_overrides[require_workspace] = workspace_override
     limiter.check.assert_not_awaited()
 
 

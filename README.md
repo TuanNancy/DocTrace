@@ -1,6 +1,6 @@
 # DocTrace · Baymax
 
-Hỏi đáp PDF với nguồn trích dẫn có thể kiểm chứng. Giao diện **Soft glass light** gồm không gian chat và thư viện riêng theo tài khoản.
+Hỏi đáp PDF với nguồn trích dẫn có thể kiểm chứng. Giao diện **Soft glass light** gồm không gian chat và thư viện riêng theo tài khoản, có chuyển đổi giữa các workspace.
 
 ## Tính năng
 
@@ -8,6 +8,8 @@ Hỏi đáp PDF với nguồn trích dẫn có thể kiểm chứng. Giao diện
 - `/chat`: chọn PDF sẵn sàng, trả lời streaming bằng Markdown/GFM, dừng, sao chép và xuất hội thoại.
 - Citation `[1]`, `[2]` mở nguyên văn chunk và PDF ở trang tương ứng, qua URL có thời hạn.
 - Chat giữ trong bộ nhớ của layout dùng chung khi chuyển Chat ↔ Thư viện; reload bắt đầu mới. Backend vẫn trả lời từng câu hỏi độc lập, chưa lưu lịch sử hội thoại.
+- Mỗi tài khoản có workspace cá nhân; sidebar hiển thị và chuyển giữa các workspace đang hoạt động. Đổi workspace xóa ngay thư viện/chat đang chọn và bỏ qua phản hồi cũ.
+- Tài liệu luôn riêng theo người tải. Thành viên cùng workspace không đọc được PDF, đoạn trích hay hội thoại của nhau.
 - Sidebar và panel nguồn chuyển thành drawer trên mobile.
 
 ## Thành phần
@@ -18,6 +20,7 @@ Hỏi đáp PDF với nguồn trích dẫn có thể kiểm chứng. Giao diện
 | API | FastAPI; Supabase Bearer authentication; API thư viện và SSE |
 | Worker | RQ 2.12; `python -m app.worker`, JSON jobs, timeout và retry có scheduler |
 | Queue / thư viện | Redis 7.4: RQ jobs + metadata tài liệu riêng, AOF và volume giữ dữ liệu qua restart |
+| Control plane | PostgreSQL/Supabase schema `doctrace`: workspace, thành viên, plan, quota, transcript, usage |
 | PDF gốc | Bucket Supabase Storage riêng tư, giao thức S3 |
 | Vector/text chunks | Milvus local hoặc Zilliz URI/token |
 | Chat/embedding | OpenRouter, model cấu hình rõ trong env |
@@ -64,6 +67,14 @@ Thư viện tài liệu vẫn dùng Redis và không cần service-role key. Pos
 ```sh
 cd backend
 alembic upgrade head
+```
+
+Nếu thư viện Redis đã có tài liệu từ bản trước P1, chạy backfill để gắn `workspace_id`/`owner_user_id` và dựng lại các sorted set workspace. Mặc định là dry run; script idempotent và giữ index per-user cũ để rollback:
+
+```sh
+cd backend
+python scripts/backfill_workspaces.py
+python scripts/backfill_workspaces.py --apply
 ```
 
 `/ready` kiểm tra Redis và Postgres/schema; `/health` chỉ là liveness của process.
@@ -121,18 +132,26 @@ API URL trống bật demo upload/chat; Auth vẫn dùng Supabase. Tài liệu d
 
 ## API chính
 
-Các endpoint `/api/*` đều yêu cầu `Authorization: Bearer <Supabase access token>`.
+Các endpoint `/api/*` đều yêu cầu `Authorization: Bearer <Supabase access token>`. Upload, thư viện, file/chunk và chat còn yêu cầu `X-Workspace-Id: <uuid>`; server kiểm tra membership đang hoạt động, không tin header tự nó. Thiếu header trả `400 workspace_required`; workspace không tồn tại, đã archive hoặc người dùng không còn là thành viên trả `404`. Endpoint quản lý workspace chọn workspace bằng path ID.
 
 | Method | Endpoint | Kết quả |
 |---|---|---|
+| GET | `/api/workspaces` | Membership của user: `{items: [{id, name, kind, role, plan, status, created_at}]}` |
+| POST | `/api/workspaces` | Tạo workspace nhóm, giới hạn theo plan; owner hiện tại |
+| GET/POST | `/api/workspaces/{id}/members` | Owner xem/thêm thành viên, chỉ metadata |
+| DELETE | `/api/workspaces/{id}/members/{user_id}` | `409 member_has_documents` nếu thành viên còn tài liệu |
+| POST | `/api/workspaces/{id}/archive` | Owner archive workspace |
+| POST | `/api/workspaces/{id}/restore` | Chỉ platform admin restore workspace đã archive |
 | POST | `/api/upload` | Multipart `file` PDF; `202` với bản ghi tài liệu đã xếp hàng |
-| GET | `/api/documents?limit=100&offset=0` | `{items, has_more}`, chỉ tài liệu của người dùng |
+| GET | `/api/documents?limit=100&offset=0` | `{items, has_more}`, chỉ tài liệu của người dùng trong workspace |
 | GET | `/api/documents/{doc_id}` | Metadata và trạng thái |
 | POST | `/api/documents/{doc_id}/retry` | Xếp lại indexing hoặc cleanup bị lỗi |
 | DELETE | `/api/documents/{doc_id}` | `202` và xếp tác vụ xóa; `409` nếu job hiện tại chưa kết thúc |
 | GET | `/api/documents/{doc_id}/file` | URL PDF riêng tư, hiệu lực 300 giây |
 | GET | `/api/documents/{doc_id}/chunks/{chunk_id}` | Đoạn trích gốc, tên PDF, trang |
-| POST | `/api/chat` | `{query, doc_id, language: "vi"}` → SSE |
+| POST | `/api/chat` | `{query, doc_id, language: "vi"}` + workspace header → SSE |
+
+Mỗi user có workspace cá nhân với `id` bằng user id. Tài liệu chỉ thuộc về người tải (`owner_user_id`) và workspace đã chọn; owner workspace hay platform admin không đọc nội dung PDF/transcript, chỉ xem metadata và tổng hợp. Frontend hiện hỗ trợ chọn workspace; tạo/quản lý nhóm dùng API ở trên.
 
 SSE: `sources` chứa `{citation_id, chunk_id, doc_id, page, source, score}`, `token` chứa text delta, `error` chứa `{message}`, `done` chứa chuỗi `"[DONE]"`. `score: null` cho tóm tắt toàn tài liệu.
 

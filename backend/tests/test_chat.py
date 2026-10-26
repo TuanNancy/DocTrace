@@ -134,24 +134,28 @@ def test_chat_cannot_override_owner_in_payload(client):
     assert response.status_code == 422
 
 
-def test_other_users_document_produces_no_context(chat_dependencies, client):
-    from app.core.auth import require_supabase_user
+def test_other_users_document_is_not_found_before_retrieval(chat_dependencies, client, repository):
+    from fastapi import HTTPException
+
+    from app.core.workspace import require_workspace
     from app.main import app
+    from app.services.workspaces import WorkspaceContext
 
     async def second_user():
-        return {"id": "user-b"}
+        return WorkspaceContext(
+            workspace_id="00000000-0000-0000-0000-0000000000cd", user_id="user-b",
+            role="owner", plan="free", kind="personal", name="Khác",
+        )
 
-    app.dependency_overrides[require_supabase_user] = second_user
+    app.dependency_overrides[require_workspace] = second_user
+    repository.get.side_effect = HTTPException(404, "Not found")
     deps = chat_dependencies
-
-    async def owner_scoped_search(**kwargs):
-        assert kwargs["user_id"] == "user-b"
-        # The document belongs to A; the owner-scoped store returns no rows.
-        return []
-
-    deps.vector_store.search_chunks.side_effect = owner_scoped_search
     response = client.post("/api/chat", json={"query": "secret?", "doc_id": "user-a-document"})
-    assert parse_sse_events(response)[0] == ("sources", [])
+    assert response.status_code == 404
+    repository.get.assert_awaited_once_with(
+        "00000000-0000-0000-0000-0000000000cd", "user-b", "user-a-document",
+    )
+    deps.vector_store.search_chunks.assert_not_awaited()
     deps.create_completion.assert_not_awaited()
 
 

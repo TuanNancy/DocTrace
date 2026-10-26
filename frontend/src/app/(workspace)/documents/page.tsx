@@ -65,7 +65,7 @@ export default function DocumentsPage() {
                   {document.status === "ready" && <button className="secondary-button px-2.5 py-2 text-[11px]" onClick={() => { workspace.selectDocument(document); router.push("/chat"); }}><MessageSquare size={13} />Hỏi đáp</button>}
                   {["error", "delete_error"].includes(document.status) && <button className="secondary-button px-2.5 py-2 text-[11px]" disabled={busy} onClick={() => void workspace.operate(document, "retry")}><RefreshCw size={13} />Thử lại</button>}
                   {!workspace.mock && <button className="icon-button" aria-label={`Xem PDF ${document.name}`} title="Xem PDF" disabled={removing || document.status === "delete_error"} onClick={async () => {
-                    try { await openDocumentFile(document.doc_id, workspace.accessToken!); }
+                    try { await openDocumentFile(document.doc_id, workspace.accessToken!, workspace.workspaceId!); }
                     catch (cause) { workspace.setNotice(cause instanceof Error ? cause.message : "Không thể mở PDF."); }
                   }}><ArrowUpRight size={16} /></button>}
                   <button className="icon-button hover:!bg-red-50 hover:!text-red-500" aria-label={`Xóa ${document.name}`} title={processing ? "Chờ xử lý hoàn tất trước khi xóa" : "Xóa tài liệu"} disabled={busy || removing || processing} onClick={() => setDeleting(document)}><Trash2 size={15} /></button>

@@ -32,7 +32,7 @@ it("renders summary sources without inventing a similarity percentage", async ()
     'event: sources\ndata: [{"citation_id":1,"chunk_id":"chunk-a","doc_id":"a","page":1,"source":"a.pdf","score":null}]\n\n'
     + 'event: token\ndata: "Summary A"\n\nevent: done\ndata: "[DONE]"\n\n'
   ));
-  render(<ChatHarness docId="a" mock={false} accessToken="token" />);
+  render(<ChatHarness docId="a" workspaceId="workspace-a" mock={false} accessToken="token" />);
   send("Tóm tắt PDF này");
   await screen.findByText("Summary A");
   expect(screen.getByText(/Nội dung tài liệu/)).toBeInTheDocument();
@@ -41,27 +41,27 @@ it("renders summary sources without inventing a similarity percentage", async ()
 
 it("clears messages and draft when the selected document changes", async () => {
   streamMock.mockResolvedValue(response());
-  const { rerender } = render(<ChatHarness docId="a" mock={false} accessToken="token" />);
+  const { rerender } = render(<ChatHarness docId="a" workspaceId="workspace-a" mock={false} accessToken="token" />);
   send();
   await screen.findByText("Answer A");
   await waitFor(() => expect(input()).toBeEnabled());
   fireEvent.change(input(), { target: { value: "Draft about A" } });
-  rerender(<ChatHarness docId="b" mock={false} accessToken="token" />);
+  rerender(<ChatHarness docId="b" workspaceId="workspace-a" mock={false} accessToken="token" />);
   expect(screen.queryByText("Answer A")).not.toBeInTheDocument();
   expect(screen.queryByText("Question A")).not.toBeInTheDocument();
   expect(input()).toHaveValue("");
   send("Question B");
-  await waitFor(() => expect(streamMock).toHaveBeenLastCalledWith("Question B", "b", "token", expect.any(AbortSignal)));
+  await waitFor(() => expect(streamMock).toHaveBeenLastCalledWith("Question B", "b", "token", "workspace-a", expect.any(AbortSignal)));
 });
 
 it("clearing aborts the pending request and late results cannot unlock a newer request", async () => {
   let resolveOld!: (response: Response) => void;
   streamMock.mockReturnValueOnce(new Promise((r) => { resolveOld = r; }));
   streamMock.mockReturnValueOnce(new Promise(() => {}));
-  render(<ChatHarness docId="a" mock={false} accessToken="token" />);
+  render(<ChatHarness docId="a" workspaceId="workspace-a" mock={false} accessToken="token" />);
   send();
   await waitFor(() => expect(streamMock).toHaveBeenCalledOnce());
-  const signal = streamMock.mock.calls[0][3];
+  const signal = streamMock.mock.calls[0][4];
   fireEvent.click(screen.getByRole("button", { name: "Clear chat" }));
   expect(signal?.aborted).toBe(true);
   expect(input()).toBeEnabled();
@@ -74,24 +74,40 @@ it("clearing aborts the pending request and late results cannot unlock a newer r
 
 it("aborts a pending stream when changing document or unmounting", async () => {
   streamMock.mockReturnValue(new Promise(() => {}));
-  const { rerender, unmount } = render(<ChatHarness docId="a" mock={false} accessToken="token" />);
+  const { rerender, unmount } = render(<ChatHarness docId="a" workspaceId="workspace-a" mock={false} accessToken="token" />);
   send();
   await waitFor(() => expect(streamMock).toHaveBeenCalledOnce());
-  const firstSignal = streamMock.mock.calls[0][3];
-  rerender(<ChatHarness docId="b" mock={false} accessToken="token" />);
+  const firstSignal = streamMock.mock.calls[0][4];
+  rerender(<ChatHarness docId="b" workspaceId="workspace-a" mock={false} accessToken="token" />);
   expect(firstSignal?.aborted).toBe(true);
   expect(input()).toBeEnabled();
   send("Question B");
   await waitFor(() => expect(streamMock).toHaveBeenCalledTimes(2));
-  const secondSignal = streamMock.mock.calls[1][3];
+  const secondSignal = streamMock.mock.calls[1][4];
   unmount();
   expect(secondSignal?.aborted).toBe(true);
+});
+
+it("aborts a pending stream when the workspace changes", async () => {
+  streamMock.mockReturnValue(new Promise(() => {}));
+  const { rerender } = render(<ChatHarness docId="a" workspaceId="workspace-a" mock={false} accessToken="token" />);
+  send();
+  await waitFor(() => expect(streamMock).toHaveBeenCalledOnce());
+  const signal = streamMock.mock.calls[0][4];
+  rerender(<ChatHarness docId="a" workspaceId="workspace-b" mock={false} accessToken="token" />);
+  expect(signal?.aborted).toBe(true);
+  expect(screen.queryByText("Question A")).not.toBeInTheDocument();
+  expect(input()).toHaveValue("");
+  send("Question B");
+  await waitFor(() => expect(streamMock).toHaveBeenLastCalledWith(
+    "Question B", "a", "token", "workspace-b", expect.any(AbortSignal),
+  ));
 });
 
 it("stops demo output when chat is cleared", async () => {
   vi.useFakeTimers();
   try {
-    render(<ChatHarness docId={null} mock />);
+    render(<ChatHarness docId={null} workspaceId="workspace-a" mock />);
     send();
     await act(async () => { await vi.advanceTimersByTimeAsync(100); });
     fireEvent.click(screen.getByRole("button", { name: "Clear chat" }));

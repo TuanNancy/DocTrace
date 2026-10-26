@@ -3,6 +3,7 @@
 The Docker verification script separately checks real Redis and Linux RQ processes.
 """
 import asyncio
+import json
 from uuid import uuid4
 
 import fakeredis
@@ -17,6 +18,10 @@ from app.core.config import AppConfig
 from app.services import document_repository as module
 from app.services.job_queue import DocumentQueue
 
+WORKSPACE = "workspace"
+OTHER_WORKSPACE = "other-workspace"
+OWNER = "owner"
+
 
 @pytest.fixture
 def library(monkeypatch):
@@ -27,9 +32,10 @@ def library(monkeypatch):
     return module.DocumentRepository(config), connection, DocumentQueue(config, connection), server
 
 
-def upload(owner="owner"):
+def upload(owner=OWNER, workspace=WORKSPACE):
     doc_id = str(uuid4())
-    return {"doc_id": doc_id, "user_id": owner, "name": "sample.pdf", "size_bytes": 12,
+    return {"doc_id": doc_id, "user_id": owner, "owner_user_id": owner,
+            "workspace_id": workspace, "name": "sample.pdf", "size_bytes": 12,
             "storage_key": f"{owner}/{doc_id}/sample.pdf"}
 
 
@@ -52,8 +58,15 @@ async def test_create_commits_catalog_and_one_json_job_without_ttl(library):
     assert queued.args == [document["doc_id"]]
     assert queued.retries_left == 2
     assert connection.ttl(module.document_key(document["doc_id"])) == -1
-    assert connection.ttl(module.catalog_key("owner")) == -1
-    listed = await repository.list("owner", 100, 0)
+    for index in (
+        module.workspace_user_key(WORKSPACE, OWNER),
+        module.workspace_key(WORKSPACE),
+        module.global_key(),
+        module.legacy_user_key(OWNER),
+    ):
+        assert connection.ttl(index) == -1
+        assert connection.zscore(index, document["doc_id"]) is not None
+    listed = await repository.list(WORKSPACE, OWNER, 100, 0)
     assert listed["items"][0]["status"] == "queued"
     assert "storage_key" not in listed["items"][0]
     assert "job_id" not in listed["items"][0]
@@ -62,22 +75,90 @@ async def test_create_commits_catalog_and_one_json_job_without_ttl(library):
 async def test_owner_scope_applies_to_reads_listing_and_mutations(library):
     repository, _, _, _ = library
     document = await repository.create(upload())
-    for action in (repository.get("other", document["doc_id"]),
-                   repository.queue("other", document["doc_id"], "delete")):
+    for action in (repository.get(WORKSPACE, "other", document["doc_id"]),
+                   repository.queue(WORKSPACE, "other", document["doc_id"], "delete")):
         with pytest.raises(HTTPException) as error:
             await action
         assert error.value.status_code == 404
-    assert await repository.list("other", 10, 0) == {"items": [], "has_more": False}
+    assert await repository.list(WORKSPACE, "other", 10, 0) == {"items": [], "has_more": False}
     with pytest.raises(HTTPException) as error:
-        await repository.get("owner", "invalid-id")
+        await repository.get(WORKSPACE, OWNER, "invalid-id")
+    assert error.value.status_code == 404
+
+
+async def test_workspace_and_owner_scope_are_both_required(library):
+    repository, _, _, _ = library
+    document = await repository.create(upload())
+    for workspace, owner in ((OTHER_WORKSPACE, OWNER), (WORKSPACE, "other")):
+        with pytest.raises(HTTPException) as error:
+            await repository.get(workspace, owner, document["doc_id"])
+        assert error.value.status_code == 404
+        with pytest.raises(HTTPException) as error:
+            await repository.queue(workspace, owner, document["doc_id"], "delete")
+        assert error.value.status_code == 404
+        assert await repository.list(workspace, owner, 10, 0) == {"items": [], "has_more": False}
+    with pytest.raises(HTTPException) as error:
+        await repository.create({**upload(owner="other", workspace=OTHER_WORKSPACE),
+                                  "doc_id": document["doc_id"]})
+    assert error.value.status_code == 404
+
+
+async def test_workspace_document_counts_are_split_by_user(library):
+    repository, _, _, _ = library
+    await repository.create(upload())
+    await repository.create(upload())
+    await repository.create(upload(owner="other"))
+    await repository.create(upload(workspace=OTHER_WORKSPACE))
+    assert await repository.count_workspace(WORKSPACE) == 3
+    assert await repository.count_workspace(WORKSPACE, OWNER) == 2
+    assert await repository.count_workspace(WORKSPACE, "other") == 1
+    assert await repository.count_workspace(OTHER_WORKSPACE) == 1
+
+
+async def test_delete_removes_every_index_but_keeps_tombstone(library):
+    repository, connection, _, _ = library
+    document = await repository.create(upload())
+    attempt = await repository.begin(document["doc_id"], document["job_id"], 1)
+    await repository.finish(attempt, chunks_count=3)
+    job(connection, document, JobStatus.FINISHED)
+    deleting = await repository.queue(WORKSPACE, OWNER, document["doc_id"], "delete")
+    deletion = await repository.begin(document["doc_id"], deleting["job_id"], 1)
+    assert await repository.finish(deletion) is True
+    for index in (
+        module.workspace_user_key(WORKSPACE, OWNER),
+        module.workspace_key(WORKSPACE),
+        module.global_key(),
+        module.legacy_user_key(OWNER),
+    ):
+        assert connection.zscore(index, document["doc_id"]) is None
+    assert (await repository.internal_document(document["doc_id"]))["status"] == "deleted"
+
+
+async def test_legacy_record_without_workspace_is_owner_personal_workspace(library):
+    repository, connection, _, _ = library
+    doc_id = str(uuid4())
+    timestamp = module.now()
+    connection.hset(module.document_key(doc_id), "data", json.dumps({
+        "doc_id": doc_id, "user_id": "legacy", "name": "old.pdf", "size_bytes": 10,
+        "storage_key": "legacy/old.pdf", "status": "ready", "chunks_count": 1,
+        "warnings": [], "error": None, "created_at": timestamp, "updated_at": timestamp,
+        "active_index_id": "generation", "job_id": "index-old", "job_kind": "index",
+        "attempt_number": 1, "attempt_id": "generation", "generations": ["generation"],
+    }))
+    connection.zadd(module.legacy_user_key("legacy"), {doc_id: 1})
+    document = await repository.get("legacy", "legacy", doc_id)
+    assert document["workspace_id"] == "legacy"
+    assert document["owner_user_id"] == "legacy"
+    with pytest.raises(HTTPException) as error:
+        await repository.get(OTHER_WORKSPACE, "legacy", doc_id)
     assert error.value.status_code == 404
 
 
 async def test_catalog_pagination(library):
     repository, _, _, _ = library
     records = [await repository.create(upload()) for _ in range(3)]
-    first = await repository.list("owner", 2, 0)
-    second = await repository.list("owner", 2, 2)
+    first = await repository.list(WORKSPACE, OWNER, 2, 0)
+    second = await repository.list(WORKSPACE, OWNER, 2, 2)
     assert [item["doc_id"] for item in first["items"]] == [item["doc_id"] for item in reversed(records[1:])]
     assert first["has_more"] is True
     assert second["has_more"] is False
@@ -91,7 +172,7 @@ async def test_active_rq_job_blocks_delete_and_retry(library, state):
     job(connection, document, state)
     for kind in ("index", "delete"):
         with pytest.raises(HTTPException) as error:
-            await repository.queue("owner", document["doc_id"], kind)
+            await repository.queue(WORKSPACE, OWNER, document["doc_id"], kind)
         assert error.value.status_code == 409
 
 
@@ -103,10 +184,10 @@ async def test_pre_task_failure_or_missing_job_becomes_retryable_business_error(
         job(connection, document, state)
     else:
         connection.delete(Job.key_for(document["job_id"]))
-    current = await repository.get("owner", document["doc_id"])
+    current = await repository.get(WORKSPACE, OWNER, document["doc_id"])
     assert current["status"] == "error"
     assert current["error"]
-    retried = await repository.queue("owner", document["doc_id"], "index")
+    retried = await repository.queue(WORKSPACE, OWNER, document["doc_id"], "index")
     assert retried["job_id"] != document["job_id"]
     assert retried["status"] == "queued"
     assert await repository.begin(document["doc_id"], document["job_id"], 1) is None
@@ -116,7 +197,7 @@ async def test_concurrent_retry_enqueues_only_one_replacement(library):
     repository, connection, queue, _ = library
     document = await repository.create(upload())
     job(connection, document, JobStatus.FAILED)
-    results = await asyncio.gather(*[repository.queue("owner", document["doc_id"], "index") for _ in range(2)],
+    results = await asyncio.gather(*[repository.queue(WORKSPACE, OWNER, document["doc_id"], "index") for _ in range(2)],
                                    return_exceptions=True)
     assert sum(isinstance(result, dict) for result in results) == 1
     assert sum(isinstance(result, HTTPException) and result.status_code == 409 for result in results) == 1
@@ -134,7 +215,7 @@ async def test_attempt_fencing_and_business_success_survive_job_expiry(library):
     assert await repository.finish(second, chunks_count=3) is True
     assert await repository.finish(second, error="late failure") is False
     connection.delete(Job.key_for(document["job_id"]))
-    current = await repository.get("owner", document["doc_id"])
+    current = await repository.get(WORKSPACE, OWNER, document["doc_id"])
     assert current["status"] == "ready"
     assert current["active_index_id"] == second["attempt_id"]
     assert current["chunks_count"] == 3
@@ -146,7 +227,7 @@ async def test_invalid_pdf_remains_error_when_rq_reports_finished(library):
     attempt = await repository.begin(document["doc_id"], document["job_id"], 1)
     await repository.finish(attempt, error="Invalid PDF")
     job(connection, document, JobStatus.FINISHED)
-    assert (await repository.get("owner", document["doc_id"]))["status"] == "error"
+    assert (await repository.get(WORKSPACE, OWNER, document["doc_id"]))["status"] == "error"
 
 
 async def test_delete_revokes_index_and_retries_deletion_intent(library):
@@ -155,19 +236,19 @@ async def test_delete_revokes_index_and_retries_deletion_intent(library):
     attempt = await repository.begin(document["doc_id"], document["job_id"], 1)
     await repository.finish(attempt, chunks_count=3)
     job(connection, document, JobStatus.FINISHED)
-    deleting = await repository.queue("owner", document["doc_id"], "delete")
+    deleting = await repository.queue(WORKSPACE, OWNER, document["doc_id"], "delete")
     assert deleting["active_index_id"] is None
     assert deleting["generations"] == [attempt["attempt_id"]]
     deletion = await repository.begin(document["doc_id"], deleting["job_id"], 1)
     await repository.finish(deletion, error="Storage unavailable")
     job(connection, deleting, JobStatus.FAILED)
     with pytest.raises(HTTPException):
-        await repository.queue("owner", document["doc_id"], "index")
-    retried = await repository.queue("owner", document["doc_id"], "delete")
+        await repository.queue(WORKSPACE, OWNER, document["doc_id"], "index")
+    retried = await repository.queue(WORKSPACE, OWNER, document["doc_id"], "delete")
     await repository.finish(await repository.begin(document["doc_id"], retried["job_id"], 1))
-    assert await repository.list("owner", 10, 0) == {"items": [], "has_more": False}
+    assert await repository.list(WORKSPACE, OWNER, 10, 0) == {"items": [], "has_more": False}
     with pytest.raises(HTTPException) as error:
-        await repository.get("owner", document["doc_id"])
+        await repository.get(WORKSPACE, OWNER, document["doc_id"])
     assert error.value.status_code == 404
     assert (await repository.internal_document(document["doc_id"]))["status"] == "deleted"
 
@@ -176,7 +257,7 @@ async def test_redis_outage_never_looks_like_an_empty_library(library):
     repository, _, _, server = library
     server.connected = False
     with pytest.raises(HTTPException) as error:
-        await repository.list("owner", 10, 0)
+        await repository.list(WORKSPACE, OWNER, 10, 0)
     assert error.value.status_code == 503
 
 
@@ -196,7 +277,7 @@ async def test_watch_conflict_cannot_enqueue_outside_the_catalog_transaction(lib
     document = await repository.create(upload())
     assert calls == 2
     assert queue.queue.job_ids == [document["job_id"]]
-    assert (await repository.get("owner", document["doc_id"]))["status"] == "queued"
+    assert (await repository.get(WORKSPACE, OWNER, document["doc_id"]))["status"] == "queued"
 
 
 @pytest.mark.parametrize("exception", [ConnectionError, WatchError])
@@ -219,7 +300,7 @@ async def test_lost_retry_exec_reply_returns_the_committed_job(library, monkeypa
         return result
 
     monkeypatch.setattr(Pipeline, "execute", lose_reply)
-    retried = await repository.queue("owner", document["doc_id"], "index")
+    retried = await repository.queue(WORKSPACE, OWNER, document["doc_id"], "index")
     assert lost
     assert retried["status"] == "queued"
     assert queue.queue.job_ids.count(retried["job_id"]) == 1

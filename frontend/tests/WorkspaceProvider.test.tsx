@@ -2,8 +2,8 @@ import type { PropsWithChildren } from "react";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, expect, it, vi } from "vitest";
 import { WorkspaceProvider, useWorkspace } from "@/components/workspace/WorkspaceProvider";
-import { deleteDocument, listDocuments, streamChat } from "@/lib/api";
-import type { ChatSource, LibraryDocument } from "@/types";
+import { deleteDocument, listDocuments, listWorkspaces, streamChat } from "@/lib/api";
+import type { ChatSource, LibraryDocument, Workspace } from "@/types";
 
 const client = vi.hoisted(() => ({ auth: {
   getUser: vi.fn(), getSession: vi.fn(), onAuthStateChange: vi.fn(),
@@ -11,13 +11,17 @@ const client = vi.hoisted(() => ({ auth: {
 vi.mock("@/lib/supabase/client", () => ({ createClient: () => client }));
 vi.mock("@/lib/api", async (importOriginal) => ({
   ...await importOriginal<typeof import("@/lib/api")>(),
-  deleteDocument: vi.fn(), listDocuments: vi.fn(), streamChat: vi.fn(),
+  deleteDocument: vi.fn(), listDocuments: vi.fn(), listWorkspaces: vi.fn(), streamChat: vi.fn(),
 }));
 
 const documents: LibraryDocument[] = ["a", "b"].map((id) => ({
   doc_id: id, name: `${id}.pdf`, status: "ready", size_bytes: 100, chunks_count: 1,
   warnings: [], error: null, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z",
 }));
+const workspaces: Workspace[] = [
+  { id: "workspace-a", name: "Cá nhân", kind: "personal", role: "owner", plan: "free", status: "active", created_at: null },
+  { id: "workspace-b", name: "Nhóm học tập", kind: "team", role: "member", plan: "free", status: "active", created_at: null },
+];
 const source = (id: string): ChatSource => ({
   doc_id: id, chunk_id: `chunk-${id}`, citation_id: 1, page: 1, source: `${id}.pdf`, score: null,
 });
@@ -30,16 +34,78 @@ beforeEach(() => {
   client.auth.getUser.mockResolvedValue({ data: { user } });
   client.auth.getSession.mockResolvedValue({ data: { session: { user, access_token: "token" } } });
   client.auth.onAuthStateChange.mockReturnValue({ data: { subscription: { unsubscribe: vi.fn() } } });
-  vi.mocked(listDocuments).mockResolvedValue(documents);
+  vi.mocked(listWorkspaces).mockResolvedValue(workspaces);
+  vi.mocked(listDocuments).mockImplementation(async (_token, workspaceId) =>
+    workspaceId === "workspace-a" ? documents : []);
 });
 
 async function mountWorkspace() {
   const hook = renderHook(useWorkspace, {
     wrapper: ({ children }: PropsWithChildren) => <WorkspaceProvider>{children}</WorkspaceProvider>,
   });
+  await waitFor(() => expect(hook.result.current.workspaceId).toBe("workspace-a"));
   await waitFor(() => expect(hook.result.current.documents).toEqual(documents));
   return hook.result;
 }
+
+it("selects the personal workspace and scopes the library request to it", async () => {
+  const workspace = await mountWorkspace();
+  expect(workspace.current.activeWorkspace?.name).toBe("Cá nhân");
+  expect(listWorkspaces).toHaveBeenCalledWith("token", expect.any(AbortSignal));
+  expect(listDocuments).toHaveBeenCalledWith("token", "workspace-a", expect.any(AbortSignal));
+});
+
+it("keeps archived workspaces listed but selects an active one by default", async () => {
+  vi.mocked(listWorkspaces).mockResolvedValue([
+    { ...workspaces[0], status: "archived" },
+    workspaces[1],
+  ]);
+  const hook = renderHook(useWorkspace, {
+    wrapper: ({ children }: PropsWithChildren) => <WorkspaceProvider>{children}</WorkspaceProvider>,
+  });
+  await waitFor(() => expect(hook.result.current.workspaceId).toBe("workspace-b"));
+  expect(hook.result.current.workspaces.map((item) => item.status)).toEqual(["archived", "active"]);
+});
+
+it("switching workspace clears document, source and chat, then rejects late answers", async () => {
+  let finishChat!: (response: Response) => void;
+  vi.mocked(streamChat).mockReturnValue(new Promise((resolve) => { finishChat = resolve; }));
+  const workspace = await mountWorkspace();
+  act(() => workspace.current.selectDocument(documents[0]));
+  let chat!: Promise<void>;
+  act(() => { chat = workspace.current.chat.submit("Question about A"); });
+  act(() => workspace.current.selectSource(source("a")));
+  const signal = vi.mocked(streamChat).mock.calls[0][4];
+
+  await act(async () => { workspace.current.switchWorkspace("workspace-b"); });
+
+  expect(workspace.current.workspaceId).toBe("workspace-b");
+  expect(workspace.current.docId).toBeNull();
+  expect(workspace.current.source).toBeNull();
+  expect(workspace.current.chat.messages).toEqual([]);
+  expect(workspace.current.chat.loading).toBe(false);
+  expect(signal?.aborted).toBe(true);
+  await waitFor(() => expect(workspace.current.documents).toEqual([]));
+  expect(listDocuments).toHaveBeenCalledWith("token", "workspace-b", expect.any(AbortSignal));
+
+  await act(async () => { finishChat(response()); await chat; });
+  expect(workspace.current.chat.messages).toEqual([]);
+  expect(workspace.current.documents).toEqual([]);
+});
+
+it("ignores a deletion response that arrives after the workspace changed", async () => {
+  let finishDelete!: (document: LibraryDocument) => void;
+  vi.mocked(deleteDocument).mockReturnValue(new Promise((resolve) => { finishDelete = resolve; }));
+  const workspace = await mountWorkspace();
+  let deletion!: Promise<void>;
+  act(() => { deletion = workspace.current.operate(documents[0], "delete"); });
+  await act(async () => { workspace.current.switchWorkspace("workspace-b"); });
+  await waitFor(() => expect(workspace.current.documents).toEqual([]));
+
+  await act(async () => { finishDelete({ ...documents[0], status: "deleting" }); await deletion; });
+  expect(workspace.current.documents).toEqual([]);
+  expect(workspace.current.notice).not.toContain("a.pdf");
+});
 
 it("preserves the new selection, source and stream when an older deletion responds", async () => {
   let finishDelete!: (document: LibraryDocument) => void;
@@ -54,7 +120,7 @@ it("preserves the new selection, source and stream when an older deletion respon
   let chat!: Promise<void>;
   act(() => { chat = workspace.current.chat.submit("Question about B"); });
   act(() => workspace.current.selectSource(source("b")));
-  const signal = vi.mocked(streamChat).mock.calls[0][3];
+  const signal = vi.mocked(streamChat).mock.calls[0][4];
 
   await act(async () => { finishDelete({ ...documents[0], status: "deleting" }); await deletion; });
 
@@ -76,7 +142,7 @@ it("clears the source and cancels chat when the deleted document is still select
   let chat!: Promise<void>;
   act(() => { chat = workspace.current.chat.submit("Question about A"); });
   act(() => workspace.current.selectSource(source("a")));
-  const signal = vi.mocked(streamChat).mock.calls[0][3];
+  const signal = vi.mocked(streamChat).mock.calls[0][4];
 
   await act(async () => { await workspace.current.operate(documents[0], "delete"); });
 

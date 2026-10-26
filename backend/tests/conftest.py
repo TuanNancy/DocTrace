@@ -19,29 +19,41 @@ config_module._config = config_module.AppConfig(
 )
 
 from app.core.auth import require_supabase_user
+from app.core.workspace import require_workspace
 from app.main import app
 from app.services.document_repository import DocumentRepository, get_document_repository
 from app.services.rate_limiter import RateLimiter, get_rate_limiter
+from app.services.workspaces import WorkspaceContext
 
 
 async def _fake_supabase_user():
     return {"id": "00000000-0000-0000-0000-000000000001", "email": "test@example.com"}
 
 
+async def _fake_workspace():
+    return WorkspaceContext(
+        workspace_id="00000000-0000-0000-0000-0000000000ab",
+        user_id="00000000-0000-0000-0000-000000000001",
+        role="owner", plan="free", kind="personal", name="Cá nhân",
+    )
+
+
 @pytest.fixture
 def repository():
     """Only the Redis library boundary is mocked; no developer cloud calls."""
     fake = AsyncMock(spec=DocumentRepository)
-    fake.get.side_effect = lambda uid, doc_id: {
-        "doc_id": doc_id, "user_id": uid, "name": "sample.pdf", "status": "ready",
+    fake.get.side_effect = lambda workspace_id, uid, doc_id: {
+        "doc_id": doc_id, "workspace_id": workspace_id, "owner_user_id": uid, "user_id": uid,
+        "name": "sample.pdf", "status": "ready",
         "active_index_id": doc_id, "storage_key": f"{uid}/{doc_id}/sample.pdf",
     }
     fake.create.side_effect = lambda document: {
         **document, "status": "queued", "chunks_count": 0, "warnings": [], "error": None,
     }
-    fake.queue.side_effect = lambda uid, doc_id, kind: {
+    fake.queue.side_effect = lambda workspace_id, uid, doc_id, kind: {
         "doc_id": doc_id, "name": "sample.pdf", "status": "queued" if kind == "index" else "deleting",
         "chunks_count": 0, "size_bytes": 100, "warnings": [], "user_id": uid,
+        "workspace_id": workspace_id, "owner_user_id": uid,
     }
     fake.list.return_value = {"items": [], "has_more": False}
     return fake
@@ -51,6 +63,7 @@ def repository():
 def client(repository) -> TestClient:
     """FastAPI TestClient for router tests."""
     app.dependency_overrides[require_supabase_user] = _fake_supabase_user
+    app.dependency_overrides[require_workspace] = _fake_workspace
     app.dependency_overrides[get_document_repository] = lambda: repository
     app.dependency_overrides[get_rate_limiter] = lambda: AsyncMock(spec=RateLimiter)
     try:
@@ -58,5 +71,6 @@ def client(repository) -> TestClient:
             yield test_client
     finally:
         app.dependency_overrides.pop(require_supabase_user, None)
+        app.dependency_overrides.pop(require_workspace, None)
         app.dependency_overrides.pop(get_document_repository, None)
         app.dependency_overrides.pop(get_rate_limiter, None)

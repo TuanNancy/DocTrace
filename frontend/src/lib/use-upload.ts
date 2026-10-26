@@ -4,8 +4,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { uploadPDF } from "@/lib/api";
 import type { LibraryDocument } from "@/types";
 
-export function useUpload({ accessToken, mock, onUploadComplete }: {
-  accessToken?: string | null; mock?: boolean; onUploadComplete?: (result: LibraryDocument) => void;
+export function useUpload({ accessToken, workspaceId, mock, onUploadComplete }: {
+  accessToken?: string | null; workspaceId?: string | null; mock?: boolean;
+  onUploadComplete?: (result: LibraryDocument) => void;
 }) {
   const [status, setStatus] = useState<"idle" | "uploading" | "success" | "error">("idle");
   const [progress, setProgress] = useState(0);
@@ -15,9 +16,10 @@ export function useUpload({ accessToken, mock, onUploadComplete }: {
   useEffect(() => {
     setStatus("idle"); setProgress(0); setError(null); setFilename("");
     return () => { active.current?.abort(); active.current = null; };
-  }, [accessToken]);
+  }, [accessToken, workspaceId]);
   const upload = useCallback(async (file: File) => {
     if (active.current) return;
+    if (!mock && !workspaceId) { setError("Chưa chọn không gian làm việc."); setStatus("error"); return; }
     if (!file.name.toLowerCase().endsWith(".pdf") || (file.type && file.type !== "application/pdf")) {
       setError("Chỉ chấp nhận file PDF."); setStatus("error"); return;
     }
@@ -35,7 +37,7 @@ export function useUpload({ accessToken, mock, onUploadComplete }: {
           warnings: [], error: null,
         };
       } else {
-        result = await uploadPDF(file, accessToken ?? "", controller.signal, (percent) => {
+        result = await uploadPDF(file, accessToken ?? "", workspaceId ?? "", controller.signal, (percent) => {
           if (!controller.signal.aborted) setProgress(percent);
         });
       }
@@ -47,7 +49,7 @@ export function useUpload({ accessToken, mock, onUploadComplete }: {
         setStatus("error"); setError(cause instanceof Error ? cause.message : "Không thể tải PDF.");
       }
     } finally { if (active.current === controller) active.current = null; }
-  }, [accessToken, mock, onUploadComplete]);
+  }, [accessToken, workspaceId, mock, onUploadComplete]);
   return { status, progress, error, filename, upload };
 }
 

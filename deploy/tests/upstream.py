@@ -6,17 +6,31 @@ import uvicorn
 from fastapi import HTTPException, Request
 
 from app.core.auth import require_supabase_user
+from app.core.workspace import require_workspace
 from app.main import app
 from app.routers import chat
 from app.services.document_repository import get_document_repository
+from app.services.workspaces import WorkspaceContext
 
 pipelines = []
+PROXY_WORKSPACE = "11111111-1111-4111-8111-111111111111"
 
 
 async def test_user(request: Request):
     if request.headers.get("authorization") != "Bearer proxy-test-token":
         raise HTTPException(status_code=401, detail="Test token required")
     return {"id": "proxy-test-user"}
+
+
+async def test_workspace(request: Request) -> WorkspaceContext:
+    # Fail when Nginx drops the tenant header instead of silently bypassing a
+    # contract the browser must satisfy on every workspace-scoped request.
+    if request.headers.get("x-workspace-id") != PROXY_WORKSPACE:
+        raise HTTPException(status_code=400, detail="X-Workspace-Id was not forwarded")
+    return WorkspaceContext(
+        workspace_id=PROXY_WORKSPACE, user_id="proxy-test-user",
+        role="owner", plan="free", kind="personal", name="Proxy test",
+    )
 
 
 class TestPipeline:
@@ -51,11 +65,12 @@ app.dependency_overrides[require_supabase_user] = test_user
 
 
 class TestDocuments:
-    async def get(self, user_id, doc_id):
+    async def get(self, workspace_id, user_id, doc_id):
         return {"status": "ready", "active_index_id": doc_id}
 
 
 app.dependency_overrides[get_document_repository] = TestDocuments
+app.dependency_overrides[require_workspace] = test_workspace
 chat.create_initialized_rag_pipeline = create_pipeline
 
 

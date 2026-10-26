@@ -7,7 +7,7 @@ import type { SourceExcerpt } from "@/types";
 import { useWorkspace } from "./WorkspaceProvider";
 
 export function CitationPanel() {
-  const { source, setSource, accessToken, mock } = useWorkspace();
+  const { source, setSource, accessToken, workspaceId, mock } = useWorkspace();
   const [excerpt, setExcerpt] = useState<SourceExcerpt | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [fileError, setFileError] = useState<string | null>(null);
@@ -21,12 +21,13 @@ export function CitationPanel() {
       return;
     }
     if (!accessToken) { setError("Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại."); return; }
+    if (!workspaceId) { setError("Chưa chọn không gian làm việc."); return; }
     const controller = new AbortController();
-    void getSourceExcerpt(source, accessToken, controller.signal).then((result) => {
+    void getSourceExcerpt(source, accessToken, workspaceId, controller.signal).then((result) => {
       if (!controller.signal.aborted) setExcerpt(result);
     }).catch((cause) => { if (!controller.signal.aborted) setError(cause instanceof Error ? cause.message : "Không thể tải đoạn trích."); });
     return () => controller.abort();
-  }, [source, accessToken, mock]);
+  }, [source, accessToken, workspaceId, mock]);
   if (!source) return null;
   return <div className="flex flex-1 flex-col p-5">
     <button className="mb-6 flex items-center gap-2 text-xs text-slate-500 hover:text-blue-600" onClick={() => setSource(null)}><ArrowLeft size={14} /> Thư viện tài liệu</button>
@@ -46,7 +47,7 @@ export function CitationPanel() {
     <p className="mt-3 text-[10px] leading-5 text-slate-400">{mock ? "Nội dung minh họa trong chế độ demo." : "Đoạn văn được trích từ PDF gốc. Số trang tính từ trang đầu của tệp."}</p>
     {!mock && <button className="secondary-button mt-5 w-full text-xs" disabled={opening || !excerpt} onClick={async () => {
       setOpening(true); setFileError(null);
-      try { await openDocumentFile(source.doc_id, accessToken!, source.page); }
+      try { await openDocumentFile(source.doc_id, accessToken!, workspaceId!, source.page); }
       catch (cause) { setFileError(cause instanceof Error ? cause.message : "Không thể mở PDF."); }
       finally { setOpening(false); }
     }}>{opening ? "Đang mở…" : `Mở PDF · trang ${source.page}`}<ArrowUpRight size={14} /></button>}

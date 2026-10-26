@@ -10,6 +10,7 @@ from app.storage.base import RetrievedChunk
 DOC = str(uuid4())
 CHUNK = str(uuid4())
 OWNER = "00000000-0000-0000-0000-000000000001"
+WORKSPACE = "00000000-0000-0000-0000-0000000000ab"
 
 
 @pytest.mark.parametrize("path", [f"/{DOC}", f"/{DOC}/file", f"/{DOC}/chunks/{CHUNK}"])
@@ -20,7 +21,7 @@ def test_unknown_or_foreign_document_never_opens_storage(client, repository, mon
     monkeypatch.setattr(documents, "signed_pdf_url", signer)
     monkeypatch.setattr(documents, "create_connected_vector_store", connect)
     assert client.get(f"/api/documents{path}").status_code == 404
-    repository.get.assert_awaited_once_with(OWNER, DOC)
+    repository.get.assert_awaited_once_with(WORKSPACE, OWNER, DOC)
     signer.assert_not_called()
     connect.assert_not_awaited()
 
@@ -51,14 +52,14 @@ def test_delete_queues_cleanup_under_verified_owner(client, repository):
     response = client.delete(f"/api/documents/{DOC}")
     assert response.status_code == 202
     assert response.json()["status"] == "deleting"
-    repository.queue.assert_awaited_once_with(OWNER, DOC, "delete")
+    repository.queue.assert_awaited_once_with(WORKSPACE, OWNER, DOC, "delete")
 
 
 def test_retry_delete_failure_keeps_deletion_intent(client, repository):
     repository.get.side_effect = None
     repository.get.return_value = {"status": "delete_error"}
     assert client.post(f"/api/documents/{DOC}/retry").status_code == 202
-    repository.queue.assert_awaited_once_with(OWNER, DOC, "delete")
+    repository.queue.assert_awaited_once_with(WORKSPACE, OWNER, DOC, "delete")
 
 
 def test_ready_document_cannot_be_reindexed_by_retry(client, repository):

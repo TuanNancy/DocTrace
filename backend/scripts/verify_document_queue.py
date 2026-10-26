@@ -23,7 +23,7 @@ from rq.serializers import JSONSerializer
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app.core.config import AppConfig
-from app.services.document_repository import DocumentRepository, document_key, catalog_key
+from app.services.document_repository import DocumentRepository, document_key, workspace_user_key
 from app.services.job_queue import DocumentQueue
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -61,20 +61,23 @@ def main():
         return name
 
     owner = str(uuid.uuid4())
+    workspace = owner  # A personal workspace id equals its owner id.
+    other = str(uuid.uuid4())
     config = AppConfig(document_index_timeout_seconds=5)
     repository = DocumentRepository(config)
     run = asyncio.run
 
     def document(name="normal.pdf"):
         doc_id = str(uuid.uuid4())
-        return run(repository.create({"doc_id": doc_id, "user_id": owner, "name": name,
-                                      "size_bytes": 20, "storage_key": f"{owner}/{doc_id}/{name}"}))
+        return run(repository.create({"doc_id": doc_id, "user_id": owner, "owner_user_id": owner,
+                                      "workspace_id": workspace, "name": name, "size_bytes": 20,
+                                      "storage_key": f"{owner}/{doc_id}/{name}"}))
 
     def current(record):
         return run(repository.internal_document(record["doc_id"]))
 
     def state(record, expected):
-        item = run(repository.get(owner, record["doc_id"]))
+        item = run(repository.get(workspace, owner, record["doc_id"]))
         return item if item["status"] == expected else None
 
     def finished(record):
@@ -118,11 +121,12 @@ def main():
             list(pool.map(lambda _: run(repository.create(queued)), range(2)))
         assert queue.queue.count == 1
         assert connection.ttl(document_key(queued["doc_id"])) == -1
-        assert connection.ttl(catalog_key(owner)) == -1
-        expect_status(404, lambda: run(repository.get("other", queued["doc_id"])))
-        expect_status(404, lambda: run(repository.queue("other", queued["doc_id"], "delete")))
-        assert run(repository.list("other", 100, 0))["items"] == []
-        expect_status(409, lambda: run(repository.queue(owner, queued["doc_id"], "delete")))
+        assert connection.ttl(workspace_user_key(workspace, owner)) == -1
+        expect_status(404, lambda: run(repository.get(other, owner, queued["doc_id"])))
+        expect_status(404, lambda: run(repository.get(workspace, other, queued["doc_id"])))
+        expect_status(404, lambda: run(repository.queue(other, owner, queued["doc_id"], "delete")))
+        assert run(repository.list(other, owner, 100, 0))["items"] == []
+        expect_status(409, lambda: run(repository.queue(workspace, owner, queued["doc_id"], "delete")))
 
         docker("stop", redis_name)
         expect_status(503, lambda: run(repository.check_available()))
@@ -143,7 +147,7 @@ def main():
         eventually(lambda: finished(queued))
         connection.delete(Job.key_for(queued["job_id"]))  # Simulate expiration of RQ's result record.
         assert state(queued, "ready")
-        assert run(repository.list(owner, 100, 0))["items"]
+        assert run(repository.list(workspace, owner, 100, 0))["items"]
 
         retrying = document("retry.pdf")
         eventually(lambda: state(retrying, "ready"))
@@ -165,17 +169,17 @@ def main():
 
         slow = document("slow.pdf")
         eventually(lambda: started(slow))
-        expect_status(409, lambda: run(repository.queue(owner, slow["doc_id"], "delete")))
+        expect_status(409, lambda: run(repository.queue(workspace, owner, slow["doc_id"], "delete")))
         connection.set(f"release:{slow['doc_id']}", "yes")
         eventually(lambda: state(slow, "ready"))
         eventually(lambda: finished(slow))
         connection.set(f"fail-delete:{slow['doc_id']}", "yes")
-        deleting = run(repository.queue(owner, slow["doc_id"], "delete"))
+        deleting = run(repository.queue(workspace, owner, slow["doc_id"], "delete"))
         assert deleting["active_index_id"] is None
         eventually(lambda: current(slow)["status"] == "deleted")
         assert current(slow)["attempt_number"] == 2
         assert not any(connection.exists(f"vectors:{generation}") for generation in current(slow)["generations"])
-        expect_status(404, lambda: run(repository.get(owner, slow["doc_id"])))
+        expect_status(404, lambda: run(repository.get(workspace, owner, slow["doc_id"])))
         print("PASS: busy deletion rejected, partial deletion retry, catalog removal", flush=True)
 
         killed = document("slow.pdf")
@@ -192,7 +196,7 @@ def main():
         connection.delete(Job.key_for(missing["job_id"]))
         connection.lrem(queue.queue.key, 0, missing["job_id"])
         assert state(missing, "error")
-        run(repository.queue(owner, missing["doc_id"], "index"))
+        run(repository.queue(workspace, owner, missing["doc_id"], "index"))
         broken = document()
         broken_job = Job.fetch(broken["job_id"], connection=connection, serializer=JSONSerializer)
         broken_job.func_name = "app.jobs.documents.missing_function"
@@ -202,7 +206,7 @@ def main():
         eventually(lambda: state(missing, "ready"))
         eventually(lambda: state(broken, "error"))
         assert current(broken)["attempt_number"] == 0
-        run(repository.queue(owner, broken["doc_id"], "index"))
+        run(repository.queue(workspace, owner, broken["doc_id"], "index"))
         eventually(lambda: state(broken, "ready"))
         eventually(lambda: finished(broken))
 

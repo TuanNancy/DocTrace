@@ -48,3 +48,14 @@ export interface SourceExcerpt {
   page: number;
   text: string;
 }
+
+/** Membership returned by GET /api/workspaces. */
+export interface Workspace {
+  id: string;
+  name: string;
+  kind: "personal" | "team";
+  role: "owner" | "member";
+  plan: "free" | "pro";
+  status: "active" | "archived" | "purging";
+  created_at: string | null;
+}
