@@ -101,9 +101,10 @@ def main():
         assert probe["host"] == "api.example.test"
         preflight = request(https_port, "/api/chat", context, method="OPTIONS", headers={
             "Origin": "http://localhost:3000", "Access-Control-Request-Method": "POST",
-            "Access-Control-Request-Headers": "authorization,content-type",
+            "Access-Control-Request-Headers": "authorization,content-type,x-workspace-id",
         })
         assert preflight[0] == 200 and preflight[1]["access-control-allow-origin"] == "http://localhost:3000"
+        assert "x-workspace-id" in preflight[1].get("access-control-allow-headers", "").lower()
         print("PASS: bearer/CORS forwarding and spoofed forwarding-header protection")
 
         connection = http.client.HTTPSConnection("127.0.0.1", https_port, context=context, timeout=5)
@@ -118,6 +119,7 @@ def main():
             connection = http.client.HTTPSConnection("127.0.0.1", https_port, context=context, timeout=5)
             connection.request("POST", "/api/chat", body=json.dumps({"query": "q", "doc_id": "doc"}), headers={
                 "Authorization": "Bearer proxy-test-token", "Content-Type": "application/json",
+                "X-Workspace-Id": "11111111-1111-4111-8111-111111111111",
             })
             response = connection.getresponse()
             assert response.status == 200 and "text/event-stream" in response.getheader("content-type")
