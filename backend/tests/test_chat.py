@@ -361,7 +361,7 @@ def test_chat_persists_usage_with_attribution_and_never_streams_it(
 
 
 def test_chat_admission_uses_the_client_request_id_and_finalizes_status(
-    chat_dependencies, client, quotas,
+    chat_dependencies, client, quotas, transcripts,
 ):
     response = client.post(
         "/api/chat",
@@ -369,13 +369,22 @@ def test_chat_admission_uses_the_client_request_id_and_finalizes_status(
     )
 
     assert response.status_code == 200
+    assert response.headers["x-conversation-id"] == "00000000-0000-0000-0000-0000000000c3"
     quotas.existing_chat.assert_awaited_once_with(WORKSPACE, OWNER, REQUEST_ID)
     quotas.admit_chat.assert_awaited_once_with(
         WORKSPACE, OWNER, REQUEST_ID, "test-doc-id", "free",
+        query="How much leave?", index_id="test-doc-id",
     )
     statuses = [call.args[1] for call in quotas.mark_chat_status.await_args_list]
     assert statuses == ["streaming", "completed"]
     assert quotas.mark_chat_status.await_args_list[-1].args[2] is None
+    transcripts.mark_streaming.assert_awaited_once_with(
+        "00000000-0000-0000-0000-0000000000c4",
+    )
+    final = transcripts.finalize_message.await_args_list[-1]
+    assert final.args[:2] == ("00000000-0000-0000-0000-0000000000c4", "complete")
+    assert final.args[2] == "Twelve days."
+    assert final.args[3][0]["chunk_id"] == "chunk-1"
 
 
 def test_chat_generates_a_unique_request_id_when_the_client_omits_one(
@@ -453,7 +462,7 @@ def test_chat_quota_denial_is_json_before_streaming(
 
 
 def test_chat_marks_an_error_outcome_without_leaking_details(
-    chat_dependencies, client, quotas,
+    chat_dependencies, client, quotas, transcripts,
 ):
     chat_dependencies.vector_store.search_chunks.side_effect = RuntimeError("private upstream")
 
@@ -464,9 +473,12 @@ def test_chat_marks_an_error_outcome_without_leaking_details(
     final = quotas.mark_chat_status.await_args_list[-1]
     assert final.args[1] == "failed"
     assert final.args[2] == "stream_error"
+    message = transcripts.finalize_message.await_args_list[-1]
+    assert message.args[1] == "error"
+    assert "private upstream" not in message.args[2]
 
 
-async def test_cancelled_chat_is_marked_interrupted(quotas, monkeypatch):
+async def test_cancelled_chat_is_marked_interrupted(quotas, transcripts, monkeypatch):
     """A browser disconnect must release the status, not leave it streaming."""
     class Pipeline:
         async def retrieve_chunks(self, query, doc_id, *, user_id):
@@ -490,7 +502,8 @@ async def test_cancelled_chat_is_marked_interrupted(quotas, monkeypatch):
 
     stream = _stream_chat_sse(
         "q", "doc", OWNER, chat_request_id="00000000-0000-0000-0000-0000000000c1",
-        quotas=quotas,
+        assistant_message_id="00000000-0000-0000-0000-0000000000c4",
+        quotas=quotas, transcripts=transcripts,
     )
     assert "event: sources" in await anext(stream)
     assert "event: token" in await anext(stream)
@@ -498,3 +511,6 @@ async def test_cancelled_chat_is_marked_interrupted(quotas, monkeypatch):
 
     statuses = [call.args[1] for call in quotas.mark_chat_status.await_args_list]
     assert statuses == ["streaming", "interrupted"]
+    message = transcripts.finalize_message.await_args_list[-1]
+    assert message.args[1] == "interrupted"
+    assert message.args[2] == "partial"

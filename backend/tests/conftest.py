@@ -24,6 +24,7 @@ from app.main import app
 from app.services.document_repository import DocumentRepository, get_document_repository
 from app.services.quotas import QuotaService, get_quota_service
 from app.services.rate_limiter import RateLimiter, get_rate_limiter
+from app.services.transcripts import TranscriptService, get_transcript_service
 from app.services.workspaces import WorkspaceContext
 
 CHAT_REQUEST_ID = "00000000-0000-0000-0000-0000000000c1"
@@ -71,6 +72,8 @@ def quotas():
     fake.admit_chat.return_value = {
         "chat_request_id": CHAT_REQUEST_ID,
         "request_id": "00000000-0000-0000-0000-0000000000c2",
+        "conversation_id": "00000000-0000-0000-0000-0000000000c3",
+        "assistant_message_id": "00000000-0000-0000-0000-0000000000c4",
         "used": 1,
         "limit": 10,
         "reset_at": "2026-11-01T00:00:00Z",
@@ -95,13 +98,26 @@ def rate_limiter():
 
 
 @pytest.fixture
-def client(repository, quotas, rate_limiter) -> TestClient:
+def transcripts():
+    fake = AsyncMock(spec=TranscriptService)
+    fake.list.return_value = {"items": []}
+    fake.get.return_value = None
+    fake.delete.return_value = False
+    fake.mark_streaming.return_value = True
+    fake.finalize_message.return_value = True
+    fake.hide_for_document.return_value = 0
+    return fake
+
+
+@pytest.fixture
+def client(repository, quotas, rate_limiter, transcripts) -> TestClient:
     """FastAPI TestClient for router tests."""
     app.dependency_overrides[require_supabase_user] = _fake_supabase_user
     app.dependency_overrides[require_workspace] = _fake_workspace
     app.dependency_overrides[get_document_repository] = lambda: repository
     app.dependency_overrides[get_rate_limiter] = lambda: rate_limiter
     app.dependency_overrides[get_quota_service] = lambda: quotas
+    app.dependency_overrides[get_transcript_service] = lambda: transcripts
     try:
         with TestClient(app) as test_client:
             yield test_client
@@ -111,3 +127,4 @@ def client(repository, quotas, rate_limiter) -> TestClient:
         app.dependency_overrides.pop(get_document_repository, None)
         app.dependency_overrides.pop(get_rate_limiter, None)
         app.dependency_overrides.pop(get_quota_service, None)
+        app.dependency_overrides.pop(get_transcript_service, None)

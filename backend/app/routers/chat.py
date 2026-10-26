@@ -22,6 +22,7 @@ from app.services.quotas import (
     QuotaService, duplicate_error, get_quota_service,
 )
 from app.services.rate_limiter import RateLimiter, get_rate_limiter
+from app.services.transcripts import TranscriptService, get_transcript_service
 from app.services.workspaces import WorkspaceContext
 
 logger = logging.getLogger(__name__)
@@ -37,13 +38,17 @@ async def _stream_chat_sse(query: str, doc_id: str, user_id: str, language: str 
                            document_id: str | None = None,
                            usage: UsageCollector | None = None,
                            chat_request_id: str | None = None,
-                           quotas: QuotaService | None = None) -> AsyncIterator[str]:
+                           assistant_message_id: str | None = None,
+                           quotas: QuotaService | None = None,
+                           transcripts: TranscriptService | None = None) -> AsyncIterator[str]:
     pipeline = None
     # Completion is only published after the done event is yielded. A closed
     # generator or a cancelled task therefore stays "interrupted" unless the
     # provider actually finished its answer.
     outcome = "interrupted"
     error_code: str | None = None
+    answer_parts: list[str] = []
+    sources_payload: list[dict] = []
 
     if quotas is not None and chat_request_id:
         try:
@@ -52,6 +57,11 @@ async def _stream_chat_sse(query: str, doc_id: str, user_id: str, language: str 
             # Admission already consumed quota; status telemetry must never
             # prevent the answer from streaming.
             logger.warning("Could not mark chat request streaming", exc_info=True)
+    if transcripts is not None and assistant_message_id:
+        try:
+            await transcripts.mark_streaming(assistant_message_id)
+        except Exception:
+            logger.warning("Could not mark assistant message streaming", exc_info=True)
 
     try:
         pipeline = await create_initialized_rag_pipeline(usage=usage)
@@ -81,6 +91,7 @@ async def _stream_chat_sse(query: str, doc_id: str, user_id: str, language: str 
                     if language == "vi"
                     else "No content was found for the selected document. Select or upload the PDF again."
                 )
+            answer_parts.append(fallback)
             yield _sse_message("token", json.dumps(fallback))
             yield _sse_message("done", json.dumps("[DONE]"))
             outcome = "completed"
@@ -94,6 +105,7 @@ async def _stream_chat_sse(query: str, doc_id: str, user_id: str, language: str 
             retrieved_chunks_override=retrieved_chunks,
         ):
             if text_delta:
+                answer_parts.append(text_delta)
                 yield _sse_message("token", json.dumps(text_delta))
 
         yield _sse_message("done", json.dumps("[DONE]"))
@@ -116,7 +128,18 @@ async def _stream_chat_sse(query: str, doc_id: str, user_id: str, language: str 
         finally:
             with CancelScope(shield=True):
                 # Admission already consumed the question, so the terminal
-                # status and cost rows must survive a browser disconnect.
+                # status, transcript and cost rows must survive a browser
+                # disconnect.
+                if transcripts is not None and assistant_message_id:
+                    try:
+                        await transcripts.finalize_message(
+                            assistant_message_id,
+                            {"completed": "complete", "failed": "error"}.get(outcome, "interrupted"),
+                            "".join(answer_parts),
+                            sources_payload,
+                        )
+                    except Exception:
+                        logger.warning("Could not persist assistant transcript", exc_info=True)
                 if quotas is not None and chat_request_id:
                     try:
                         await quotas.mark_chat_status(chat_request_id, outcome, error_code)
@@ -133,6 +156,7 @@ async def chat(
     repository: DocumentRepository = Depends(get_document_repository),
     limiter: RateLimiter = Depends(get_rate_limiter),
     quotas: QuotaService = Depends(get_quota_service),
+    transcripts: TranscriptService = Depends(get_transcript_service),
 ) -> StreamingResponse:
     try:
         query = request.query.strip()
@@ -158,6 +182,7 @@ async def chat(
         await limiter.check(user_id, action="chat")
         admission = await quotas.admit_chat(
             workspace.workspace_id, user_id, request_id, doc_id, workspace.plan,
+            query=query, index_id=document["active_index_id"],
         )
         usage = UsageCollector(UsageAttribution(
             workspace_id=workspace.workspace_id, user_id=user_id, doc_id=doc_id,
@@ -167,13 +192,16 @@ async def chat(
             _stream_chat_sse(
                 query, document["active_index_id"], user_id, language,
                 document_id=doc_id, usage=usage,
-                chat_request_id=admission["chat_request_id"], quotas=quotas,
+                chat_request_id=admission["chat_request_id"],
+                assistant_message_id=admission.get("assistant_message_id"),
+                quotas=quotas, transcripts=transcripts,
             ),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",
                 "Connection": "keep-alive",
                 "X-Accel-Buffering": "no",
+                "X-Conversation-Id": admission.get("conversation_id", ""),
             },
         )
     except HTTPException:
