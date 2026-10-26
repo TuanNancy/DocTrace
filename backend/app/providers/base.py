@@ -4,6 +4,8 @@ Chat provider interface for generating completions and streaming text deltas.
 from abc import ABC, abstractmethod
 from typing import AsyncIterator, Dict, List, Optional
 
+from app.providers.usage import ProviderCall
+
 
 def _context_messages(query: str, context: str, system_prompt: Optional[str]) -> List[Dict[str, str]]:
     messages = []
@@ -25,6 +27,8 @@ class ChatProvider(ABC):
         messages: List[Dict[str, str]],
         max_tokens: Optional[int] = None,
         temperature: Optional[float] = None,
+        *,
+        usage: Optional[ProviderCall] = None,
         **kwargs
     ) -> str:
         pass
@@ -35,6 +39,8 @@ class ChatProvider(ABC):
         messages: List[Dict[str, str]],
         max_tokens: Optional[int] = None,
         temperature: Optional[float] = None,
+        *,
+        usage: Optional[ProviderCall] = None,
         **kwargs
     ) -> AsyncIterator[str]:
         pass
@@ -46,12 +52,15 @@ class ChatProvider(ABC):
         system_prompt: Optional[str] = None,
         max_tokens: Optional[int] = None,
         temperature: Optional[float] = None,
+        *,
+        usage: Optional[ProviderCall] = None,
         **kwargs
     ) -> str:
         return await self.generate_completion(
             messages=_context_messages(query, context, system_prompt),
             max_tokens=max_tokens,
             temperature=temperature,
+            usage=usage,
             **kwargs
         )
 
@@ -62,12 +71,15 @@ class ChatProvider(ABC):
         system_prompt: Optional[str] = None,
         max_tokens: Optional[int] = None,
         temperature: Optional[float] = None,
+        *,
+        usage: Optional[ProviderCall] = None,
         **kwargs
     ) -> AsyncIterator[str]:
         async for text_delta in self.stream_completion(
             messages=_context_messages(query, context, system_prompt),
             max_tokens=max_tokens,
             temperature=temperature,
+            usage=usage,
             **kwargs
         ):
             yield text_delta
