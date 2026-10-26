@@ -22,10 +22,10 @@ describe("API transport", () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response("", { headers: { "Content-Type": "text/event-stream" } }));
     vi.stubGlobal("fetch", fetchMock);
     const controller = new AbortController();
-    await streamChat("Question", "doc-a", "test-token", "workspace-a", controller.signal);
+    await streamChat("Question", "doc-a", "test-token", "workspace-a", "request-a", controller.signal);
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe("https://api.example.test/api/chat");
-    expect(JSON.parse(init.body)).toEqual({ query: "Question", doc_id: "doc-a", language: "vi" });
+    expect(JSON.parse(init.body)).toEqual({ query: "Question", doc_id: "doc-a", language: "vi", request_id: "request-a" });
     expect(init.headers.Authorization).toBe("Bearer test-token");
     expect(init.headers["X-Workspace-Id"]).toBe("workspace-a");
     expect(init.signal).toBe(controller.signal);
@@ -55,7 +55,7 @@ describe("API transport", () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({
       detail: { code: "workspace_not_found", message: "Không tìm thấy workspace." },
     }, { status: 404 })));
-    await expect(streamChat("q", "a", "token", "workspace-a")).rejects.toMatchObject({
+    await expect(streamChat("q", "a", "token", "workspace-a", "request-a")).rejects.toMatchObject({
       message: "Không tìm thấy workspace.", status: 404, code: "workspace_not_found",
     });
   });
@@ -63,37 +63,37 @@ describe("API transport", () => {
   it("does not send a workspace-scoped request without a selection", async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
-    await expect(streamChat("q", "a", "token", "")).rejects.toThrow("Chưa chọn không gian làm việc");
+    await expect(streamChat("q", "a", "token", "", "request-a")).rejects.toThrow("Chưa chọn không gian làm việc");
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("surfaces HTTP auth errors instead of trying to parse SSE", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ detail: "Expired session" }, { status: 401 })));
-    await expect(streamChat("q", "a", "expired", "workspace-a")).rejects.toThrow("Expired session");
+    await expect(streamChat("q", "a", "expired", "workspace-a", "request-a")).rejects.toThrow("Expired session");
   });
 
   it("retains the HTTP status for proxy HTML errors", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("<html>Bad Gateway</html>", { status: 502 })));
-    await expect(streamChat("q", "a", "token", "workspace-a")).rejects.toThrow("502");
+    await expect(streamChat("q", "a", "token", "workspace-a", "request-a")).rejects.toThrow("502");
   });
 
   it("rejects a non-SSE response", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ status: "ok" })));
-    await expect(streamChat("q", "a", "token", "workspace-a")).rejects.toThrow("stream chat");
+    await expect(streamChat("q", "a", "token", "workspace-a", "request-a")).rejects.toThrow("stream chat");
   });
 
   it("shows the Retry-After wait for fetch without opening SSE", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ detail: "Too many requests" }, {
       status: 429, headers: { "Retry-After": "12" },
     })));
-    await expect(streamChat("q", "a", "token", "workspace-a")).rejects.toThrow("thử lại sau 12 giây");
+    await expect(streamChat("q", "a", "token", "workspace-a", "request-a")).rejects.toThrow("thử lại sau 12 giây");
   });
 
   it.each([null, "nonsense", "-1", "1.5"])("has a friendly fallback for invalid Retry-After %s", async (value) => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("", {
       status: 429, headers: value === null ? {} : { "Retry-After": value },
     })));
-    await expect(streamChat("q", "a", "token", "workspace-a")).rejects.toThrow("Vui lòng thử lại sau.");
+    await expect(streamChat("q", "a", "token", "workspace-a", "request-a")).rejects.toThrow("Vui lòng thử lại sau.");
   });
 
   it("does not duplicate a wait message from the API", async () => {
@@ -101,7 +101,7 @@ describe("API transport", () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ detail }, {
       status: 429, headers: { "Retry-After": "12" },
     })));
-    await expect(streamChat("q", "a", "token", "workspace-a")).rejects.toThrow(detail);
+    await expect(streamChat("q", "a", "token", "workspace-a", "request-a")).rejects.toThrow(detail);
   });
 
   it("accepts HTTP-date Retry-After", async () => {
@@ -109,7 +109,32 @@ describe("API transport", () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("", {
       status: 429, headers: { "Retry-After": "Thu, 08 Oct 2026 10:00:12 GMT" },
     })));
-    await expect(streamChat("q", "a", "token", "workspace-a")).rejects.toThrow("thử lại sau 12 giây");
+    await expect(streamChat("q", "a", "token", "workspace-a", "request-a")).rejects.toThrow("thử lại sau 12 giây");
+  });
+
+  it("shows the quota reset date instead of a long Retry-After wait", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({
+      detail: {
+        code: "quota_exceeded", message: "Đã hết lượt hỏi trong tháng.",
+        metric: "chat_questions_month", limit: 10, used: 10,
+        reset_at: "2026-11-01T00:00:00Z", retry_after: 432060,
+      },
+    }, { status: 429, headers: { "Retry-After": "432060" } })));
+    await expect(streamChat("q", "a", "token", "workspace-a", "request-a")).rejects.toMatchObject({
+      message: "Đã hết lượt hỏi trong tháng. Hạn mức sẽ được đặt lại vào 01/11/2026.",
+      status: 429,
+      code: "quota_exceeded",
+    });
+  });
+
+  it("keeps a document quota message without a monthly reset date", async () => {
+    const message = "Đã dùng hết số tài liệu của gói hiện tại.";
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({
+      detail: { code: "quota_exceeded", message, metric: "documents", limit: 5, used: 5 },
+    }, { status: 429 })));
+    await expect(streamChat("q", "a", "token", "workspace-a", "request-a")).rejects.toMatchObject({
+      message, status: 429, code: "quota_exceeded",
+    });
   });
 
   it("preserves Retry-After and the workspace header for progress uploads through XHR", async () => {

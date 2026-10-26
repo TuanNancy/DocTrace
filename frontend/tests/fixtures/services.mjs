@@ -182,6 +182,10 @@ createServer(async (request, response) => {
     if (scope.error) return json(response, ...scope.error);
     const chat = JSON.parse(body);
     if (!chat.doc_id || !chat.query) return json(response, 422, { detail: "Missing chat fields" });
+    if (typeof chat.request_id !== "string"
+      || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(chat.request_id)) {
+      return json(response, 422, { detail: "Missing chat request id" });
+    }
     const document = documents.get(chat.doc_id);
     if (!document || document.workspace_id !== scope.workspaceId || document.status !== "ready") {
       return json(response, 409, { detail: "Tài liệu chưa sẵn sàng." });
