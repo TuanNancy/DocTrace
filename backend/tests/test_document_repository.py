@@ -39,6 +39,11 @@ def upload(owner=OWNER, workspace=WORKSPACE):
             "storage_key": f"{owner}/{doc_id}/sample.pdf"}
 
 
+async def create(repository, document, *, limit=100):
+    """Most repository tests are not about quota; opt in where it matters."""
+    return await repository.create(document, limit=limit)
+
+
 def job(connection, record, status=None):
     result = Job.fetch(record["job_id"], connection=connection, serializer=JSONSerializer)
     if status:
@@ -49,7 +54,7 @@ def job(connection, record, status=None):
 async def test_create_commits_catalog_and_one_json_job_without_ttl(library):
     repository, connection, queue, _ = library
     document = upload()
-    records = await asyncio.gather(repository.create(document), repository.create(document))
+    records = await asyncio.gather(create(repository, document), create(repository, document))
     assert records[0] == records[1]
     record = records[0]
     assert queue.queue.job_ids == [record["job_id"]]
@@ -74,7 +79,7 @@ async def test_create_commits_catalog_and_one_json_job_without_ttl(library):
 
 async def test_owner_scope_applies_to_reads_listing_and_mutations(library):
     repository, _, _, _ = library
-    document = await repository.create(upload())
+    document = await create(repository, upload())
     for action in (repository.get(WORKSPACE, "other", document["doc_id"]),
                    repository.queue(WORKSPACE, "other", document["doc_id"], "delete")):
         with pytest.raises(HTTPException) as error:
@@ -88,7 +93,7 @@ async def test_owner_scope_applies_to_reads_listing_and_mutations(library):
 
 async def test_workspace_and_owner_scope_are_both_required(library):
     repository, _, _, _ = library
-    document = await repository.create(upload())
+    document = await create(repository, upload())
     for workspace, owner in ((OTHER_WORKSPACE, OWNER), (WORKSPACE, "other")):
         with pytest.raises(HTTPException) as error:
             await repository.get(workspace, owner, document["doc_id"])
@@ -98,17 +103,17 @@ async def test_workspace_and_owner_scope_are_both_required(library):
         assert error.value.status_code == 404
         assert await repository.list(workspace, owner, 10, 0) == {"items": [], "has_more": False}
     with pytest.raises(HTTPException) as error:
-        await repository.create({**upload(owner="other", workspace=OTHER_WORKSPACE),
+        await create(repository, {**upload(owner="other", workspace=OTHER_WORKSPACE),
                                   "doc_id": document["doc_id"]})
     assert error.value.status_code == 404
 
 
 async def test_workspace_document_counts_are_split_by_user(library):
     repository, _, _, _ = library
-    await repository.create(upload())
-    await repository.create(upload())
-    await repository.create(upload(owner="other"))
-    await repository.create(upload(workspace=OTHER_WORKSPACE))
+    await create(repository, upload())
+    await create(repository, upload())
+    await create(repository, upload(owner="other"))
+    await create(repository, upload(workspace=OTHER_WORKSPACE))
     assert await repository.count_workspace(WORKSPACE) == 3
     assert await repository.count_workspace(WORKSPACE, OWNER) == 2
     assert await repository.count_workspace(WORKSPACE, "other") == 1
@@ -117,7 +122,7 @@ async def test_workspace_document_counts_are_split_by_user(library):
 
 async def test_delete_removes_every_index_but_keeps_tombstone(library):
     repository, connection, _, _ = library
-    document = await repository.create(upload())
+    document = await create(repository, upload())
     attempt = await repository.begin(document["doc_id"], document["job_id"], 1)
     await repository.finish(attempt, chunks_count=3)
     job(connection, document, JobStatus.FINISHED)
@@ -156,7 +161,7 @@ async def test_legacy_record_without_workspace_is_owner_personal_workspace(libra
 
 async def test_catalog_pagination(library):
     repository, _, _, _ = library
-    records = [await repository.create(upload()) for _ in range(3)]
+    records = [await create(repository, upload()) for _ in range(3)]
     first = await repository.list(WORKSPACE, OWNER, 2, 0)
     second = await repository.list(WORKSPACE, OWNER, 2, 2)
     assert [item["doc_id"] for item in first["items"]] == [item["doc_id"] for item in reversed(records[1:])]
@@ -168,7 +173,7 @@ async def test_catalog_pagination(library):
 @pytest.mark.parametrize("state", [JobStatus.QUEUED, JobStatus.STARTED, JobStatus.SCHEDULED, JobStatus.DEFERRED])
 async def test_active_rq_job_blocks_delete_and_retry(library, state):
     repository, connection, _, _ = library
-    document = await repository.create(upload())
+    document = await create(repository, upload())
     job(connection, document, state)
     for kind in ("index", "delete"):
         with pytest.raises(HTTPException) as error:
@@ -179,7 +184,7 @@ async def test_active_rq_job_blocks_delete_and_retry(library, state):
 @pytest.mark.parametrize("state", [JobStatus.FAILED, JobStatus.STOPPED, JobStatus.CANCELED, JobStatus.FINISHED, None])
 async def test_pre_task_failure_or_missing_job_becomes_retryable_business_error(library, state):
     repository, connection, _, _ = library
-    document = await repository.create(upload())
+    document = await create(repository, upload())
     if state:
         job(connection, document, state)
     else:
@@ -195,7 +200,7 @@ async def test_pre_task_failure_or_missing_job_becomes_retryable_business_error(
 
 async def test_concurrent_retry_enqueues_only_one_replacement(library):
     repository, connection, queue, _ = library
-    document = await repository.create(upload())
+    document = await create(repository, upload())
     job(connection, document, JobStatus.FAILED)
     results = await asyncio.gather(*[repository.queue(WORKSPACE, OWNER, document["doc_id"], "index") for _ in range(2)],
                                    return_exceptions=True)
@@ -206,7 +211,7 @@ async def test_concurrent_retry_enqueues_only_one_replacement(library):
 
 async def test_attempt_fencing_and_business_success_survive_job_expiry(library):
     repository, connection, _, _ = library
-    document = await repository.create(upload())
+    document = await create(repository, upload())
     first = await repository.begin(document["doc_id"], document["job_id"], 1)
     assert await repository.begin(document["doc_id"], document["job_id"], 1) is None
     second = await repository.begin(document["doc_id"], document["job_id"], 2)
@@ -223,7 +228,7 @@ async def test_attempt_fencing_and_business_success_survive_job_expiry(library):
 
 async def test_invalid_pdf_remains_error_when_rq_reports_finished(library):
     repository, connection, _, _ = library
-    document = await repository.create(upload())
+    document = await create(repository, upload())
     attempt = await repository.begin(document["doc_id"], document["job_id"], 1)
     await repository.finish(attempt, error="Invalid PDF")
     job(connection, document, JobStatus.FINISHED)
@@ -232,7 +237,7 @@ async def test_invalid_pdf_remains_error_when_rq_reports_finished(library):
 
 async def test_delete_revokes_index_and_retries_deletion_intent(library):
     repository, connection, _, _ = library
-    document = await repository.create(upload())
+    document = await create(repository, upload())
     attempt = await repository.begin(document["doc_id"], document["job_id"], 1)
     await repository.finish(attempt, chunks_count=3)
     job(connection, document, JobStatus.FINISHED)
@@ -274,16 +279,51 @@ async def test_watch_conflict_cannot_enqueue_outside_the_catalog_transaction(lib
             connection.hset(module.document_key(doc_id), "conflict", "1")
 
     monkeypatch.setattr(DocumentQueue, "enqueue", conflict)
-    document = await repository.create(upload())
+    document = await create(repository, upload())
     assert calls == 2
     assert queue.queue.job_ids == [document["job_id"]]
     assert (await repository.get(WORKSPACE, OWNER, document["doc_id"]))["status"] == "queued"
 
 
+async def test_document_quota_rejects_without_catalog_or_job(library):
+    repository, connection, queue, _ = library
+    first = await create(repository, upload(), limit=1)
+
+    with pytest.raises(HTTPException) as error:
+        await create(repository, upload(), limit=1)
+
+    assert error.value.status_code == 429
+    assert error.value.detail["code"] == "quota_exceeded"
+    assert error.value.detail["metric"] == "documents"
+    assert error.value.detail["used"] == 1
+    assert error.value.detail["limit"] == 1
+    assert await repository.count_workspace(WORKSPACE) == 1
+    assert queue.queue.job_ids == [first["job_id"]]
+    # Nothing from the rejected upload leaked into the catalog.
+    assert len(connection.keys(module.document_key("*"))) == 1
+
+
+async def test_concurrent_uploads_cannot_overshoot_document_quota(library):
+    repository, _, queue, _ = library
+    results = await asyncio.gather(
+        create(repository, upload(), limit=1),
+        create(repository, upload(), limit=1),
+        return_exceptions=True,
+    )
+
+    assert sum(isinstance(result, dict) for result in results) == 1
+    assert sum(
+        isinstance(result, HTTPException) and result.status_code == 429
+        for result in results
+    ) == 1
+    assert await repository.count_workspace(WORKSPACE) == 1
+    assert len(queue.queue.job_ids) == 1
+
+
 @pytest.mark.parametrize("exception", [ConnectionError, WatchError])
 async def test_lost_retry_exec_reply_returns_the_committed_job(library, monkeypatch, exception):
     repository, connection, queue, _ = library
-    document = await repository.create(upload())
+    document = await create(repository, upload())
     attempt = await repository.begin(document["doc_id"], document["job_id"], 1)
     await repository.finish(attempt, error="failed")
     job(connection, document, JobStatus.FAILED)

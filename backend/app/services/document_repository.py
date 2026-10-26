@@ -22,6 +22,7 @@ from starlette.concurrency import run_in_threadpool
 
 from app.core.config import AppConfig, get_config
 from app.services.job_queue import DocumentQueue, LIVE_STATES
+from app.services.quotas import document_quota_error
 
 PREFIX = "doctrace:library:v2"
 PUBLIC_FIELDS = (
@@ -157,8 +158,15 @@ class DocumentRepository:
             return {"items": items[:limit], "has_more": len(items) > limit}
         return await self._run(listing)
 
-    async def create(self, document: dict) -> dict:
-        """Called only after PDF retention; create the catalog and first job atomically."""
+    async def create(self, document: dict, *, limit: int) -> dict:
+        """Called only after PDF retention; create the catalog and first job atomically.
+
+        ``limit`` is the workspace document cap. The workspace index is watched
+        and re-counted inside the same optimistic transaction so two uploads
+        cannot both take the last slot.
+        """
+        if limit < 0:
+            raise ValueError("Document limit cannot be negative")
         workspace_id = str(document.get("workspace_id") or "")
         owner_user_id = str(document.get("owner_user_id") or document.get("user_id") or "")
         if not workspace_id or not owner_user_id:
@@ -186,6 +194,10 @@ class DocumentRepository:
                         existing = read_document(pipe, record["doc_id"])
                         if existing:
                             return owned(existing, workspace_id, owner_user_id)
+                        pipe.watch(workspace_key(workspace_id))
+                        used = int(pipe.zcard(workspace_key(workspace_id)))
+                        if used >= limit:
+                            raise document_quota_error(limit, used)
                         pipe.multi()
                         write_document(pipe, record)
                         for index in indexes:

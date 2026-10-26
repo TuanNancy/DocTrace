@@ -22,8 +22,11 @@ from app.core.auth import require_supabase_user
 from app.core.workspace import require_workspace
 from app.main import app
 from app.services.document_repository import DocumentRepository, get_document_repository
+from app.services.quotas import QuotaService, get_quota_service
 from app.services.rate_limiter import RateLimiter, get_rate_limiter
 from app.services.workspaces import WorkspaceContext
+
+CHAT_REQUEST_ID = "00000000-0000-0000-0000-0000000000c1"
 
 
 async def _fake_supabase_user():
@@ -47,7 +50,7 @@ def repository():
         "name": "sample.pdf", "status": "ready",
         "active_index_id": doc_id, "storage_key": f"{uid}/{doc_id}/sample.pdf",
     }
-    fake.create.side_effect = lambda document: {
+    fake.create.side_effect = lambda document, *, limit: {
         **document, "status": "queued", "chunks_count": 0, "warnings": [], "error": None,
     }
     fake.queue.side_effect = lambda workspace_id, uid, doc_id, kind: {
@@ -56,16 +59,49 @@ def repository():
         "workspace_id": workspace_id, "owner_user_id": uid,
     }
     fake.list.return_value = {"items": [], "has_more": False}
+    fake.count_workspace.return_value = 0
     return fake
 
 
 @pytest.fixture
-def client(repository) -> TestClient:
+def quotas():
+    """No Postgres in unit tests; quota SQL is covered by the Docker-gated suite."""
+    fake = AsyncMock(spec=QuotaService)
+    fake.existing_chat.return_value = None
+    fake.admit_chat.return_value = {
+        "chat_request_id": CHAT_REQUEST_ID,
+        "request_id": "00000000-0000-0000-0000-0000000000c2",
+        "used": 1,
+        "limit": 10,
+        "reset_at": "2026-11-01T00:00:00Z",
+    }
+    fake.document_limit.return_value = 5
+    fake.mark_chat_status.return_value = True
+    fake.usage.return_value = {
+        "workspace_id": "00000000-0000-0000-0000-0000000000ab",
+        "plan": "free",
+        "period_start": "2026-10-01",
+        "reset_at": "2026-11-01T00:00:00Z",
+        "chat": {"used": 1, "limit": 10, "remaining": 9, "metric": "chat_questions_month"},
+        "documents": {"used": 0, "limit": 5, "remaining": 5, "metric": "documents"},
+        "by_user": [],
+    }
+    return fake
+
+
+@pytest.fixture
+def rate_limiter():
+    return AsyncMock(spec=RateLimiter)
+
+
+@pytest.fixture
+def client(repository, quotas, rate_limiter) -> TestClient:
     """FastAPI TestClient for router tests."""
     app.dependency_overrides[require_supabase_user] = _fake_supabase_user
     app.dependency_overrides[require_workspace] = _fake_workspace
     app.dependency_overrides[get_document_repository] = lambda: repository
-    app.dependency_overrides[get_rate_limiter] = lambda: AsyncMock(spec=RateLimiter)
+    app.dependency_overrides[get_rate_limiter] = lambda: rate_limiter
+    app.dependency_overrides[get_quota_service] = lambda: quotas
     try:
         with TestClient(app) as test_client:
             yield test_client
@@ -74,3 +110,4 @@ def client(repository) -> TestClient:
         app.dependency_overrides.pop(require_workspace, None)
         app.dependency_overrides.pop(get_document_repository, None)
         app.dependency_overrides.pop(get_rate_limiter, None)
+        app.dependency_overrides.pop(get_quota_service, None)
