@@ -54,6 +54,7 @@ class AppConfig:
     upstream_timeout_seconds: float = 60.0
     retrieval_top_k: int = 8
     context_max_chars: int = 12000
+    summary_max_calls: int = setting(8, "SUMMARY_MAX_CALLS")
     min_relevance_score: float = 0.32
 
     openrouter_api_key: Optional[str] = None
@@ -152,6 +153,7 @@ class AppConfig:
             ("max_chunks_per_document", "MAX_CHUNKS_PER_DOCUMENT"), ("max_tokens", "RAG_MAX_TOKENS"),
             ("embedding_batch_size", "EMBEDDING_BATCH_SIZE"), ("upstream_timeout_seconds", "UPSTREAM_TIMEOUT_SECONDS"),
             ("retrieval_top_k", "RETRIEVAL_TOP_K"), ("context_max_chars", "CONTEXT_MAX_CHARS"),
+            ("summary_max_calls", "SUMMARY_MAX_CALLS"),
             ("milvus_nlist", "MILVUS_NLIST"), ("milvus_nprobe", "MILVUS_NPROBE"),
             ("document_index_timeout_seconds", "DOCUMENT_INDEX_TIMEOUT_SECONDS"),
             ("document_delete_timeout_seconds", "DOCUMENT_DELETE_TIMEOUT_SECONDS"),

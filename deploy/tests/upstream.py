@@ -55,7 +55,7 @@ class TestPipeline:
         self.active = False
 
 
-async def create_pipeline():
+async def create_pipeline(**kwargs):
     pipeline = TestPipeline()
     pipelines.append(pipeline)
     return pipeline

@@ -13,6 +13,7 @@ from app.ai.prompts import get_system_prompt
 from app.core.config import AppConfig, get_config
 from app.providers.base import ChatProvider
 from app.providers.embeddings import get_embedder
+from app.services.provider_calls import UsageCollector
 from app.storage.base import VectorStore, RetrievedChunk
 
 logger = logging.getLogger(__name__)
@@ -24,10 +25,12 @@ class RAGPipeline:
         chat_provider: Optional[ChatProvider] = None,
         vector_store: Optional[VectorStore] = None,
         config: Optional[AppConfig] = None,
+        usage: Optional[UsageCollector] = None,
     ):
         self.config = config or get_config()
         self.chat_provider = chat_provider
         self.vector_store = vector_store
+        self.usage = usage
         self.embedder = None
 
     async def initialize(self) -> None:
@@ -69,7 +72,12 @@ class RAGPipeline:
 
         if self.embedder is None:
             self.embedder = await run_in_threadpool(get_embedder, config=self.config)
-        query_vectors = await run_in_threadpool(self.embedder.embed_documents, [query])
+        call = (
+            self.usage.start("query_embedding", getattr(self.config, "embedding_model", "unknown"))
+            if self.usage else None
+        )
+        kwargs = {"usage": call} if call else {}
+        query_vectors = await run_in_threadpool(self.embedder.embed_documents, [query], **kwargs)
         if len(query_vectors) != 1 or not query_vectors[0]:
             raise RuntimeError("Embedding API returned an invalid query vector.")
 
@@ -133,9 +141,21 @@ class RAGPipeline:
             for start in range(0, len(chunk.text), width):
                 sections.append(header + chunk.text[start:start + width])
         contexts = pack_contexts(sections, max_chars)
+        max_calls = int(getattr(self.config, "summary_max_calls", 8))
+        calls = 0
+        if len(contexts) > max_calls:
+            raise RuntimeError("Document summary requires too many provider calls.")
         while len(contexts) > 1:
+            if calls + len(contexts) > max_calls:
+                raise RuntimeError("Document summary requires too many provider calls.")
             summaries = []
             for context in contexts:
+                call = (
+                    self.usage.start("summary", getattr(self.config, "model", "unknown"))
+                    if self.usage else None
+                )
+                calls += 1
+                kwargs = {"usage": call} if call else {}
                 summary = await self.chat_provider.generate_with_context(
                     query=(
                         "Condense this document section for the following request: " + query
@@ -149,6 +169,7 @@ class RAGPipeline:
                     max_tokens=min(self.config.max_tokens, max(64, max_chars // 8)),
                     # Keep the small summary budget for visible text, not reasoning.
                     extra_body={"reasoning": {"enabled": False}},
+                    **kwargs,
                 )
                 if not summary.strip():
                     raise RuntimeError("Document summarization returned empty content.")
@@ -192,7 +213,11 @@ class RAGPipeline:
                 else self._build_context(retrieved_chunks)
             )
             system_prompt = get_system_prompt(language)
-
+            call = (
+                self.usage.start("answer", getattr(self.config, "model", "unknown"))
+                if self.usage else None
+            )
+            kwargs = {"usage": call} if call else {}
             async for text_delta in self.chat_provider.stream_with_context(
                 query=query,
                 context=context,
@@ -200,6 +225,7 @@ class RAGPipeline:
                 temperature=self.config.temperature,
                 max_tokens=self.config.max_tokens,
                 **({"extra_body": {"reasoning": {"enabled": False}}} if overview else {}),
+                **kwargs,
             ):
                 yield text_delta
 
@@ -208,9 +234,9 @@ class RAGPipeline:
             raise
 
 
-async def create_initialized_rag_pipeline() -> RAGPipeline:
+async def create_initialized_rag_pipeline(usage: Optional[UsageCollector] = None) -> RAGPipeline:
     """Create a pipeline and connect its vector store; the caller must shut it down."""
-    pipeline = RAGPipeline()
+    pipeline = RAGPipeline(usage=usage)
     try:
         await pipeline.initialize()
     except BaseException:

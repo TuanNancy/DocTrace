@@ -36,7 +36,22 @@ def chat_dependencies(monkeypatch):
 
     async def completion_stream():
         for text in ["Twelve ", "days."]:
-            yield SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content=text))])
+            yield SimpleNamespace(
+                id="gen-answer",
+                choices=[SimpleNamespace(delta=SimpleNamespace(content=text))],
+                usage=None,
+            )
+        # OpenRouter sends final usage on a chunk with empty choices.
+        yield SimpleNamespace(
+            id="gen-answer",
+            choices=[],
+            usage=SimpleNamespace(
+                prompt_tokens=12, completion_tokens=2, total_tokens=14,
+                cost=0.000045,
+                prompt_tokens_details=SimpleNamespace(cached_tokens=1),
+                completion_tokens_details=SimpleNamespace(reasoning_tokens=0),
+            ),
+        )
 
     create_completion = AsyncMock(return_value=completion_stream())
     client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create_completion)))
@@ -290,3 +305,49 @@ def test_summary_stage_failure_emits_error_and_cleans_up(chat_dependencies, clie
     events = parse_sse_events(client.post("/api/chat", json={"query": "Summarize this PDF", "doc_id": "doc"}))
     assert [event[0] for event in events] == ["sources", "error", "done"]
     deps.vector_store.disconnect.assert_awaited_once()
+
+
+def test_chat_persists_usage_with_attribution_and_never_streams_it(
+    chat_dependencies, client, monkeypatch,
+):
+    from contextlib import contextmanager
+
+    from app.routers import chat as chat_router
+    from app.services import provider_calls
+
+    captured = []
+
+    class Session:
+        def execute(self, statement, rows):
+            captured.extend(rows)
+
+    @contextmanager
+    def scope(config):
+        yield Session()
+
+    monkeypatch.setattr(provider_calls, "session_scope", scope)
+    monkeypatch.setattr(chat_router, "get_config", lambda: SimpleNamespace(
+        database_url="postgresql://example.test/doctrace", openrouter_api_key=None,
+    ))
+
+    response = client.post(
+        "/api/chat",
+        json={"query": "How much leave?", "doc_id": "test-doc-id", "language": "en"},
+    )
+    events = parse_sse_events(response)
+
+    assert [event[0] for event in events] == ["sources", "token", "token", "done"]
+    assert [row["kind"] for row in captured] == ["query_embedding", "answer"]
+    answer = captured[1]
+    assert answer["prompt_tokens"] == 12
+    assert answer["completion_tokens"] == 2
+    assert answer["cached_tokens"] == 1
+    assert answer["cost_micros"] == 45
+    assert answer["cost_status"] == "reported"
+    assert answer["workspace_id"] == "00000000-0000-0000-0000-0000000000ab"
+    assert answer["user_id"] == "00000000-0000-0000-0000-000000000001"
+    assert answer["request_id"]
+    # Public documents use non-UUID ids in tests; malformed attribution is dropped.
+    assert answer["doc_id"] is None
+    assert "cost_micros" not in response.text
+    assert "usage" not in response.text

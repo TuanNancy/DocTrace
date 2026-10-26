@@ -8,6 +8,7 @@ from rq import get_current_job
 from app.core.config import get_config
 from app.services.document_repository import DocumentRepository
 from app.services.job_queue import MAX_RETRIES
+from app.services.provider_calls import UsageAttribution, UsageCollector
 from app.services.pdf_indexing import InvalidPDFError, index_pdf_bytes
 from app.services.supabase_pdf_storage import download_pdf, delete_pdf
 from app.storage.factory import create_connected_vector_store
@@ -34,33 +35,46 @@ async def process_document(repository: DocumentRepository, doc_id: str, job_id: 
     document = attempt["document"]
     uid, doc_id = document["user_id"], document["doc_id"]
     logger.info("Started job=%s attempt=%s doc=%s kind=%s", job_id, attempt["attempt_id"], doc_id, attempt["kind"])
-    try:
-        if attempt["kind"] == "delete":
-            await remove_generations(uid, document["generations"])
-            await run_in_threadpool(delete_pdf, document["storage_key"])
-            await repository.finish(attempt)
-        else:
-            # Retried jobs clean earlier partial indexes before writing a fresh one.
-            await remove_generations(uid, [item for item in document["generations"] if item != attempt["attempt_id"]])
-            content = await run_in_threadpool(download_pdf, document["storage_key"])
-            result = await index_pdf_bytes(content, document["name"], attempt["attempt_id"], user_id=uid)
-            await repository.finish(attempt, chunks_count=result.chunks_count, warnings=result.warnings)
-    except Exception as exc:
-        # Read before recording failure: a lost publish response may have committed.
-        current = await repository.internal_document(doc_id)
-        if current and (current.get("active_index_id") == attempt["attempt_id"]
-                        or (attempt["kind"] == "delete" and current["status"] == "deleted")):
-            return
-        permanent = isinstance(exc, InvalidPDFError)
-        await repository.finish(attempt, retryable=not permanent and retries_left > 0, error=(
-            "Không thể xóa hết dữ liệu. Vui lòng thử lại." if attempt["kind"] == "delete" else
-            "Không thể xử lý PDF. Kiểm tra tệp có văn bản, rồi thử lại hoặc tải lại tài liệu."
+    usage = (
+        UsageCollector(UsageAttribution(
+            workspace_id=document.get("workspace_id"), user_id=uid, doc_id=doc_id, job_id=job_id,
         ))
-        if not permanent:
-            raise  # RQ owns timeout, retry scheduling and abandoned-job maintenance.
-        logger.info("PDF rejected job=%s doc=%s", job_id, doc_id)
-    # Failed generations remain registered for the next retry/delete. No finally
-    # deletion: a publication response can be lost after Redis has committed it.
+        if attempt["kind"] == "index" else None
+    )
+    try:
+        try:
+            if attempt["kind"] == "delete":
+                await remove_generations(uid, document["generations"])
+                await run_in_threadpool(delete_pdf, document["storage_key"])
+                await repository.finish(attempt)
+            else:
+                # Retried jobs clean earlier partial indexes before writing a fresh one.
+                await remove_generations(uid, [item for item in document["generations"] if item != attempt["attempt_id"]])
+                content = await run_in_threadpool(download_pdf, document["storage_key"])
+                kwargs = {"usage": usage} if usage and usage.enabled else {}
+                result = await index_pdf_bytes(
+                    content, document["name"], attempt["attempt_id"], user_id=uid, **kwargs,
+                )
+                await repository.finish(attempt, chunks_count=result.chunks_count, warnings=result.warnings)
+        except Exception as exc:
+            # Read before recording failure: a lost publish response may have committed.
+            current = await repository.internal_document(doc_id)
+            if current and (current.get("active_index_id") == attempt["attempt_id"]
+                            or (attempt["kind"] == "delete" and current["status"] == "deleted")):
+                return
+            permanent = isinstance(exc, InvalidPDFError)
+            await repository.finish(attempt, retryable=not permanent and retries_left > 0, error=(
+                "Không thể xóa hết dữ liệu. Vui lòng thử lại." if attempt["kind"] == "delete" else
+                "Không thể xử lý PDF. Kiểm tra tệp có văn bản, rồi thử lại hoặc tải lại tài liệu."
+            ))
+            if not permanent:
+                raise  # RQ owns timeout, retry scheduling and abandoned-job maintenance.
+            logger.info("PDF rejected job=%s doc=%s", job_id, doc_id)
+        # Failed generations remain registered for the next retry/delete. No finally
+        # deletion: a publication response can be lost after Redis has committed it.
+    finally:
+        if usage is not None:
+            await usage.flush()
 
 
 def run_document(doc_id: str) -> None:

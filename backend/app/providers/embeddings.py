@@ -3,9 +3,11 @@ Embeddings via OpenRouter (OpenAI-compatible `/v1/embeddings`).
 """
 import logging
 from functools import lru_cache
+from time import perf_counter
 from typing import Protocol
 
 from app.core.config import AppConfig, get_config
+from app.providers.usage import ProviderCall
 
 logger = logging.getLogger(__name__)
 
@@ -13,7 +15,9 @@ logger = logging.getLogger(__name__)
 class Embedder(Protocol):
     """Protocol for embedders: embed_documents and dimension."""
 
-    def embed_documents(self, texts: list[str]) -> list[list[float]]: ...
+    def embed_documents(
+        self, texts: list[str], *, usage: ProviderCall | None = None,
+    ) -> list[list[float]]: ...
 
     @property
     def dimension(self) -> int: ...
@@ -29,6 +33,9 @@ class OpenRouterEmbedder:
             api_key=api_key,
             base_url=base_url,
             timeout=timeout,
+            # Embedding batches are metered; SDK retries would create
+            # untracked calls. RQ owns document-level retries.
+            max_retries=0,
         )
         self._batch_size = batch_size
         try:
@@ -52,17 +59,37 @@ class OpenRouterEmbedder:
                 f"Model={self._model!r}. Original error: {e}"
             ) from e
 
-    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+    def embed_documents(
+        self, texts: list[str], *, usage: ProviderCall | None = None,
+    ) -> list[list[float]]:
         if not texts:
             return []
         batch_size = self._batch_size
         out: list[list[float]] = []
-        for i in range(0, len(texts), batch_size):
-            chunk = texts[i : i + batch_size]
-            r = self._client.embeddings.create(model=self._model, input=chunk)
-            for d in sorted(r.data, key=lambda x: x.index):
-                out.append(d.embedding)
-        return out
+        started = perf_counter()
+        try:
+            for i in range(0, len(texts), batch_size):
+                chunk = texts[i : i + batch_size]
+                r = self._client.embeddings.create(model=self._model, input=chunk)
+                if usage is not None:
+                    # Embedding batches share one logical call row; batch
+                    # responses are not chat generations, so never reconcile
+                    # them through GET /generation.
+                    response_usage = getattr(r, "usage", None)
+                    if response_usage is None:
+                        usage.mark_missing_usage()
+                    else:
+                        usage.apply_usage(response_usage)
+                for d in sorted(r.data, key=lambda x: x.index):
+                    out.append(d.embedding)
+            return out
+        except Exception:
+            if usage is not None:
+                usage.mark_error()
+            raise
+        finally:
+            if usage is not None:
+                usage.latency_ms = round((perf_counter() - started) * 1000)
 
     @property
     def dimension(self) -> int:

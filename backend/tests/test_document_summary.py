@@ -30,7 +30,9 @@ async def test_recursive_summary_keeps_last_section_and_respects_context_budget(
         return marker + " notes" * 25
 
     provider.generate_with_context.side_effect = summarize
-    pipeline = RAGPipeline(chat_provider=provider, config=SimpleNamespace(context_max_chars=600, max_tokens=2048))
+    pipeline = RAGPipeline(chat_provider=provider, config=SimpleNamespace(
+        context_max_chars=600, max_tokens=2048, summary_max_calls=100,
+    ))
     chunks = [RetrievedChunk("id", "doc", "text " * 1000 + "FINAL-FACT", 7, "long.pdf", None)]
     context = await pipeline._build_summary_context(chunks, "Summarize this PDF", "en")
     assert "FINAL-FACT" in context
@@ -43,8 +45,21 @@ async def test_recursive_summary_keeps_last_section_and_respects_context_budget(
 async def test_failed_compression_stops_instead_of_looping_or_silently_dropping_text(response):
     provider = AsyncMock()
     provider.generate_with_context.return_value = response
-    pipeline = RAGPipeline(chat_provider=provider, config=SimpleNamespace(context_max_chars=600, max_tokens=2048))
+    pipeline = RAGPipeline(chat_provider=provider, config=SimpleNamespace(
+        context_max_chars=600, max_tokens=2048, summary_max_calls=100,
+    ))
     chunks = [RetrievedChunk("id", "doc", "x" * 1200, 1, "long.pdf", None)]
     with pytest.raises(RuntimeError):
         await pipeline._build_summary_context(chunks, "Summarize", "en")
     assert provider.generate_with_context.await_count <= 3
+
+
+async def test_summary_call_cap_rejects_an_oversized_document_before_spending():
+    provider = AsyncMock()
+    pipeline = RAGPipeline(chat_provider=provider, config=SimpleNamespace(
+        context_max_chars=600, max_tokens=2048, summary_max_calls=1,
+    ))
+    chunks = [RetrievedChunk("id", "doc", "x" * 1200, 1, "long.pdf", None)]
+    with pytest.raises(RuntimeError, match="too many provider calls"):
+        await pipeline._build_summary_context(chunks, "Summarize", "en")
+    provider.generate_with_context.assert_not_awaited()

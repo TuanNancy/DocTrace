@@ -65,6 +65,16 @@ Source payload: `{citation_id, chunk_id, doc_id, page, source, score}`. Summary 
 
 ReactMarkdown + GFM render assistant messages without raw HTML. The citation plugin transforms text nodes, leaving code and existing links intact, and makes only known IDs interactive. Clear/document changes cancel streams; stopping retains a partial answer. Backend queries remain single-turn.
 
+## Provider usage and cost
+
+- `providers/usage.py` models one logical metered call (`query_embedding`, `index_embedding`, `summary`, `answer`). A `ProviderCall` keeps token counts, generation id, latency and integer micro-USD cost. Missing cost stays `None`/`unknown`; if any embedding batch omits cost, the aggregate stays unknown rather than under-reporting.
+- `providers/openrouter.py` captures non-streaming usage/id and the final streaming usage chunk even when `choices` is empty. It requests `stream_options.include_usage`, disables SDK retries so one logical call maps to one HTTP attempt, marks cancellation/errors, and exposes `fetch_generation()` for `GET /generation`.
+- `providers/embeddings.py` accumulates batch token/cost usage into one `ProviderCall`; the dimension probe is excluded as infrastructure overhead. Embedding responses are not chat generations and are never reconciled through `/generation`.
+- `services/provider_calls.py` persists rows into `doctrace.provider_calls` (already created by migration `0001`). `UsageAttribution` carries workspace/user/document/job/request ids; malformed UUIDs become `NULL`. Tracking is disabled without `DATABASE_URL` and is best effort: reconciliation or database failures never fail chat or indexing.
+- Chat creates one collector per request and flushes it under a shielded scope after the stream, so a browser disconnect still records costs. The worker uses one collector per index attempt and flushes it in `finally`; delete jobs record nothing. A repeated generation id upserts the existing row, never a duplicate.
+- `SUMMARY_MAX_CALLS` (default 8) caps summary/reduction calls before the answer call. An oversized overview is rejected before spending, or stops after earlier completed calls, whose rows still flush. Costs never appear in SSE events.
+- Rows contain identifiers, token counts, status, latency and raw provider usage only; no prompt or document text. Deleting a workspace nulls the workspace FK while retaining accounting rows.
+
 ## Configuration and storage invariants
 
 - `services/rate_limiter.py` gates valid authenticated upload/chat/index-retry attempts using Redis-time sliding windows: 5/600s, 10/60s and 3/600s per owner by default. `RATE_LIMIT_*` settings are shared by all API instances; `RATE_LIMIT_ENABLED=false` bypasses quota checks. Changing models does not change these quotas.
@@ -82,7 +92,7 @@ ReactMarkdown + GFM render assistant messages without raw HTML. The citation plu
 
 ## Verification and deployment
 
-- pytest uses isolated fakeredis for repository/RQ serialization, and mocks Storage/provider boundaries. Chat tests exercise the real pipeline/provider/SSE. TestClient overrides Auth and the workspace dependency; dedicated tests cover header validation, workspace routes, private catalog scope, workspace counts, legacy normalization and idempotent backfill. Postgres workspace tests use testcontainers and skip without Docker.
+- pytest uses isolated fakeredis for repository/RQ serialization, and mocks Storage/provider boundaries. Chat tests exercise the real pipeline/provider/SSE. TestClient overrides Auth and the workspace dependency; dedicated tests cover header validation, workspace routes, private catalog scope, workspace counts, legacy normalization and idempotent backfill, streaming usage, embedding aggregation, summary caps and provider-call persistence. Postgres workspace tests use testcontainers and skip without Docker.
 - Router tests also override `get_rate_limiter`; `python scripts/verify_rate_limits.py` verifies the actual Lua against disposable Docker Redis, including cross-process quota, concurrent admission, expiry and outage behavior.
 - `python scripts/verify_document_queue.py` uses real Redis and two Linux RQ workers to exercise transactions, owner scope, restart/outage, retry/timeout, kill and deletion. Only PDF/embedding/S3/Milvus boundaries are faked. It builds a disposable image unless `--api-image` is supplied. The container-kill case targets the scheduler owner, advances abandoned-job registry time, and waits for the killed scheduler's lease to expire before restarting it.
 - Vitest covers transport (including `X-Workspace-Id` and structured errors), cancellation, workspace switching, Markdown and auth. Playwright runs real UI/cookies with loopback Auth/API fixtures, verifies workspace isolation, and does not validate real cloud services.
