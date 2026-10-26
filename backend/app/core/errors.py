@@ -8,9 +8,17 @@ from __future__ import annotations
 from fastapi import HTTPException
 
 
-def api_error(status_code: int, code: str, message: str, **extra) -> HTTPException:
+def api_error(
+    status_code: int,
+    code: str,
+    message: str,
+    *,
+    headers: dict[str, str] | None = None,
+    **extra,
+) -> HTTPException:
     """Build an HTTPException whose detail is ``{code, message, ...}``."""
     return HTTPException(
         status_code=status_code,
         detail={"code": code, "message": message, **extra},
+        headers=headers,
     )

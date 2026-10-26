@@ -54,16 +54,27 @@ Cleanup is idempotent. Partial failures use RQ retry, then `delete_error`; manua
 ## RAG and citation contract
 
 1. Validate `X-Workspace-Id` membership, then the document is ready, belongs to that workspace and is owned by the current user; resolve its published index.
-2. `RAGPipeline.retrieve_chunks()` uses owner-scoped vector search for specific questions. Summaries use every document chunk in original page/chunk order, bypassing query embeddings and similarity thresholds.
-3. Ordinary retrieval is trimmed to the context budget **before** assigning citation numbers. The router emits the same numbered chunks that `stream_answer()` receives.
-4. Context labels include stable `[n]` IDs and page numbers. Long summaries preserve those IDs through bounded reduction steps.
-5. Emit `sources`, streamed `token`, optional `error`, then `done` with the JSON string `"[DONE]"`.
+2. Reject a repeated client `request_id` before spending a burst token or quota question, then apply the Redis burst limiter and atomically admit the request in Postgres (`chat_requests` insert + monthly `usage_counters` increment). A quota denial returns JSON before SSE starts.
+3. `RAGPipeline.retrieve_chunks()` uses owner-scoped vector search for specific questions. Summaries use every document chunk in original page/chunk order, bypassing query embeddings and similarity thresholds.
+4. Ordinary retrieval is trimmed to the context budget **before** assigning citation numbers. The router emits the same numbered chunks that `stream_answer()` receives.
+5. Context labels include stable `[n]` IDs and page numbers. Long summaries preserve those IDs through bounded reduction steps.
+6. Emit `sources`, streamed `token`, optional `error`, then `done` with the JSON string `"[DONE]"`.
+7. Finalize `chat_requests` as `completed`, `failed` or `interrupted` in the same shielded scope that flushes provider usage, so a disconnected browser cannot leave the request in `streaming`.
 
 Source payload: `{citation_id, chunk_id, doc_id, page, source, score}`. Summary scores are `null`, not a confidence percentage. Original text is fetched on demand from `/api/documents/{id}/chunks/{chunk_id}` using workspace, owner and active-generation filters. `/file` returns a 300-second signed URL; the UI adds `#page=N`.
 
 `load_pdf_pages()` reads text directly with pypdf, numbers physical PDF pages from one (including blank pages), and retains the original filename. Recursive text splitting preserves those values. Indexing returns chunk counts/warnings; Redis owns document status and timestamps.
 
 ReactMarkdown + GFM render assistant messages without raw HTML. The citation plugin transforms text nodes, leaving code and existing links intact, and makes only known IDs interactive. Clear/document changes cancel streams; stopping retains a partial answer. Backend queries remain single-turn.
+
+## Quota and idempotency
+
+- `services/quotas.py` owns workspace plan limits, monthly chat admission, the document limit lookup and the usage aggregate. Limits come from `doctrace.plan_limits` (free `10/5/1`, pro `100/50/10` for questions/documents/workspaces) and are evaluated per workspace.
+- Chat admission is one Postgres transaction: insert `chat_requests` with `ON CONFLICT DO NOTHING`, ensure the current UTC-month `usage_counters` row, then `UPDATE ... SET used = used + 1 WHERE used < :limit RETURNING used`. A missing updated row rolls back the request insert and returns `429 quota_exceeded` with `reset_at`; concurrent requests therefore cannot overshoot. The frontend sends `request_id`; a duplicate returns `409 request_completed`, `request_in_progress` or `request_failed` without reserving again.
+- `_stream_chat_sse` marks the request `streaming` at start and terminally `completed`, `failed` or `interrupted`. The terminal write and provider-usage flush run under a shielded scope, so cancellation still records state. Quota counts admitted questions even if the stream later fails.
+- Upload checks `ZCARD workspace:{wid}:documents` before Storage and `DocumentRepository.create(..., limit=...)` re-checks it after `WATCH` inside the catalog/enqueue transaction. If the atomic re-check rejects the upload, the router deletes the already-retained PDF. Deleted documents free a slot only after reaching `deleted`; `error`/`delete_error` records still count.
+- `GET /api/usage` merges the Postgres counters/costs with the Redis document count. Owners receive a per-user breakdown; members receive only their own rows. `provider_calls` costs remain integer micro-USD and keep `unknown` call counts visible.
+- Redis burst windows in `services/rate_limiter.py` are separate from monthly quotas. Both return 429, but burst denials use `code: "rate_limited"` and a short `Retry-After`; quota denials use `code: "quota_exceeded"` and `reset_at`.
 
 ## Provider usage and cost
 
@@ -78,8 +89,8 @@ ReactMarkdown + GFM render assistant messages without raw HTML. The citation plu
 ## Configuration and storage invariants
 
 - `services/rate_limiter.py` gates valid authenticated upload/chat/index-retry attempts using Redis-time sliding windows: 5/600s, 10/60s and 3/600s per owner by default. `RATE_LIMIT_*` settings are shared by all API instances; `RATE_LIMIT_ENABLED=false` bypasses quota checks. Changing models does not change these quotas.
-- Lua atomically prunes/counts/adds unique admissions in `doctrace:ratelimit:v1` sorted sets with TTL. Denials neither add events nor renew expiry. Admitted attempts are not refunded after downstream errors, and uncertain Redis replies are not retried. Quota exhaustion is HTTP 429 with `Retry-After`; Redis failure is 503. Check before Storage/enqueue and before SSE starts; delete retries and library reads are exempt. The existing upload capacity limiter remains per-process, not a worker limit.
-- API CORS exposes `Retry-After`; both fetch and XHR preserve it for the frontend's wait message. User quotas do not bound provider calls per indexing job or IP traffic before multipart parsing/Auth.
+- Lua atomically prunes/counts/adds unique admissions in `doctrace:ratelimit:v1` sorted sets with TTL. Denials neither add events nor renew expiry. Admitted attempts are not refunded after downstream errors, and uncertain Redis replies are not retried. Burst exhaustion is HTTP 429 with `code=rate_limited` and `Retry-After`; Redis failure is 503. These windows only bound short bursts; monthly plan quota is enforced separately in Postgres. Check before Storage/enqueue and before SSE starts; delete retries and library reads are exempt. The existing upload capacity limiter remains per-process, not a worker limit.
+- API CORS exposes `Retry-After`; both fetch and XHR preserve it for the frontend's wait message. The UI treats `quota_exceeded` as a plan/reset message and `rate_limited` as a wait. User quotas do not bound provider calls per indexing job or IP traffic before multipart parsing/Auth.
 
 - `AppConfig(...)` is environment-independent. `from_env()` parses a mapping/environment. `get_config()` loads root `.env`, then overriding `backend/.env`, once per process.
 - `RAG_MODEL` and `EMBEDDING_MODEL` have no implicit model fallback. Embedding dimensions come from API vectors; constructing an embedder also probes the API.
@@ -92,8 +103,8 @@ ReactMarkdown + GFM render assistant messages without raw HTML. The citation plu
 
 ## Verification and deployment
 
-- pytest uses isolated fakeredis for repository/RQ serialization, and mocks Storage/provider boundaries. Chat tests exercise the real pipeline/provider/SSE. TestClient overrides Auth and the workspace dependency; dedicated tests cover header validation, workspace routes, private catalog scope, workspace counts, legacy normalization and idempotent backfill, streaming usage, embedding aggregation, summary caps and provider-call persistence. Postgres workspace tests use testcontainers and skip without Docker.
-- Router tests also override `get_rate_limiter`; `python scripts/verify_rate_limits.py` verifies the actual Lua against disposable Docker Redis, including cross-process quota, concurrent admission, expiry and outage behavior.
+- pytest uses isolated fakeredis for repository/RQ serialization, and mocks Storage/provider boundaries. Chat tests exercise the real pipeline/provider/SSE. TestClient overrides Auth, the workspace dependency, repository, rate limiter and quota service; dedicated tests cover header validation, workspace routes, private catalog scope, workspace counts, legacy normalization and idempotent backfill, streaming usage, embedding aggregation, summary caps, provider-call persistence, duplicate admissions and status transitions. Postgres workspace/quota tests use testcontainers and skip without Docker.
+- Router tests also override `get_rate_limiter`; `python scripts/verify_rate_limits.py` verifies the actual Lua against disposable Docker Redis, including cross-process quota, concurrent admission, expiry and outage behavior. `tests/test_quotas_pg.py` checks the free and pro concurrency limits, duplicate ids, period rollover and owner/member usage breakdown.
 - `python scripts/verify_document_queue.py` uses real Redis and two Linux RQ workers to exercise transactions, owner scope, restart/outage, retry/timeout, kill and deletion. Only PDF/embedding/S3/Milvus boundaries are faked. It builds a disposable image unless `--api-image` is supplied. The container-kill case targets the scheduler owner, advances abandoned-job registry time, and waits for the killed scheduler's lease to expire before restarting it.
-- Vitest covers transport (including `X-Workspace-Id` and structured errors), cancellation, workspace switching, Markdown and auth. Playwright runs real UI/cookies with loopback Auth/API fixtures, verifies workspace isolation, and does not validate real cloud services.
+- Vitest covers transport (including `X-Workspace-Id`, `request_id` and structured errors), cancellation, workspace switching, Markdown and auth. Playwright runs real UI/cookies with loopback Auth/API fixtures, verifies workspace isolation, and does not validate real cloud services.
 - Root Compose runs Redis and vector infrastructure; profile `jobs` runs the Linux worker. Production Compose runs API, Redis, RQ worker, Nginx and on-demand Certbot. `/health` is API process liveness only. See `DEPLOYMENT.md`.

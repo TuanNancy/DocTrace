@@ -136,11 +136,13 @@ async def test_redis_failure_is_503_not_quota_exhaustion_and_is_not_retried():
     assert connect.call_args.kwargs["retry"].get_retries() == 0
 
 
-async def test_quota_error_contains_wait_seconds():
+async def test_rate_limit_error_contains_wait_seconds():
     with patch("app.services.rate_limiter.Redis.from_url") as connect:
         connect.return_value.__enter__.return_value.eval.return_value = 12
         with pytest.raises(HTTPException) as caught:
             await RateLimiter(AppConfig()).check(OWNER, action="chat")
     assert caught.value.status_code == 429
     assert caught.value.headers == {"Retry-After": "12"}
-    assert "12 giây" in caught.value.detail
+    assert caught.value.detail["code"] == "rate_limited"
+    assert caught.value.detail["retry_after"] == 12
+    assert "12 giây" in caught.value.detail["message"]

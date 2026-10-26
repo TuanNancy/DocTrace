@@ -12,6 +12,9 @@ from app.core.config import get_config
 from app.core.limits import require_upload_slot
 from app.core.workspace import require_workspace
 from app.services.rate_limiter import RateLimiter, get_rate_limiter
+from app.services.quotas import (
+    QuotaService, document_quota_error, get_quota_service,
+)
 from app.services.document_repository import DocumentRepository, get_document_repository, public_document
 from app.services.workspaces import WorkspaceContext
 from app.services.supabase_pdf_storage import (
@@ -30,6 +33,7 @@ async def upload_pdf(
     _slot: None = Depends(require_upload_slot),
     repository: DocumentRepository = Depends(get_document_repository),
     limiter: RateLimiter = Depends(get_rate_limiter),
+    quotas: QuotaService = Depends(get_quota_service),
 ) -> Dict[str, Any]:
     """
     Retain a PDF, then atomically create its Redis catalog record and RQ job.
@@ -82,6 +86,12 @@ async def upload_pdf(
 
     key = build_pdf_object_key(uid, doc_id, filename)
     await repository.check_available()
+    # Pre-check before touching Storage; create() re-checks under WATCH so two
+    # concurrent uploads cannot both take the last document slot.
+    limit = await quotas.document_limit(workspace.plan)
+    used = await repository.count_workspace(workspace.workspace_id)
+    if used >= limit:
+        raise document_quota_error(limit, used)
     await limiter.check(uid, action="upload")
     try:
         await run_in_threadpool(upload_pdf_to_supabase_storage, file_content, key)
@@ -98,8 +108,16 @@ async def upload_pdf(
             "doc_id": doc_id, "user_id": uid, "owner_user_id": uid,
             "workspace_id": workspace.workspace_id, "name": filename,
             "size_bytes": total_size, "storage_key": key,
-        })
-    except Exception:
+        }, limit=limit)
+    except Exception as exc:
+        if isinstance(exc, HTTPException) and exc.status_code == 429:
+            # The atomic re-check rejected this upload before committing the
+            # catalog/job, so the already-retained PDF must be removed.
+            try:
+                await run_in_threadpool(delete_pdf, key)
+            except Exception:
+                logger.exception("Could not remove quota-rejected PDF doc=%s", doc_id)
+            raise
         logger.exception("Could not confirm document enqueue doc=%s", doc_id)
         try:
             # A lost EXEC reply can still mean the catalog and job were committed.

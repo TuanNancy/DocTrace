@@ -9,10 +9,16 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.ai import rag_pipeline
+from app.main import app
 from app.providers import factory as provider_factory
 from app.providers.openrouter import OpenRouterChatProvider
+from app.services.rate_limiter import get_rate_limiter
 from app.storage import factory as vector_store_factory
 from app.storage.base import RetrievedChunk, VectorStore
+
+OWNER = "00000000-0000-0000-0000-000000000001"
+WORKSPACE = "00000000-0000-0000-0000-0000000000ab"
+REQUEST_ID = "11111111-1111-1111-1111-111111111111"
 
 
 @pytest.fixture
@@ -332,7 +338,8 @@ def test_chat_persists_usage_with_attribution_and_never_streams_it(
 
     response = client.post(
         "/api/chat",
-        json={"query": "How much leave?", "doc_id": "test-doc-id", "language": "en"},
+        json={"query": "How much leave?", "doc_id": "test-doc-id", "language": "en",
+              "request_id": REQUEST_ID},
     )
     events = parse_sse_events(response)
 
@@ -346,8 +353,148 @@ def test_chat_persists_usage_with_attribution_and_never_streams_it(
     assert answer["cost_status"] == "reported"
     assert answer["workspace_id"] == "00000000-0000-0000-0000-0000000000ab"
     assert answer["user_id"] == "00000000-0000-0000-0000-000000000001"
-    assert answer["request_id"]
+    assert answer["request_id"] == REQUEST_ID
     # Public documents use non-UUID ids in tests; malformed attribution is dropped.
     assert answer["doc_id"] is None
     assert "cost_micros" not in response.text
     assert "usage" not in response.text
+
+
+def test_chat_admission_uses_the_client_request_id_and_finalizes_status(
+    chat_dependencies, client, quotas,
+):
+    response = client.post(
+        "/api/chat",
+        json={"query": "How much leave?", "doc_id": "test-doc-id", "request_id": REQUEST_ID},
+    )
+
+    assert response.status_code == 200
+    quotas.existing_chat.assert_awaited_once_with(WORKSPACE, OWNER, REQUEST_ID)
+    quotas.admit_chat.assert_awaited_once_with(
+        WORKSPACE, OWNER, REQUEST_ID, "test-doc-id", "free",
+    )
+    statuses = [call.args[1] for call in quotas.mark_chat_status.await_args_list]
+    assert statuses == ["streaming", "completed"]
+    assert quotas.mark_chat_status.await_args_list[-1].args[2] is None
+
+
+def test_chat_generates_a_unique_request_id_when_the_client_omits_one(
+    chat_dependencies, client, quotas,
+):
+    for _ in range(2):
+        assert client.post(
+            "/api/chat", json={"query": "q", "doc_id": "test-doc-id"},
+        ).status_code == 200
+
+    request_ids = [call.args[2] for call in quotas.admit_chat.await_args_list]
+    assert len(request_ids) == 2
+    assert len(set(request_ids)) == 2
+    assert all(len(value) == 36 for value in request_ids)
+
+
+@pytest.mark.parametrize(("status", "code"), [
+    ("completed", "request_completed"),
+    ("admitted", "request_in_progress"),
+    ("streaming", "request_in_progress"),
+    ("failed", "request_failed"),
+    ("interrupted", "request_failed"),
+])
+def test_duplicate_request_never_spends_rate_limit_or_quota(
+    chat_dependencies, client, quotas, rate_limiter, status, code,
+):
+    quotas.existing_chat.return_value = {
+        "status": status,
+        "chat_request_id": "00000000-0000-0000-0000-0000000000c1",
+        "conversation_id": None,
+    }
+
+    response = client.post(
+        "/api/chat",
+        json={"query": "q", "doc_id": "test-doc-id", "request_id": REQUEST_ID},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == code
+    rate_limiter.check.assert_not_awaited()
+    quotas.admit_chat.assert_not_awaited()
+    chat_dependencies.vector_store.connect.assert_not_awaited()
+    chat_dependencies.create_completion.assert_not_awaited()
+
+
+def test_chat_quota_denial_is_json_before_streaming(
+    chat_dependencies, client, quotas,
+):
+    from app.core.errors import api_error
+
+    quotas.admit_chat.side_effect = api_error(
+        429, "quota_exceeded", "Đã hết lượt hỏi trong tháng.",
+        metric="chat_questions_month", limit=10, used=10,
+        reset_at="2026-11-01T00:00:00Z", retry_after=432060,
+        headers={"Retry-After": "432060"},
+    )
+
+    response = client.post("/api/chat", json={"query": "q", "doc_id": "test-doc-id"})
+
+    assert response.status_code == 429
+    assert response.headers["content-type"] == "application/json"
+    assert response.headers["retry-after"] == "432060"
+    assert response.json()["detail"] == {
+        "code": "quota_exceeded",
+        "message": "Đã hết lượt hỏi trong tháng.",
+        "metric": "chat_questions_month",
+        "limit": 10,
+        "used": 10,
+        "reset_at": "2026-11-01T00:00:00Z",
+        "retry_after": 432060,
+    }
+    chat_dependencies.vector_store.connect.assert_not_awaited()
+    chat_dependencies.create_completion.assert_not_awaited()
+    quotas.mark_chat_status.assert_not_awaited()
+
+
+def test_chat_marks_an_error_outcome_without_leaking_details(
+    chat_dependencies, client, quotas,
+):
+    chat_dependencies.vector_store.search_chunks.side_effect = RuntimeError("private upstream")
+
+    response = client.post("/api/chat", json={"query": "q", "doc_id": "test-doc-id"})
+
+    assert [event[0] for event in parse_sse_events(response)] == ["error", "done"]
+    assert "private upstream" not in response.text
+    final = quotas.mark_chat_status.await_args_list[-1]
+    assert final.args[1] == "failed"
+    assert final.args[2] == "stream_error"
+
+
+async def test_cancelled_chat_is_marked_interrupted(quotas, monkeypatch):
+    """A browser disconnect must release the status, not leave it streaming."""
+    class Pipeline:
+        async def retrieve_chunks(self, query, doc_id, *, user_id):
+            return [RetrievedChunk("c1", doc_id, "text", 1, "s.pdf", 0.9)]
+
+        def select_context_chunks(self, chunks):
+            return chunks
+
+        async def stream_answer(self, **kwargs):
+            yield "partial"
+            yield "never delivered"
+
+        async def shutdown(self):
+            pass
+
+    async def pipeline(**kwargs):
+        return Pipeline()
+
+    monkeypatch.setattr("app.routers.chat.create_initialized_rag_pipeline", pipeline)
+    from app.routers.chat import _stream_chat_sse
+
+    stream = _stream_chat_sse(
+        "q", "doc", OWNER, chat_request_id="00000000-0000-0000-0000-0000000000c1",
+        quotas=quotas,
+    )
+    assert "event: sources" in await anext(stream)
+    assert "event: token" in await anext(stream)
+    await stream.aclose()
+
+    statuses = [call.args[1] for call in quotas.mark_chat_status.await_args_list]
+    assert statuses == ["streaming", "interrupted"]

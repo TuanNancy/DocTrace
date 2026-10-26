@@ -75,7 +75,7 @@ it("switching workspace clears document, source and chat, then rejects late answ
   let chat!: Promise<void>;
   act(() => { chat = workspace.current.chat.submit("Question about A"); });
   act(() => workspace.current.selectSource(source("a")));
-  const signal = vi.mocked(streamChat).mock.calls[0][4];
+  const signal = vi.mocked(streamChat).mock.calls[0][5];
 
   await act(async () => { workspace.current.switchWorkspace("workspace-b"); });
 
@@ -120,7 +120,7 @@ it("preserves the new selection, source and stream when an older deletion respon
   let chat!: Promise<void>;
   act(() => { chat = workspace.current.chat.submit("Question about B"); });
   act(() => workspace.current.selectSource(source("b")));
-  const signal = vi.mocked(streamChat).mock.calls[0][4];
+  const signal = vi.mocked(streamChat).mock.calls[0][5];
 
   await act(async () => { finishDelete({ ...documents[0], status: "deleting" }); await deletion; });
 
@@ -142,7 +142,7 @@ it("clears the source and cancels chat when the deleted document is still select
   let chat!: Promise<void>;
   act(() => { chat = workspace.current.chat.submit("Question about A"); });
   act(() => workspace.current.selectSource(source("a")));
-  const signal = vi.mocked(streamChat).mock.calls[0][4];
+  const signal = vi.mocked(streamChat).mock.calls[0][5];
 
   await act(async () => { await workspace.current.operate(documents[0], "delete"); });
 

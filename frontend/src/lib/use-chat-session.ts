@@ -64,7 +64,7 @@ export function useChatSession({ docId, workspaceId, mock = false, accessToken }
           update({}, part);
         }
       } else {
-        const response = await streamChat(query, docId!, accessToken!, workspaceId!, controller.signal);
+        const response = await streamChat(query, docId!, accessToken!, workspaceId!, id, controller.signal);
         if (controller.signal.aborted) { await response.body?.cancel(); return; }
         for await (const event of streamChatSSEParser(response.body!)) {
           if (controller.signal.aborted) break;

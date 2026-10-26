@@ -57,6 +57,20 @@ function errorDetail(body: unknown): { message: string | null; code: string | nu
   return { message: null, code: typeof record.code === "string" ? record.code : null };
 }
 
+/** Render the UTC quota reset boundary the backend reports, if present and valid. */
+function quotaResetDate(body: unknown): string | null {
+  if (!body || typeof body !== "object") return null;
+  const detail = (body as Record<string, unknown>).detail;
+  if (!detail || typeof detail !== "object") return null;
+  const value = (detail as Record<string, unknown>).reset_at;
+  if (typeof value !== "string") return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  const day = String(date.getUTCDate()).padStart(2, "0");
+  const month = String(date.getUTCMonth() + 1).padStart(2, "0");
+  return `${day}/${month}/${date.getUTCFullYear()}`;
+}
+
 async function checkResponse(response: Response) {
   if (response.ok) return;
   let body: unknown = null;
@@ -67,6 +81,16 @@ async function checkResponse(response: Response) {
   }
   const { message, code } = errorDetail(body);
   if (response.status === 429) {
+    if (code === "quota_exceeded") {
+      // Monthly quota is not a burst limit: show when the plan resets rather
+      // than a Retry-After wait that could be weeks long.
+      const reset = quotaResetDate(body);
+      const reason = message ?? "Đã hết hạn mức sử dụng của gói hiện tại.";
+      throw new ApiError(
+        reset ? `${reason} Hạn mức sẽ được đặt lại vào ${reset}.` : reason,
+        response.status, code,
+      );
+    }
     const wait = retryAfterSeconds(response.headers.get("Retry-After"));
     throw new ApiError(
       `Bạn gửi yêu cầu quá nhanh. Vui lòng thử lại sau${wait === null ? "" : ` ${wait} giây`}.`,
@@ -139,6 +163,7 @@ export async function streamChat(
   docId: string,
   accessToken: string,
   workspaceId: string,
+  requestId: string,
   signal?: AbortSignal
 ): Promise<Response> {
   const response = await fetch(apiUrl("/api/chat"), {
@@ -148,7 +173,7 @@ export async function streamChat(
       "Content-Type": "application/json",
       Accept: "text/event-stream",
     },
-    body: JSON.stringify({ query, doc_id: docId, language: "vi" }),
+    body: JSON.stringify({ query, doc_id: docId, language: "vi", request_id: requestId }),
     signal,
   });
   await checkResponse(response);
