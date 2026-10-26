@@ -10,10 +10,11 @@ from fastapi.responses import StreamingResponse
 
 from app.ai.document_summary import is_document_overview
 from app.ai.rag_pipeline import create_initialized_rag_pipeline
-from app.core.auth import require_supabase_user
+from app.core.workspace import require_workspace
 from app.schemas import ChatRequest
 from app.services.document_repository import DocumentRepository, get_document_repository
 from app.services.rate_limiter import RateLimiter, get_rate_limiter
+from app.services.workspaces import WorkspaceContext
 
 logger = logging.getLogger(__name__)
 
@@ -85,7 +86,7 @@ async def _stream_chat_sse(query: str, doc_id: str, user_id: str, language: str 
 @router.post("/chat")
 async def chat(
     request: ChatRequest,
-    user: dict = Depends(require_supabase_user),
+    workspace: WorkspaceContext = Depends(require_workspace),
     repository: DocumentRepository = Depends(get_document_repository),
     limiter: RateLimiter = Depends(get_rate_limiter),
 ) -> StreamingResponse:
@@ -97,10 +98,8 @@ async def chat(
             raise HTTPException(status_code=400, detail="Query is required")
         if not doc_id:
             raise HTTPException(status_code=400, detail="Document ID is required")
-        user_id = str(user.get("id") or "")
-        if not user_id:
-            raise HTTPException(status_code=401, detail="Invalid user: missing id.")
-        document = await repository.get(user_id, doc_id)
+        user_id = workspace.user_id
+        document = await repository.get(workspace.workspace_id, user_id, doc_id)
         if document["status"] != "ready" or not document.get("active_index_id"):
             raise HTTPException(409, "Tài liệu chưa sẵn sàng để hỏi đáp.")
 

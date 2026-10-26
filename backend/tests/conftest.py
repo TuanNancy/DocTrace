@@ -42,16 +42,18 @@ async def _fake_workspace():
 def repository():
     """Only the Redis library boundary is mocked; no developer cloud calls."""
     fake = AsyncMock(spec=DocumentRepository)
-    fake.get.side_effect = lambda uid, doc_id: {
-        "doc_id": doc_id, "user_id": uid, "name": "sample.pdf", "status": "ready",
+    fake.get.side_effect = lambda workspace_id, uid, doc_id: {
+        "doc_id": doc_id, "workspace_id": workspace_id, "owner_user_id": uid, "user_id": uid,
+        "name": "sample.pdf", "status": "ready",
         "active_index_id": doc_id, "storage_key": f"{uid}/{doc_id}/sample.pdf",
     }
     fake.create.side_effect = lambda document: {
         **document, "status": "queued", "chunks_count": 0, "warnings": [], "error": None,
     }
-    fake.queue.side_effect = lambda uid, doc_id, kind: {
+    fake.queue.side_effect = lambda workspace_id, uid, doc_id, kind: {
         "doc_id": doc_id, "name": "sample.pdf", "status": "queued" if kind == "index" else "deleting",
         "chunks_count": 0, "size_bytes": 100, "warnings": [], "user_id": uid,
+        "workspace_id": workspace_id, "owner_user_id": uid,
     }
     fake.list.return_value = {"items": [], "has_more": False}
     return fake

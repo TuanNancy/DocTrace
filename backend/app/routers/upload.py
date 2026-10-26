@@ -8,11 +8,12 @@ from typing import Annotated, Any, Dict
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from starlette.concurrency import run_in_threadpool
 
-from app.core.auth import require_supabase_user
 from app.core.config import get_config
 from app.core.limits import require_upload_slot
+from app.core.workspace import require_workspace
 from app.services.rate_limiter import RateLimiter, get_rate_limiter
 from app.services.document_repository import DocumentRepository, get_document_repository, public_document
+from app.services.workspaces import WorkspaceContext
 from app.services.supabase_pdf_storage import (
     build_pdf_object_key, upload_pdf_to_supabase_storage, is_pdf_storage_configured, delete_pdf,
 )
@@ -25,7 +26,7 @@ router = APIRouter(prefix="/api", tags=["upload"])
 @router.post("/upload", status_code=202)
 async def upload_pdf(
     file: Annotated[UploadFile, File(description="PDF file to index")],
-    user: dict = Depends(require_supabase_user),
+    workspace: WorkspaceContext = Depends(require_workspace),
     _slot: None = Depends(require_upload_slot),
     repository: DocumentRepository = Depends(get_document_repository),
     limiter: RateLimiter = Depends(get_rate_limiter),
@@ -76,9 +77,7 @@ async def upload_pdf(
     if not is_pdf_storage_configured():
         raise HTTPException(503, "Kho PDF chưa được cấu hình trên máy chủ.")
 
-    uid = str(user.get("id") or "")
-    if not uid:
-        raise HTTPException(status_code=401, detail="Invalid user: missing id.")
+    uid = workspace.user_id
     doc_id = str(uuid.uuid4())
 
     key = build_pdf_object_key(uid, doc_id, filename)
@@ -95,13 +94,16 @@ async def upload_pdf(
             logger.exception("Could not remove incomplete upload doc=%s", doc_id)
         raise HTTPException(503, "Không thể lưu PDF. Vui lòng tải lại tài liệu.") from None
     try:
-        document = await repository.create({"doc_id": doc_id, "user_id": uid, "name": filename,
-                                            "size_bytes": total_size, "storage_key": key})
+        document = await repository.create({
+            "doc_id": doc_id, "user_id": uid, "owner_user_id": uid,
+            "workspace_id": workspace.workspace_id, "name": filename,
+            "size_bytes": total_size, "storage_key": key,
+        })
     except Exception:
         logger.exception("Could not confirm document enqueue doc=%s", doc_id)
         try:
             # A lost EXEC reply can still mean the catalog and job were committed.
-            document = await repository.get(uid, doc_id)
+            document = await repository.get(workspace.workspace_id, uid, doc_id)
         except HTTPException as exc:
             if exc.status_code == 404:
                 try:

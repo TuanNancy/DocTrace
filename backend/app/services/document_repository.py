@@ -1,7 +1,12 @@
-"""Owner-scoped Redis library. Catalog records have no TTL; RQ jobs do.
+"""Workspace-scoped Redis library. Catalog records have no TTL; RQ jobs do.
 
-All writes use WATCH to serialize changes to one document. Enqueue and metadata
-share MULTI/EXEC on the same Redis instance. Synchronous Redis/RQ runs off-loop.
+Documents stay private to their owner: a record must match both the selected
+workspace and the authenticated user. Every write uses WATCH to serialize
+changes to one document. Enqueue and the catalog indexes share MULTI/EXEC on
+the same Redis instance. Synchronous Redis/RQ runs off-loop.
+
+The legacy per-user index is still maintained during the P1 rollout so a
+rollback to the previous image sees the same library.
 """
 from __future__ import annotations
 
@@ -36,21 +41,47 @@ def document_key(doc_id: str) -> str:
     return f"{PREFIX}:document:{doc_id}"
 
 
-def catalog_key(user_id: str) -> str:
+def workspace_user_key(workspace_id: str, user_id: str) -> str:
+    return f"{PREFIX}:workspace:{workspace_id}:user:{user_id}:documents"
+
+
+def workspace_key(workspace_id: str) -> str:
+    return f"{PREFIX}:workspace:{workspace_id}:documents"
+
+
+def global_key() -> str:
+    return f"{PREFIX}:documents"
+
+
+def legacy_user_key(user_id: str) -> str:
+    """Previous image's index; keep it accurate until the rollout is complete."""
     return f"{PREFIX}:user:{user_id}:documents"
+
+
+def normalize_document(document: dict | None) -> dict | None:
+    """Treat a pre-workspace record as belonging to the owner's personal workspace."""
+    if document is None:
+        return None
+    if not document.get("owner_user_id"):
+        document["owner_user_id"] = document.get("user_id")
+    if not document.get("workspace_id"):
+        document["workspace_id"] = document.get("owner_user_id")
+    return document
 
 
 def read_document(connection, doc_id: str) -> dict | None:
     raw = connection.hget(document_key(doc_id), "data")
-    return json.loads(raw) if raw else None
+    return normalize_document(json.loads(raw)) if raw else None
 
 
 def write_document(pipeline, document: dict) -> None:
     pipeline.hset(document_key(document["doc_id"]), "data", json.dumps(document))
 
 
-def owned(document: dict | None, user_id: str) -> dict:
-    if not document or document["user_id"] != user_id or document["status"] == "deleted":
+def owned(document: dict | None, workspace_id: str, user_id: str) -> dict:
+    if (not document or document.get("status") == "deleted"
+            or document.get("owner_user_id") != user_id
+            or document.get("workspace_id") != workspace_id):
         raise HTTPException(404, "Không tìm thấy tài liệu.")
     return document
 
@@ -73,7 +104,7 @@ class DocumentRepository:
     async def check_available(self) -> None:
         await self._run(lambda connection: connection.ping())
 
-    def _get(self, connection, user_id: str, doc_id: str) -> dict:
+    def _get(self, connection, workspace_id: str, user_id: str, doc_id: str) -> dict:
         try:
             UUID(doc_id)
         except ValueError:
@@ -83,7 +114,7 @@ class DocumentRepository:
             with connection.pipeline() as pipe:
                 try:
                     pipe.watch(document_key(doc_id))
-                    document = owned(read_document(pipe, doc_id), user_id)
+                    document = owned(read_document(pipe, doc_id), workspace_id, user_id)
                     # Business outcomes outlive RQ result keys. A finished job can
                     # also mean an invalid PDF; only the task can publish ready.
                     if document["status"] not in ("queued", "processing", "deleting"):
@@ -108,16 +139,18 @@ class DocumentRepository:
                     continue
         raise HTTPException(409, "Tài liệu đang thay đổi. Vui lòng thử lại.")
 
-    async def get(self, user_id: str, doc_id: str) -> dict:
-        return await self._run(self._get, user_id, doc_id)
+    async def get(self, workspace_id: str, user_id: str, doc_id: str) -> dict:
+        return await self._run(self._get, workspace_id, user_id, doc_id)
 
-    async def list(self, user_id: str, limit: int, offset: int) -> dict:
+    async def list(self, workspace_id: str, user_id: str, limit: int, offset: int) -> dict:
         def listing(connection):
-            ids = connection.zrevrange(catalog_key(user_id), offset, offset + limit)
+            ids = connection.zrevrange(workspace_user_key(workspace_id, user_id), offset, offset + limit)
             items = []
             for identifier in ids:
                 try:
-                    items.append(public_document(self._get(connection, user_id, identifier.decode())))
+                    items.append(public_document(
+                        self._get(connection, workspace_id, user_id, identifier.decode())
+                    ))
                 except HTTPException as exc:
                     if exc.status_code != 404:
                         raise
@@ -126,24 +159,37 @@ class DocumentRepository:
 
     async def create(self, document: dict) -> dict:
         """Called only after PDF retention; create the catalog and first job atomically."""
+        workspace_id = str(document.get("workspace_id") or "")
+        owner_user_id = str(document.get("owner_user_id") or document.get("user_id") or "")
+        if not workspace_id or not owner_user_id:
+            raise ValueError("A document requires workspace_id and owner_user_id")
+
         def create(connection):
             timestamp = now()
-            record = {**document, "status": "queued", "chunks_count": 0, "warnings": [], "error": None,
+            record = {**document, "user_id": owner_user_id, "owner_user_id": owner_user_id,
+                      "workspace_id": workspace_id,
+                      "status": "queued", "chunks_count": 0, "warnings": [], "error": None,
                       "created_at": timestamp, "updated_at": timestamp, "active_index_id": None,
                       "job_id": f"index-{document['doc_id']}", "job_kind": "index",
                       "attempt_number": 0, "attempt_id": None, "generations": []}
+            score = datetime.fromisoformat(timestamp).timestamp()
+            indexes = (
+                workspace_user_key(workspace_id, owner_user_id),
+                workspace_key(workspace_id),
+                global_key(),
+                legacy_user_key(owner_user_id),
+            )
             for _ in range(10):
                 with connection.pipeline() as pipe:
                     try:
                         pipe.watch(document_key(record["doc_id"]))
                         existing = read_document(pipe, record["doc_id"])
                         if existing:
-                            return owned(existing, record["user_id"])
+                            return owned(existing, workspace_id, owner_user_id)
                         pipe.multi()
                         write_document(pipe, record)
-                        pipe.zadd(catalog_key(record["user_id"]), {
-                            record["doc_id"]: datetime.fromisoformat(timestamp).timestamp(),
-                        })
+                        for index in indexes:
+                            pipe.zadd(index, {record["doc_id"]: score})
                         DocumentQueue(self.config, connection).enqueue(
                             record["doc_id"], record["job_id"], "index", pipe)
                         pipe.execute()
@@ -153,19 +199,19 @@ class DocumentRepository:
             raise HTTPException(409, "Tài liệu đang thay đổi. Vui lòng thử lại.")
         return await self._run(create)
 
-    async def queue(self, user_id: str, doc_id: str, kind: str) -> dict:
+    async def queue(self, workspace_id: str, user_id: str, doc_id: str, kind: str) -> dict:
         if kind not in ("index", "delete"):
             raise ValueError("Unknown document task")
 
         def enqueue(connection):
-            self._get(connection, user_id, doc_id)  # Reconcile pre-task failures/expired RQ keys first.
+            self._get(connection, workspace_id, user_id, doc_id)  # Reconcile pre-task failures/expired RQ keys first.
             queue = DocumentQueue(self.config, connection)
             job_id = f"{kind}-{uuid4()}"
             for _ in range(10):
                 with connection.pipeline() as pipe:
                     try:
                         pipe.watch(document_key(doc_id))
-                        document = owned(read_document(pipe, doc_id), user_id)
+                        document = owned(read_document(pipe, doc_id), workspace_id, user_id)
                         if document["job_id"] == job_id:
                             return document  # A retried EXEC read its own committed enqueue.
                         pipe.watch(Job.key_for(document["job_id"]))
@@ -192,6 +238,13 @@ class DocumentRepository:
                         raise
             raise HTTPException(409, "Tài liệu đang thay đổi. Vui lòng thử lại.")
         return await self._run(enqueue)
+
+    async def count_workspace(self, workspace_id: str, user_id: str | None = None) -> int:
+        """Number of catalogued (not necessarily ready) documents in a workspace."""
+        def count(connection):
+            key = workspace_user_key(workspace_id, user_id) if user_id else workspace_key(workspace_id)
+            return int(connection.zcard(key))
+        return await self._run(count)
 
     async def internal_document(self, doc_id: str) -> dict | None:
         return await self._run(read_document, doc_id)
@@ -252,7 +305,15 @@ class DocumentRepository:
                         pipe.multi()
                         write_document(pipe, document)
                         if document["status"] == "deleted":
-                            pipe.zrem(catalog_key(document["user_id"]), doc_id)
+                            owner_user_id = document["owner_user_id"]
+                            workspace_id = document["workspace_id"]
+                            for index in (
+                                workspace_user_key(workspace_id, owner_user_id),
+                                workspace_key(workspace_id),
+                                global_key(),
+                                legacy_user_key(owner_user_id),
+                            ):
+                                pipe.zrem(index, doc_id)
                         pipe.execute()
                         return error is None
                     except WatchError:
