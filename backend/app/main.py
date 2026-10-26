@@ -8,7 +8,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.routers import chat, upload, documents
+from app.routers import chat, upload, documents, workspaces
 from app.core.config import get_config
 from app.core.observability import RequestContextMiddleware, configure_logging
 from app.db import dispose_engines
@@ -46,6 +46,7 @@ app.add_middleware(RequestContextMiddleware)
 app.include_router(upload.router)
 app.include_router(chat.router)
 app.include_router(documents.router)
+app.include_router(workspaces.router)
 
 
 @app.get("/ready", tags=["health"])
