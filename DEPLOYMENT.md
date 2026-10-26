@@ -70,6 +70,7 @@ Copy `backend/.env.example` thành `backend/.env`, giữ các giá trị tuning 
 | Zilliz Cloud | `MILVUS_URI` là endpoint HTTPS của cluster; `MILVUS_TOKEN` là credential được cấp quyền truy cập; `MILVUS_COLLECTION=pdf_chunks_owned_v1` |
 | OpenRouter | `OPENROUTER_API_KEY`, `RAG_MODEL`, `EMBEDDING_MODEL` theo model bạn chọn |
 | Usage/cost | Giữ `DATABASE_URL` cho cả API và worker để ghi `doctrace.provider_calls`; `SUMMARY_MAX_CALLS=8` giới hạn lượt tóm tắt mỗi request |
+| Transcript | `TRANSCRIPT_DELETE_MODE=retain_30d` hoặc `cascade`; `TRANSCRIPT_RETENTION_DAYS=30`. Chạy purge định kỳ (xem bên dưới) |
 | Queue | `RQ_QUEUE_NAME=documents-v2`; Compose đã override `REDIS_URL` cho API/worker |
 
 S3 access key/secret là credential riêng của Storage, không phải Supabase publishable key. Giữ `MILVUS_INDEX_TYPE` không khai báo để URI mode chọn AUTOINDEX. Dùng collection mới cho bộ embedding mới; không trộn vector từ hai model hoặc recreate collection đang có dữ liệu.
@@ -85,6 +86,16 @@ Schema được tạo/xóa bằng Alembic. Không chạy `down -v` để "làm s
 `provider_calls` ghi usage/cost theo từng lượt provider. API và worker phải cùng có `DATABASE_URL` để ghi; nếu thiếu thì không lưu cost (workspace/quota vẫn yêu cầu Postgres). Ghi usage là best effort nên lỗi Postgres không làm hỏng request; cost thiếu được lưu `unknown`/`NULL`, không phải `0`. Bảng này không chứa nội dung PDF hay prompt.
 
 P2b dùng lại `plan_limits`, `usage_counters` và `chat_requests` đã có trong migration `0001`, không cần migration mới. Seed mặc định: free `10` câu hỏi/tháng, `5` tài liệu, `1` workspace; pro `100`, `50`, `10`. Chat reserve quota trong một transaction Postgres nên nhiều API instance/request đồng thời không vượt giới hạn; upload kiểm tra lại số tài liệu trong transaction Redis. Thiếu hoặc lỗi Postgres trả `503 quota_unavailable` trước khi mở SSE/lưu PDF. Hạn mức chat reset theo tháng UTC; `GET /api/usage` trả plan, kỳ hiện tại, `chat`, `documents` và breakdown theo user (member chỉ thấy mình). Muốn đổi giới hạn cho demo, cập nhật `doctrace.plan_limits` bằng migration/DDL có kiểm soát, không sửa trực tiếp Redis.
+
+P3 cũng dùng lại `conversations`/`messages` trong migration `0001`, không cần migration mới. Admission ghi conversation + câu hỏi + placeholder assistant cùng transaction quota; stream cập nhật nội dung/nguồn/trạng thái cuối. Transcript chỉ đọc được bởi chính user trong workspace; owner không thấy hội thoại của thành viên. Xóa tài liệu ẩn transcript ngay; mặc định purge sau `TRANSCRIPT_RETENTION_DAYS=30` ngày, hoặc xóa ngay với `TRANSCRIPT_DELETE_MODE=cascade`.
+
+Chạy purge hằng ngày bằng cron/systemd timer trên VPS (ví dụ 03:00 UTC):
+
+```cron
+0 3 * * * cd /opt/DocTrace && docker compose --env-file .env.production -f compose.production.yml exec -T worker python -m app.purge_transcripts >> /var/log/doctrace-purge.log 2>&1
+```
+
+Có thể chạy tay cùng lệnh `exec worker python -m app.purge_transcripts`; lệnh chỉ xóa conversation có `purge_after < now()`, không đụng `provider_calls`, Redis, PDF hay Milvus.
 
 Đặt đúng origin frontend Vercel (không có path):
 
@@ -118,7 +129,7 @@ Trong Supabase Auth, đặt Site URL bằng origin frontend và allowlist `https
 
 Popup trả ID token trực tiếp cho frontend, không dùng Vercel redirect URI trong Google Console. Giữ callback `https://YOUR-PROJECT.supabase.co/auth/v1/callback` nếu còn cần OAuth cũ; allowlist `/auth/callback` trong Supabase cho luồng cũ đó. Route `/auth/callback` không nhận Google ID token trực tiếp. Nếu Audience của Google ở Testing, thêm tài khoản vào Test users. Xem [frontend/README.md](frontend/README.md#google-login-google-identity-services) để cấu hình local và kiểm tra đăng nhập thật. CORS backend phải chứa origin frontend; Vercel Preview cần đăng ký riêng origin Google và URL email redirect tương ứng.
 
-Sau khi API đã có HTTPS, deploy/redeploy frontend; thay `NEXT_PUBLIC_*` cần rebuild trên Vercel. Kiểm tra thực tế theo luồng: đăng nhập → upload PDF → chờ ready → chat/citation → mở PDF → xóa tài liệu.
+Sau khi API đã có HTTPS, deploy/redeploy frontend; thay `NEXT_PUBLIC_*` cần rebuild trên Vercel. Kiểm tra thực tế theo luồng: đăng nhập → upload PDF → chờ ready → chat/citation → mở PDF → reload khôi phục transcript → “Chat mới” xóa transcript → trang Mức sử dụng → xóa tài liệu.
 
 ### Rate limit theo user
 
