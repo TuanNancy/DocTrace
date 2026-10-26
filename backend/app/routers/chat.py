@@ -1,9 +1,11 @@
 """
 POST /api/chat: authenticated SSE with sources, token, error, and done events.
 """
+import asyncio
 import json
 import logging
 from typing import AsyncIterator
+from uuid import uuid4
 
 from anyio import CancelScope
 from fastapi import APIRouter, Depends, HTTPException
@@ -12,11 +14,13 @@ from fastapi.responses import StreamingResponse
 from app.ai.document_summary import is_document_overview
 from app.ai.rag_pipeline import create_initialized_rag_pipeline
 from app.core.config import get_config
-from app.core.observability import current_request_id
 from app.core.workspace import require_workspace
 from app.schemas import ChatRequest
 from app.services.document_repository import DocumentRepository, get_document_repository
 from app.services.provider_calls import UsageAttribution, UsageCollector
+from app.services.quotas import (
+    QuotaService, duplicate_error, get_quota_service,
+)
 from app.services.rate_limiter import RateLimiter, get_rate_limiter
 from app.services.workspaces import WorkspaceContext
 
@@ -31,8 +35,23 @@ def _sse_message(event: str, data: str) -> str:
 
 async def _stream_chat_sse(query: str, doc_id: str, user_id: str, language: str = "vi",
                            document_id: str | None = None,
-                           usage: UsageCollector | None = None) -> AsyncIterator[str]:
+                           usage: UsageCollector | None = None,
+                           chat_request_id: str | None = None,
+                           quotas: QuotaService | None = None) -> AsyncIterator[str]:
     pipeline = None
+    # Completion is only published after the done event is yielded. A closed
+    # generator or a cancelled task therefore stays "interrupted" unless the
+    # provider actually finished its answer.
+    outcome = "interrupted"
+    error_code: str | None = None
+
+    if quotas is not None and chat_request_id:
+        try:
+            await quotas.mark_chat_status(chat_request_id, "streaming")
+        except Exception:
+            # Admission already consumed quota; status telemetry must never
+            # prevent the answer from streaming.
+            logger.warning("Could not mark chat request streaming", exc_info=True)
 
     try:
         pipeline = await create_initialized_rag_pipeline(usage=usage)
@@ -64,6 +83,7 @@ async def _stream_chat_sse(query: str, doc_id: str, user_id: str, language: str 
                 )
             yield _sse_message("token", json.dumps(fallback))
             yield _sse_message("done", json.dumps("[DONE]"))
+            outcome = "completed"
             return
 
         async for text_delta in pipeline.stream_answer(
@@ -77,8 +97,14 @@ async def _stream_chat_sse(query: str, doc_id: str, user_id: str, language: str 
                 yield _sse_message("token", json.dumps(text_delta))
 
         yield _sse_message("done", json.dumps("[DONE]"))
+        outcome = "completed"
 
+    except (asyncio.CancelledError, GeneratorExit):
+        outcome = "interrupted"
+        raise
     except Exception as e:
+        outcome = "failed"
+        error_code = "stream_error"
         logger.exception("Chat stream error: %s", e)
         yield _sse_message("error", json.dumps({"message": "Chat service unavailable. Please try again."}))
         yield _sse_message("done", json.dumps("[DONE]"))
@@ -88,10 +114,15 @@ async def _stream_chat_sse(query: str, doc_id: str, user_id: str, language: str 
             if pipeline:
                 await pipeline.shutdown()
         finally:
-            if usage is not None:
-                with CancelScope(shield=True):
-                    # Cost rows and best-effort reconciliation must survive a
-                    # browser disconnect and not mask the stream's outcome.
+            with CancelScope(shield=True):
+                # Admission already consumed the question, so the terminal
+                # status and cost rows must survive a browser disconnect.
+                if quotas is not None and chat_request_id:
+                    try:
+                        await quotas.mark_chat_status(chat_request_id, outcome, error_code)
+                    except Exception:
+                        logger.warning("Could not finalize chat request", exc_info=True)
+                if usage is not None:
                     await usage.flush()
 
 
@@ -101,6 +132,7 @@ async def chat(
     workspace: WorkspaceContext = Depends(require_workspace),
     repository: DocumentRepository = Depends(get_document_repository),
     limiter: RateLimiter = Depends(get_rate_limiter),
+    quotas: QuotaService = Depends(get_quota_service),
 ) -> StreamingResponse:
     try:
         query = request.query.strip()
@@ -115,15 +147,27 @@ async def chat(
         if document["status"] != "ready" or not document.get("active_index_id"):
             raise HTTPException(409, "Tài liệu chưa sẵn sàng để hỏi đáp.")
 
+        # A retried submit must not spend a second rate-limit token or quota
+        # question. admit_chat repeats this check atomically to also close the
+        # race where two identical requests arrive together.
+        request_id = str(request.request_id or uuid4())
+        existing = await quotas.existing_chat(workspace.workspace_id, user_id, request_id)
+        if existing:
+            raise duplicate_error(existing)
+
         await limiter.check(user_id, action="chat")
+        admission = await quotas.admit_chat(
+            workspace.workspace_id, user_id, request_id, doc_id, workspace.plan,
+        )
         usage = UsageCollector(UsageAttribution(
             workspace_id=workspace.workspace_id, user_id=user_id, doc_id=doc_id,
-            request_id=current_request_id(),
+            request_id=request_id,
         ), config=get_config())
         return StreamingResponse(
             _stream_chat_sse(
                 query, document["active_index_id"], user_id, language,
                 document_id=doc_id, usage=usage,
+                chat_request_id=admission["chat_request_id"], quotas=quotas,
             ),
             media_type="text/event-stream",
             headers={
