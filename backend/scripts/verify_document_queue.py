@@ -71,7 +71,7 @@ def main():
         doc_id = str(uuid.uuid4())
         return run(repository.create({"doc_id": doc_id, "user_id": owner, "owner_user_id": owner,
                                       "workspace_id": workspace, "name": name, "size_bytes": 20,
-                                      "storage_key": f"{owner}/{doc_id}/{name}"}))
+                                      "storage_key": f"{owner}/{doc_id}/{name}"}, limit=1000))
 
     def current(record):
         return run(repository.internal_document(record["doc_id"]))
@@ -118,7 +118,7 @@ def main():
         connect()
         queued = document()
         with ThreadPoolExecutor(2) as pool:
-            list(pool.map(lambda _: run(repository.create(queued)), range(2)))
+            list(pool.map(lambda _: run(repository.create(queued, limit=1000)), range(2)))
         assert queue.queue.count == 1
         assert connection.ttl(document_key(queued["doc_id"])) == -1
         assert connection.ttl(workspace_user_key(workspace, owner)) == -1
