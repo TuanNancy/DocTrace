@@ -3,7 +3,7 @@
 ## Commands and verification
 
 - CI uses Ubuntu 24.04, Python 3.12 / Node 22; Actions run on Node 24. Run Python/npm commands in `backend/`/`frontend/`; Docker/deploy commands run at root.
-- Backend setup: `python -m pip install -r requirements-dev.txt` includes runtime + tests. API: `uvicorn app.main:app --reload --port 8000`. Linux worker: `python -m app.worker`; on macOS use `docker compose --profile jobs up -d --build worker` for Linux RQ fork behavior.
+- Backend setup: `python -m pip install -r requirements-dev.txt` includes runtime + tests; run `alembic upgrade head` against a configured Postgres before workspace features; API: `uvicorn app.main:app --reload --port 8000`. Linux worker: `python -m app.worker`; on macOS use `docker compose --profile jobs up -d --build worker` for Linux RQ fork behavior.
 - Backend tests: `python -m pytest`; focused: `python -m pytest tests/test_document_repository.py tests/test_worker.py` or `python -m pytest tests/test_chat.py::test_chat_sse_stream`. `tests/conftest.py` seeds isolated config before app import. Repository tests use fakeredis; router tests override Auth, repository and `get_rate_limiter` to avoid developer services.
 - Redis integration: `python scripts/verify_rate_limits.py` checks real Lua/TTL/concurrency; `python scripts/verify_document_queue.py` checks transactions and Linux RQ workers with PDF/AI/S3/Milvus fixtures. Both need running Docker and use disposable Redis. Queue verification builds an image unless given `--api-image doctrace-api:verify`.
 - Frontend: `npm ci`; CI order: `npm run typecheck`, `npm run lint`, `npm test`, `npm run test:e2e`, `npm run build`. Focused: `npm test -- tests/ChatWindow.test.tsx`. Build needs public Supabase settings; `.github/workflows/verify.yml` supplies placeholders.
@@ -14,7 +14,7 @@
 ## Runtime boundaries
 
 - Paths in this section are relative to `backend/app/`. See `ARCHITECTURE.md` for lifecycle and recovery details.
-- FastAPI starts in `main.py`. Upload retains the PDF in Supabase Storage, then commits Redis metadata + RQ enqueue before returning 202. Indexing errors belong to document status. Supabase supplies Auth/Storage; no application SQL migrations or metadata service-role key are required.
+- FastAPI starts in `main.py`. Upload retains the PDF in Supabase Storage, then commits Redis metadata + RQ enqueue before returning 202. Indexing errors belong to document status. Supabase supplies Auth/Storage and the Postgres control plane (`doctrace` schema via Alembic); no metadata service-role key is required. Redis remains authoritative for the document catalog/queue.
 - `services/document_repository.py` owns Redis hashes and per-user sorted sets under `doctrace:library:v2`; catalog keys have no TTL. RQ result expiry must not remove ready documents. Every public read/mutation checks the authenticated owner; Milvus queries also filter `user_id`.
 - `services/rate_limiter.py` uses atomic Redis-time windows under `doctrace:ratelimit:v1` with TTL. Validate user/document before quota; check quota before Storage/enqueue/SSE. Never refund admissions or retry uncertain quota replies. Redis failure is 503; exhaustion is 429 + `Retry-After`, which CORS and fetch/XHR must preserve. Deletion retries are exempt.
 - `services/job_queue.py` enqueues inside the repository's WATCH/MULTI transaction. RQ 2.12 `unique=True` ignores a supplied pipeline: do not enable it here. API/worker need the same Redis and queue (`documents-v2`); legacy `documents` jobs have incompatible payloads.
@@ -41,4 +41,4 @@
 - Redis AOF/volume holds the library and queue; `down -v` loses them and production certificates. PDF/vector data cannot rebuild the catalog: do not flush Redis or recreate Milvus to populate metadata. Old PostgreSQL users re-upload; see `DEPLOYMENT.md` cutover.
 - Use `compose.production.yml` for VPS API/Redis/worker/Nginx; Vercel builds `frontend/`. Plain root Compose starts local vector infrastructure. API/worker share `REDIS_URL=redis://redis:6379/0` inside Docker.
 - Keep worker shutdown grace (16m) above job timeouts (index 900s, delete 300s). Follow `DEPLOYMENT.md` for updates/certificates; bootstrap only initially. Recreate Nginx after template edits; preserve unbuffered uploads/SSE, validation-before-reload and Compose project/volumes. systemd assumes `/opt/DocTrace`.
-- `/health` is process liveness; `get_connection_status()` is local connection state, neither verifies cloud/worker health.
+- `/health` is process liveness; `/ready` checks Redis plus Postgres/schema. `get_connection_status()` is local connection state; none verifies cloud/worker health.

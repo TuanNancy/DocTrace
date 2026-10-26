@@ -17,6 +17,28 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  migrate:
+    image: ${API_IMAGE:-doctrace-api:local}
+    build:
+      context: ./backend
+    command: ["alembic", "upgrade", "head"]
+    env_file:
+      - ${BACKEND_ENV_FILE:-./backend/.env}
+    restart: "no"
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    mem_limit: 512m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
   api:
     image: ${API_IMAGE:-doctrace-api:local}
     build:
@@ -29,6 +51,8 @@ services:
     depends_on:
       redis:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     expose:
       - "8000"
     read_only: true
@@ -58,6 +82,8 @@ services:
     depends_on:
       redis:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     read_only: true
     tmpfs:
       - /tmp:size=256m,mode=1777

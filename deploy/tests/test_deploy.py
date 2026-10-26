@@ -37,6 +37,9 @@ elif name == "docker":
         if command == ["config", "--format", "json"]:
             print(json.dumps({"name": "existing-project", "services": {"nginx": {"environment": {
                 "API_DOMAIN": "api.example.test", "TLS_MODE": os.environ.get("FAKE_TLS", "https")}}}}))
+        elif command == ["config", "--services"]:
+            if (Path(os.environ["DEPLOY_ROOT"]) / "migrate.txt").exists():
+                print("redis\nmigrate\napi\nworker\nnginx")
         elif command[:3] == ["ps", "--all", "--quiet"]:
             if not os.environ.get("NO_CONTAINERS"):
                 print(command[3] + "-container")
@@ -80,6 +83,7 @@ class DeploymentTest(unittest.TestCase):
         self.old = self.commit("initial deployed version")
         (self.origin / "deploy").mkdir()
         shutil.copyfile(SCRIPT, self.origin / "deploy/deploy.sh")
+        (self.origin / "migrate.txt").write_text("migrate\n")
         self.new = self.commit("add CD")
         (self.origin / "release.txt").write_text("newest\n")
         self.latest = self.commit("next release")
@@ -149,6 +153,27 @@ class DeploymentTest(unittest.TestCase):
         self.assertIn("--no-build", updates[0]["args"])
         self.assertIn("--force-recreate", updates[1]["args"])
         self.assertTrue(any(c["command"] == "curl" for c in self.commands()))
+
+    def test_migrations_run_before_services_and_failure_blocks_start(self):
+        self.invoke("deploy", self.new)
+        commands = self.commands()
+        migration = next(index for index, item in enumerate(commands)
+                         if "run" in item["args"] and item["args"][-1] == "migrate")
+        start = next(index for index, item in enumerate(commands) if "up" in item["args"])
+        self.assertLess(migration, start)
+
+        self.log.write_text("")
+        self.invoke("deploy", self.latest, success=False,
+                    FAIL_COMMAND="run --rm --no-deps migrate")
+        self.assertFalse(any("up" in c["args"] for c in self.commands()))
+        self.assertEqual(self.release("current")[0], self.new)
+
+    def test_rollback_to_release_without_migrate_service_skips_migration(self):
+        self.invoke("deploy", self.new)
+        self.log.write_text("")
+        self.invoke("rollback", script=self.state / "recover.sh")
+        self.assertFalse(any("run" in c["args"] and c["args"][-1] == "migrate"
+                             for c in self.commands()))
 
     def test_rollback_reuses_image_even_to_a_commit_without_deploy_script(self):
         self.invoke("deploy", self.new)

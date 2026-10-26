@@ -28,6 +28,7 @@ diagnostics() {
     echo "Deployment failed (exit $status). Last successful release is retained in $STATE_DIR/current." >&2
     dc ps --all || true
     dc logs --tail=80 api worker nginx || true
+    dc logs --tail=80 migrate || true
     echo "Recover with: bash $STATE_DIR/recover.sh rollback" >&2
     exit "$status"
 }
@@ -81,6 +82,16 @@ with Redis.from_url(config.redis_url, socket_connect_timeout=5, socket_timeout=5
     else:
         raise SystemExit("Current worker has not registered a fresh heartbeat on the configured queue")
 PY
+}
+
+run_migrations() {
+    # Rollback images may predate the migrate service; compatibility is required
+    # because Redis metadata is not versioned with the checkout.
+    if ! dc config --services | grep -qx migrate; then
+        echo "No migrate service in this release; skipping database migrations." >&2
+        return
+    fi
+    dc run --rm --no-deps migrate
 }
 
 main() {
@@ -166,7 +177,9 @@ main() {
     set_image "$image"
     config=$(compose_settings)
     read -r project domain tls <<< "$config"
-    [[ "$tls" == https && "$project" == "$COMPOSE_PROJECT_NAME" ]]
+    [[ "$tls" == https && "$project" == "$COMPOSE_PROJECT_NAME" ]] \
+        || die "Compose project or TLS mode changed during release checkout"
+    run_migrations
     # --wait-timeout bounds health readiness, not the worker's 16m graceful stop.
     dc up -d --no-build --wait --wait-timeout 180 api worker
     # Mounted templates are not part of Compose's config hash; render them afresh.
@@ -177,7 +190,7 @@ main() {
         echo "Waiting for RQ registration ($attempt/12)" >&2
         sleep 5
     done
-    [[ "$ready" == 1 ]]
+    [[ "$ready" == 1 ]] || die "RQ worker did not register on the configured queue"
     curl --fail --silent --show-error --retry 5 --retry-all-errors --retry-delay 3 \
         --connect-timeout 5 --max-time 15 "https://$domain/health"
     echo

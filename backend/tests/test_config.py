@@ -30,6 +30,10 @@ def test_local_cloud_and_index_override():
     ("MAX_CHUNKS_PER_DOCUMENT", "-1"), ("MILVUS_PORT", "70000"),
     ("DOCUMENT_INDEX_TIMEOUT_SECONDS", "0"), ("DOCUMENT_DELETE_TIMEOUT_SECONDS", "-1"),
     ("REDIS_URL", "https://wrong.test"),
+    ("DATABASE_URL", "https://wrong.test"), ("DIRECT_DATABASE_URL", "redis://wrong.test"),
+    ("DATABASE_POOL_SIZE", "0"), ("DATABASE_POOL_MAX_OVERFLOW", "-1"),
+    ("DATABASE_POOL_TIMEOUT_SECONDS", "nan"), ("DATABASE_CONNECT_TIMEOUT_SECONDS", "0"),
+    ("DATABASE_STATEMENT_TIMEOUT_MS", "0"), ("LOG_LEVEL", "verbose"), ("LOG_JSON", "maybe"),
 ])
 def test_invalid_values_name_the_setting(key, value):
     with pytest.raises(ValueError, match=key):
@@ -74,6 +78,24 @@ def test_s3_can_be_disabled_but_partial_credentials_are_rejected():
     AppConfig.from_env({"SUPABASE_STORAGE_BUCKET": "pdfs"})
     with pytest.raises(ValueError, match="SUPABASE_S3_SECRET_ACCESS_KEY"):
         AppConfig.from_env({"SUPABASE_S3_ACCESS_KEY_ID": "private-id"})
+
+
+def test_database_pool_logging_and_readiness_settings_parse():
+    config = AppConfig.from_env({
+        "DATABASE_URL": "postgresql://app:pw@db.example.test:5432/postgres?sslmode=require",
+        "DIRECT_DATABASE_URL": "postgres://migrate:pw@db.example.test:5432/postgres",
+        "DATABASE_POOL_SIZE": "7", "DATABASE_POOL_MAX_OVERFLOW": "3",
+        "DATABASE_POOL_TIMEOUT_SECONDS": "2.5", "DATABASE_CONNECT_TIMEOUT_SECONDS": "4",
+        "DATABASE_STATEMENT_TIMEOUT_MS": "9000",
+        "LOG_LEVEL": "debug", "LOG_JSON": "true",
+    })
+    assert config.database_url.startswith("postgresql://app:")
+    assert config.direct_database_url.startswith("postgres://migrate:")
+    assert (config.database_pool_size, config.database_pool_max_overflow) == (7, 3)
+    assert (config.database_pool_timeout_seconds, config.database_connect_timeout_seconds) == (2.5, 4)
+    assert config.database_statement_timeout_ms == 9000
+    assert (config.log_level, config.log_json) == ("DEBUG", True)
+    assert AppConfig.from_env({}).database_url is None
 
 
 def test_required_models_do_not_silently_fall_back():

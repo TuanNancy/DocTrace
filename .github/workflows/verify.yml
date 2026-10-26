@@ -81,6 +81,8 @@ jobs:
         run: python -m unittest discover -s deploy/tests -p test_deploy.py -v
       - name: Build API image
         run: docker build -t doctrace-api:verify ./backend
+      - name: Verify migration tooling is present in the API image
+        run: docker run --rm --entrypoint alembic doctrace-api:verify --version
       - name: Verify certificate orchestration
         run: docker run --rm -v "$PWD/deploy:/workspace/deploy:ro" doctrace-api:verify python -m unittest discover -s /workspace/deploy/tests -p test_certificates.py -v
       - name: Verify Nginx bootstrap, TLS, forwarding and SSE
