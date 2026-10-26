@@ -14,11 +14,36 @@ const user = {
 const expiresAt = Math.floor(Date.now() / 1000) + 3600;
 const encode = (value) => Buffer.from(JSON.stringify(value)).toString("base64url");
 const token = `${encode({ alg: "HS256", typ: "JWT" })}.${encode({ sub: user.id, aud: user.aud, role: user.role, exp: expiresAt })}.${encode("fixture-signature")}`;
+const personalWorkspace = {
+  id: user.id, name: "Cá nhân", kind: "personal", role: "owner",
+  plan: "free", status: "active", created_at: "2026-01-01T00:00:00Z",
+};
+const teamWorkspace = {
+  id: "33333333-3333-4333-8333-333333333333", name: "Nhóm học tập", kind: "team", role: "member",
+  plan: "free", status: "active", created_at: "2026-01-02T00:00:00Z",
+};
+const workspaces = [personalWorkspace, teamWorkspace];
 let uploads = 0;
 let cancelledStreams = 0;
 const documents = new Map();
 const chunkId = "22222222-2222-4222-8222-222222222222";
 const excerpt = "Baymax giúp bạn tra cứu nội dung tài liệu. Mỗi câu trả lời có trích dẫn để đối chiếu với văn bản gốc.";
+
+function publicDocument(document) {
+  const { workspace_id, ...item } = document;
+  return item;
+}
+
+function workspaceFor(request) {
+  const workspaceId = request.headers["x-workspace-id"];
+  if (!workspaceId) {
+    return { error: [400, { detail: { code: "workspace_required", message: "Thiếu header X-Workspace-Id." } }] };
+  }
+  if (!workspaces.some((workspace) => workspace.id === workspaceId && workspace.status === "active")) {
+    return { error: [404, { detail: { code: "workspace_not_found", message: "Không tìm thấy workspace." } }] };
+  }
+  return { workspaceId };
+}
 
 function fixturePDF() {
   const stream = "BT /F1 16 Tf 50 740 Td (Baymax original source fixture) Tj ET";
@@ -53,7 +78,7 @@ function json(response, status, body) {
 
 createServer(async (request, response) => {
   response.setHeader("Access-Control-Allow-Origin", "http://localhost:4310");
-  response.setHeader("Access-Control-Allow-Headers", "authorization, apikey, content-type, x-client-info, x-supabase-api-version");
+  response.setHeader("Access-Control-Allow-Headers", "authorization, apikey, content-type, x-client-info, x-supabase-api-version, x-workspace-id");
   response.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
   if (request.method === "OPTIONS") {
     response.writeHead(204).end();
@@ -103,23 +128,38 @@ createServer(async (request, response) => {
   }
   if (url.pathname === "/auth/v1/user") return json(response, 200, user);
   if (url.pathname === "/auth/v1/logout") return response.writeHead(204).end();
+  if (url.pathname === "/api/workspaces") return json(response, 200, { items: workspaces });
   if (url.pathname === "/api/upload") {
+    const scope = workspaceFor(request);
+    if (scope.error) return json(response, ...scope.error);
     if (!request.headers["content-type"]?.includes("multipart/form-data") || !body.includes('%PDF')) {
       return json(response, 400, { detail: "Expected multipart PDF" });
     }
     uploads += 1;
-    const document = { doc_id: randomUUID(), name: /filename="([^"]+)"/.exec(body)?.[1] ?? "fixture.pdf",
+    const document = { doc_id: randomUUID(), workspace_id: scope.workspaceId,
+      name: /filename="([^"]+)"/.exec(body)?.[1] ?? "fixture.pdf",
       size_bytes: 1024, chunks_count: 0, warnings: [], error: null,
       created_at: new Date().toISOString(), updated_at: new Date().toISOString(), status: "queued" };
     documents.set(document.doc_id, document);
     processDocument(document, document.name === "error.pdf");
-    return json(response, 202, document);
+    return json(response, 202, publicDocument(document));
   }
-  if (url.pathname === "/api/documents") return json(response, 200, { items: [...documents.values()].reverse(), has_more: false });
+  if (url.pathname === "/api/documents") {
+    const scope = workspaceFor(request);
+    if (scope.error) return json(response, ...scope.error);
+    const items = [...documents.values()]
+      .filter((document) => document.workspace_id === scope.workspaceId)
+      .reverse().map(publicDocument);
+    return json(response, 200, { items, has_more: false });
+  }
   const documentRoute = url.pathname.match(/^\/api\/documents\/([^/]+)(.*)$/);
   if (documentRoute) {
+    const scope = workspaceFor(request);
+    if (scope.error) return json(response, ...scope.error);
     const document = documents.get(documentRoute[1]);
-    if (!document) return json(response, 404, { detail: "Không tìm thấy tài liệu." });
+    if (!document || document.workspace_id !== scope.workspaceId) {
+      return json(response, 404, { detail: { code: "document_not_found", message: "Không tìm thấy tài liệu." } });
+    }
     const action = documentRoute[2];
     if (request.method === "DELETE") {
       if (["queued", "processing", "deleting"].includes(document.status)) {
@@ -127,21 +167,25 @@ createServer(async (request, response) => {
       }
       document.status = "deleting";
       setTimeout(() => documents.delete(document.doc_id), 500);
-      return json(response, 202, document);
+      return json(response, 202, publicDocument(document));
     }
     if (action === "/retry") {
       if (!["error", "delete_error"].includes(document.status)) return json(response, 409, { detail: "Tài liệu chưa thể thử lại." });
-      processDocument(document); return json(response, 202, document);
+      processDocument(document); return json(response, 202, publicDocument(document));
     }
     if (action === "/file") return json(response, 200, { url: "http://127.0.0.1:4311/fixture.pdf?signature=fixture", expires_in: 300 });
     if (action === `/chunks/${chunkId}`) return json(response, 200, { doc_id: document.doc_id, chunk_id: chunkId, source: document.name, page: 1, text: excerpt });
-    return json(response, 200, document);
+    return json(response, 200, publicDocument(document));
   }
   if (url.pathname === "/api/chat") {
+    const scope = workspaceFor(request);
+    if (scope.error) return json(response, ...scope.error);
     const chat = JSON.parse(body);
     if (!chat.doc_id || !chat.query) return json(response, 422, { detail: "Missing chat fields" });
     const document = documents.get(chat.doc_id);
-    if (document?.status !== "ready") return json(response, 409, { detail: "Tài liệu chưa sẵn sàng." });
+    if (!document || document.workspace_id !== scope.workspaceId || document.status !== "ready") {
+      return json(response, 409, { detail: "Tài liệu chưa sẵn sàng." });
+    }
     response.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" });
     const event = (type, data) => response.write(`event: ${type}\ndata: ${JSON.stringify(data)}\n\n`);
     event("sources", [{ citation_id: 1, doc_id: document.doc_id, chunk_id: chunkId, page: 1, source: document.name, score: 0.95 }]);
