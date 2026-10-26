@@ -60,6 +60,17 @@ class AppConfig:
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
     supabase_url: Optional[str] = None
     supabase_publishable_key: Optional[str] = None
+    # Control-plane Postgres. Optional until workspace tenancy is enabled; when
+    # present, readiness and the workspace APIs require it.
+    database_url: Optional[str] = None
+    direct_database_url: Optional[str] = None
+    database_pool_size: int = 5
+    database_pool_max_overflow: int = 5
+    database_pool_timeout_seconds: float = 5.0
+    database_connect_timeout_seconds: float = 5.0
+    database_statement_timeout_ms: int = 15000
+    log_level: str = "INFO"
+    log_json: bool = False
     redis_url: str = "redis://localhost:6379/0"
     rq_queue_name: str = "documents-v2"
     document_index_timeout_seconds: int = 900
@@ -114,6 +125,9 @@ class AppConfig:
         return cls(**values)
 
     def __post_init__(self):
+        self.database_url = self.database_url or None
+        self.direct_database_url = self.direct_database_url or None
+        self.log_level = self.log_level.upper()
         self.milvus_index_type = self.milvus_index_type or ("AUTOINDEX" if self.milvus_uri else "IVF_FLAT")
         self.openrouter_base_url = self.openrouter_base_url.rstrip("/")
         if self.embedding_model.startswith("text-embedding") and "/" not in self.embedding_model:
@@ -164,6 +178,31 @@ class AppConfig:
             errors.append("MILVUS_COLLECTION must not be empty")
         if urlparse(self.redis_url).scheme not in ("redis", "rediss") or not urlparse(self.redis_url).hostname:
             errors.append("REDIS_URL must be an absolute redis(s) URL")
+        for attr, key in (("database_url", "DATABASE_URL"),
+                          ("direct_database_url", "DIRECT_DATABASE_URL")):
+            value = getattr(self, attr)
+            if value and (urlparse(value).scheme not in ("postgres", "postgresql", "postgresql+psycopg")
+                          or not urlparse(value).hostname):
+                errors.append(f"{key} must be an absolute PostgreSQL URL")
+        for attr, key, minimum in (
+            ("database_pool_size", "DATABASE_POOL_SIZE", 1),
+            ("database_pool_max_overflow", "DATABASE_POOL_MAX_OVERFLOW", 0),
+            ("database_pool_timeout_seconds", "DATABASE_POOL_TIMEOUT_SECONDS", 0),
+            ("database_connect_timeout_seconds", "DATABASE_CONNECT_TIMEOUT_SECONDS", 0),
+            ("database_statement_timeout_ms", "DATABASE_STATEMENT_TIMEOUT_MS", 1),
+        ):
+            value = getattr(self, attr)
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                errors.append(f"{key} must be a number")
+            elif isinstance(value, float):
+                if not math.isfinite(value) or value <= 0:
+                    errors.append(f"{key} must be positive and finite")
+            elif value < minimum:
+                errors.append(f"{key} must be at least {minimum}")
+        if self.log_level.upper() not in ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"):
+            errors.append("LOG_LEVEL must be DEBUG, INFO, WARNING, ERROR or CRITICAL")
+        if not isinstance(self.log_json, bool):
+            errors.append("LOG_JSON must be a boolean")
         if not self.rq_queue_name:
             errors.append("RQ_QUEUE_NAME must not be empty")
         for attr in ("openrouter_base_url", "supabase_url", "supabase_s3_endpoint"):
