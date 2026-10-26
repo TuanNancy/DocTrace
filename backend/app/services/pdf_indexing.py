@@ -7,6 +7,7 @@ from starlette.concurrency import run_in_threadpool
 from anyio import CancelScope
 
 from app.core.config import get_config
+from app.services.provider_calls import UsageCollector
 from app.storage.factory import create_connected_vector_store
 
 logger = logging.getLogger(__name__)
@@ -28,6 +29,7 @@ async def index_pdf_bytes(
     doc_id: str,
     *,
     user_id: str,
+    usage: UsageCollector | None = None,
 ) -> IndexingResult:
     """Index a PDF under an attempt's generation ID and clean up temporary resources.
 
@@ -57,7 +59,14 @@ async def index_pdf_bytes(
             raise InvalidPDFError("PDF produces too many chunks. Split it into smaller documents.")
 
         embedder = await run_in_threadpool(get_embedder, config=config)
-        vectors = await run_in_threadpool(embedder.embed_documents, [c["text"] for c in chunks])
+        call = (
+            usage.start("index_embedding", getattr(config, "embedding_model", "unknown"))
+            if usage else None
+        )
+        kwargs = {"usage": call} if call else {}
+        vectors = await run_in_threadpool(
+            embedder.embed_documents, [c["text"] for c in chunks], **kwargs,
+        )
         if len(vectors) != len(chunks):
             raise RuntimeError("Embedding count does not match chunk count.")
         if not vectors or not vectors[0]:

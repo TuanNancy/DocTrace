@@ -5,14 +5,18 @@ import json
 import logging
 from typing import AsyncIterator
 
+from anyio import CancelScope
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 
 from app.ai.document_summary import is_document_overview
 from app.ai.rag_pipeline import create_initialized_rag_pipeline
+from app.core.config import get_config
+from app.core.observability import current_request_id
 from app.core.workspace import require_workspace
 from app.schemas import ChatRequest
 from app.services.document_repository import DocumentRepository, get_document_repository
+from app.services.provider_calls import UsageAttribution, UsageCollector
 from app.services.rate_limiter import RateLimiter, get_rate_limiter
 from app.services.workspaces import WorkspaceContext
 
@@ -26,11 +30,12 @@ def _sse_message(event: str, data: str) -> str:
 
 
 async def _stream_chat_sse(query: str, doc_id: str, user_id: str, language: str = "vi",
-                           document_id: str | None = None) -> AsyncIterator[str]:
+                           document_id: str | None = None,
+                           usage: UsageCollector | None = None) -> AsyncIterator[str]:
     pipeline = None
 
     try:
-        pipeline = await create_initialized_rag_pipeline()
+        pipeline = await create_initialized_rag_pipeline(usage=usage)
 
         retrieved_chunks = await pipeline.retrieve_chunks(query, doc_id, user_id=user_id)
         if not is_document_overview(query):
@@ -79,8 +84,15 @@ async def _stream_chat_sse(query: str, doc_id: str, user_id: str, language: str 
         yield _sse_message("done", json.dumps("[DONE]"))
 
     finally:
-        if pipeline:
-            await pipeline.shutdown()
+        try:
+            if pipeline:
+                await pipeline.shutdown()
+        finally:
+            if usage is not None:
+                with CancelScope(shield=True):
+                    # Cost rows and best-effort reconciliation must survive a
+                    # browser disconnect and not mask the stream's outcome.
+                    await usage.flush()
 
 
 @router.post("/chat")
@@ -104,8 +116,15 @@ async def chat(
             raise HTTPException(409, "Tài liệu chưa sẵn sàng để hỏi đáp.")
 
         await limiter.check(user_id, action="chat")
+        usage = UsageCollector(UsageAttribution(
+            workspace_id=workspace.workspace_id, user_id=user_id, doc_id=doc_id,
+            request_id=current_request_id(),
+        ), config=get_config())
         return StreamingResponse(
-            _stream_chat_sse(query, document["active_index_id"], user_id, language, document_id=doc_id),
+            _stream_chat_sse(
+                query, document["active_index_id"], user_id, language,
+                document_id=doc_id, usage=usage,
+            ),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",

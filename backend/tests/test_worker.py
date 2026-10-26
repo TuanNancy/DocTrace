@@ -1,9 +1,12 @@
+from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
+from uuid import uuid4
 
 import pytest
 
 from app.jobs import documents as tasks
+from app.services import provider_calls
 from app.services.pdf_indexing import InvalidPDFError
 
 
@@ -105,3 +108,63 @@ def test_entrypoint_uses_rq_retry_count(monkeypatch):
     monkeypatch.setattr(tasks, "process_document", process)
     tasks.index_document("doc")
     process.assert_awaited_once_with(repository, "doc", "job", 2, 1)
+
+
+async def test_index_job_records_embedding_usage_with_workspace_attribution(
+    attempt, dependencies, monkeypatch,
+):
+    repository, index, _, _ = dependencies
+    workspace = str(uuid4())
+    attempt["document"]["workspace_id"] = workspace
+    captured = []
+
+    class Session:
+        def execute(self, statement, rows):
+            captured.extend(rows)
+
+    @contextmanager
+    def scope(config):
+        yield Session()
+
+    monkeypatch.setattr(provider_calls, "get_config", lambda: SimpleNamespace(
+        database_url="postgresql://example.test/doctrace", openrouter_api_key=None,
+    ))
+    monkeypatch.setattr(provider_calls, "session_scope", scope)
+
+    async def fake_index(content, name, generation, *, user_id, usage=None):
+        assert usage is not None
+        call = usage.start("index_embedding", "embedding-model")
+        assert call is not None
+        call.apply_usage({"prompt_tokens": 12, "cost": "0.000004"})
+        return SimpleNamespace(chunks_count=3, warnings=[])
+
+    index.side_effect = fake_index
+
+    await tasks.process_document(repository, "doc", "job", 1, 0)
+
+    assert len(captured) == 1
+    row = captured[0]
+    assert row["kind"] == "index_embedding"
+    assert row["workspace_id"] == workspace
+    assert row["user_id"] is None
+    assert row["doc_id"] is None
+    assert row["job_id"] == "job"
+    assert row["prompt_tokens"] == 12
+    assert row["cost_micros"] == 4
+    assert row["cost_status"] == "reported"
+
+
+async def test_delete_job_never_creates_usage_rows(attempt, dependencies, monkeypatch):
+    repository, _, remove, delete = dependencies
+    attempt["kind"] = "delete"
+    monkeypatch.setattr(provider_calls, "get_config", lambda: SimpleNamespace(
+        database_url="postgresql://example.test/doctrace", openrouter_api_key=None,
+    ))
+    store = MagicMock()
+    monkeypatch.setattr(provider_calls.UsageCollector, "_store", store)
+
+    await tasks.process_document(repository, "doc", "job", 1, 0)
+
+    store.assert_not_called()
+    remove.assert_awaited_once()
+    delete.assert_called_once()

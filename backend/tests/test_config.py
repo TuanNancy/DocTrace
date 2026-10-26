@@ -25,6 +25,7 @@ def test_local_cloud_and_index_override():
 
 @pytest.mark.parametrize("key,value", [
     ("RETRIEVAL_TOP_K", "0"), ("CONTEXT_MAX_CHARS", "-1"), ("RAG_MAX_TOKENS", "0"),
+    ("SUMMARY_MAX_CALLS", "0"),
     ("CHUNK_OVERLAP", "1000"), ("EMBEDDING_BATCH_SIZE", "0"),
     ("UPSTREAM_TIMEOUT_SECONDS", "nan"), ("UPLOAD_MAX_CONCURRENT", "0"),
     ("MAX_CHUNKS_PER_DOCUMENT", "-1"), ("MILVUS_PORT", "70000"),
@@ -72,6 +73,11 @@ def test_rate_limit_defaults_and_overrides():
     assert (config.rate_limit_chat_requests, config.rate_limit_chat_window_seconds) == (20, 120)
     assert (config.rate_limit_upload_requests, config.rate_limit_upload_window_seconds) == (5, 600)
     assert (config.rate_limit_index_retry_requests, config.rate_limit_index_retry_window_seconds) == (3, 600)
+
+
+def test_summary_call_cap_defaults_and_overrides():
+    assert AppConfig.from_env({}).summary_max_calls == 8
+    assert AppConfig.from_env({"SUMMARY_MAX_CALLS": "12"}).summary_max_calls == 12
 
 
 def test_s3_can_be_disabled_but_partial_credentials_are_rejected():
