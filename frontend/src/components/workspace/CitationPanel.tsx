@@ -15,6 +15,10 @@ export function CitationPanel() {
   useEffect(() => {
     setExcerpt(null); setError(null); setFileError(null);
     if (!source) return;
+    if (source.stale) {
+      setError("Nguồn trích dẫn không còn khả dụng sau khi tài liệu được xử lý lại.");
+      return;
+    }
     if (mock) {
       setExcerpt({ doc_id: source.doc_id, chunk_id: source.chunk_id, source: source.source, page: source.page,
         text: "Đây là đoạn trích minh họa. Khi kết nối API, DocTrace hiển thị nguyên văn đoạn PDF đã được dùng làm nguồn cho câu trả lời." });
@@ -45,7 +49,7 @@ export function CitationPanel() {
           : <p className="animate-pulse text-xs text-slate-400" role="status">Đang tải đoạn trích gốc…</p>}
     </div>
     <p className="mt-3 text-[10px] leading-5 text-slate-400">{mock ? "Nội dung minh họa trong chế độ demo." : "Đoạn văn được trích từ PDF gốc. Số trang tính từ trang đầu của tệp."}</p>
-    {!mock && <button className="secondary-button mt-5 w-full text-xs" disabled={opening || !excerpt} onClick={async () => {
+    {!mock && !source.stale && <button className="secondary-button mt-5 w-full text-xs" disabled={opening || !excerpt} onClick={async () => {
       setOpening(true); setFileError(null);
       try { await openDocumentFile(source.doc_id, accessToken!, workspaceId!, source.page); }
       catch (cause) { setFileError(cause instanceof Error ? cause.message : "Không thể mở PDF."); }

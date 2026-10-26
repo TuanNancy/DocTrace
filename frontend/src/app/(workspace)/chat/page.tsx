@@ -18,7 +18,7 @@ export default function ChatPage() {
         <div className="flex shrink-0 gap-1">
           <button className="icon-button" aria-label="Xuất hội thoại" title="Xuất hội thoại" disabled={!workspace.chat.messages.length} onClick={workspace.chat.exportTranscript}><Download size={17} /></button>
           <button className="icon-button xl:hidden" aria-label="Mở tài liệu và nguồn" onClick={() => workspace.setSourcesOpen(true)}><BookOpen size={18} /></button>
-          <span className="ml-1 hidden items-center gap-1.5 rounded-full bg-emerald-50 px-2.5 py-1 text-[10px] text-emerald-600 sm:inline-flex"><span className="h-1 w-1 rounded-full bg-emerald-500" />{workspace.chat.loading ? "Đang trả lời" : "Sẵn sàng"}</span>
+          <span className="ml-1 hidden items-center gap-1.5 rounded-full bg-emerald-50 px-2.5 py-1 text-[10px] text-emerald-600 sm:inline-flex"><span className="h-1 w-1 rounded-full bg-emerald-500" />{workspace.chat.transcriptLoading ? "Đang tải hội thoại" : workspace.chat.loading ? "Đang trả lời" : "Sẵn sàng"}</span>
         </div>
       </header>
       <ChatWindow docId={workspace.docId} mock={workspace.mock} session={workspace.chat} onSelectSource={workspace.selectSource} />

@@ -1,4 +1,7 @@
-import type { ChatSource, LibraryDocument, SourceExcerpt, Workspace } from "@/types";
+import type {
+  ChatSource, ConversationSummary, LibraryDocument, SourceExcerpt, Transcript,
+  UsageSummary, Workspace,
+} from "@/types";
 
 export class ApiError extends Error {
   constructor(message: string, readonly status: number, readonly code: string | null = null) {
@@ -182,6 +185,58 @@ export async function streamChat(
   }
   return response;
 }
+
+async function workspaceRequest<T>(
+  path: string,
+  accessToken: string,
+  workspaceId: string,
+  signal?: AbortSignal,
+  method = "GET",
+): Promise<T> {
+  const response = await fetch(apiUrl(path), {
+    method, headers: workspaceAuthorization(accessToken, workspaceId),
+    signal, cache: "no-store",
+  });
+  await checkResponse(response);
+  if (response.status === 204) return undefined as T;
+  return response.json() as Promise<T>;
+}
+
+export async function listConversations(
+  accessToken: string,
+  workspaceId: string,
+  docId?: string,
+  signal?: AbortSignal,
+): Promise<ConversationSummary[]> {
+  const search = docId ? `?doc_id=${encodeURIComponent(docId)}` : "";
+  const body = await workspaceRequest<{ items?: ConversationSummary[] }>(
+    `/api/conversations${search}`, accessToken, workspaceId, signal,
+  );
+  return Array.isArray(body.items) ? body.items : [];
+}
+
+export const getConversation = (
+  id: string,
+  accessToken: string,
+  workspaceId: string,
+  signal?: AbortSignal,
+) => workspaceRequest<Transcript>(
+  `/api/conversations/${encodeURIComponent(id)}`, accessToken, workspaceId, signal,
+);
+
+export const deleteConversation = async (
+  id: string,
+  accessToken: string,
+  workspaceId: string,
+) => {
+  await workspaceRequest<undefined>(
+    `/api/conversations/${encodeURIComponent(id)}`, accessToken, workspaceId,
+    undefined, "DELETE",
+  );
+};
+
+export const getUsage = (accessToken: string, workspaceId: string, signal?: AbortSignal) =>
+  workspaceRequest<UsageSummary>("/api/usage", accessToken, workspaceId, signal);
 
 async function libraryRequest<T>(
   path: string,
