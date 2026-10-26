@@ -47,7 +47,10 @@ export function ChatWindow({ docId, mock = false, session: chat, onSelectSource 
       const element = scroll.current;
       if (element) stickToBottom.current = element.scrollHeight - element.scrollTop - element.clientHeight < 100;
     }} className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 sm:px-8">
-      {chat.messages.length === 0 ? <div className="mx-auto flex h-full min-h-[310px] max-w-lg flex-col items-center justify-center py-10 text-center">
+      {chat.transcriptLoading ? <div role="status" className="flex h-full min-h-[310px] flex-col items-center justify-center gap-3 text-xs text-slate-400">
+        <span className="h-6 w-6 animate-spin rounded-full border-2 border-blue-100 border-t-blue-400" />
+        Đang tải hội thoại…
+      </div> : chat.messages.length === 0 ? <div className="mx-auto flex h-full min-h-[310px] max-w-lg flex-col items-center justify-center py-10 text-center">
         <div className="mb-6 flex h-16 w-16 items-center justify-center rounded-[22px] border border-white bg-gradient-to-br from-blue-50 to-white text-blue-500 shadow-[0_8px_30px_-10px_#93baff]"><Sparkles size={28} strokeWidth={1.4} /></div>
         <span className="mb-3 text-[10px] font-semibold uppercase tracking-[0.23em] text-blue-500">Một câu hỏi, nhiều khám phá</span>
         <h2 className="font-sans text-[27px] font-semibold leading-tight tracking-tight sm:text-[32px]">Bạn muốn tìm hiểu điều gì?</h2>
@@ -58,17 +61,21 @@ export function ChatWindow({ docId, mock = false, session: chat, onSelectSource 
             <button key={question} className="suggestion-chip" disabled={!hasDoc} onClick={() => { chat.setInput(question); inputRef.current?.focus(); }}>{question}</button>)}
         </div>
       </div> : <ol className="mx-auto max-w-3xl space-y-7 py-7" aria-label="Tin nhắn hội thoại">
-        {chat.messages.map((message) => <li key={message.id} className={message.role === "user" ? "flex justify-end" : ""}>
-          {message.role === "user" ? <div className="max-w-[88%] whitespace-pre-wrap break-words rounded-[20px] rounded-br-md border border-blue-100/70 bg-[#eaf2ff] px-5 py-3 text-sm leading-6 text-slate-700">{message.content}</div>
-            : <div className="min-w-0">
-              <div className="mb-3 flex items-center gap-2 text-xs font-semibold text-slate-700"><span className="flex h-6 w-6 items-center justify-center rounded-lg bg-blue-500 text-white"><Sparkles size={13} /></span>DocTrace
-                {message.isStreaming && <span className="ml-1 text-[10px] font-normal text-blue-500">Đang đọc tài liệu…</span>}</div>
-              {message.content ? <MessageMarkdown content={message.content} sources={message.sources} onSelectSource={onSelectSource} />
-                : message.isStreaming ? <div className="flex gap-1 py-2" aria-label="Đang tạo câu trả lời">{[0, 1, 2].map((dot) => <span key={dot} className="h-1.5 w-1.5 animate-pulse rounded-full bg-blue-300" style={{ animationDelay: `${dot * 150}ms` }} />)}</div> : null}
-              {!!message.sources?.length && <SourceCardList sources={message.sources} onSelectSource={onSelectSource} />}
-              {!message.isStreaming && message.content && <div className="mt-3 flex items-center gap-3"><CopyMessage text={message.content} />{message.interrupted && <span className="text-[10px] text-slate-400">Câu trả lời đã dừng</span>}</div>}
-            </div>}
-        </li>)}
+        {chat.messages.map((message) => {
+          const stale = message.sources?.some((item) => item.stale) ?? false;
+          return <li key={message.id} className={message.role === "user" ? "flex justify-end" : ""}>
+            {message.role === "user" ? <div className="max-w-[88%] whitespace-pre-wrap break-words rounded-[20px] rounded-br-md border border-blue-100/70 bg-[#eaf2ff] px-5 py-3 text-sm leading-6 text-slate-700">{message.content}</div>
+              : <div className="min-w-0">
+                <div className="mb-3 flex items-center gap-2 text-xs font-semibold text-slate-700"><span className="flex h-6 w-6 items-center justify-center rounded-lg bg-blue-500 text-white"><Sparkles size={13} /></span>DocTrace
+                  {message.isStreaming && <span className="ml-1 text-[10px] font-normal text-blue-500">Đang đọc tài liệu…</span>}</div>
+                {message.content ? <MessageMarkdown content={message.content} sources={message.sources} onSelectSource={stale ? undefined : onSelectSource} />
+                  : message.isStreaming ? <div className="flex gap-1 py-2" aria-label="Đang tạo câu trả lời">{[0, 1, 2].map((dot) => <span key={dot} className="h-1.5 w-1.5 animate-pulse rounded-full bg-blue-300" style={{ animationDelay: `${dot * 150}ms` }} />)}</div> : null}
+                {!!message.sources?.length && <SourceCardList sources={message.sources} onSelectSource={stale ? undefined : onSelectSource} />}
+                {stale && <p className="mt-2 text-[10px] leading-5 text-amber-600">Nguồn trích dẫn không còn khả dụng sau khi tài liệu được xử lý lại.</p>}
+                {!message.isStreaming && message.content && <div className="mt-3 flex items-center gap-3"><CopyMessage text={message.content} />{message.interrupted && <span className="text-[10px] text-slate-400">Câu trả lời đã dừng</span>}</div>}
+              </div>}
+          </li>;
+        })}
       </ol>}
     </div>
     <div className="shrink-0 px-3 pb-3 pt-2 sm:px-6 sm:pb-4">
@@ -78,12 +85,12 @@ export function ChatWindow({ docId, mock = false, session: chat, onSelectSource 
           onKeyDown={(event) => {
             if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
               event.preventDefault();
-              if (!chat.loading) event.currentTarget.form?.requestSubmit();
+              if (!chat.loading && !chat.transcriptLoading) event.currentTarget.form?.requestSubmit();
             }
-          }} aria-label="Câu hỏi của bạn" placeholder={hasDoc ? "Nhập câu hỏi của bạn…" : "Chọn một PDF để bắt đầu…"}
-          disabled={chat.loading || !hasDoc} className="max-h-[150px] min-h-11 flex-1 resize-none bg-transparent px-2 py-3 text-sm leading-5 text-slate-800 outline-none placeholder:text-slate-400 disabled:opacity-60" />
+          }} aria-label="Câu hỏi của bạn" placeholder={chat.transcriptLoading ? "Đang tải hội thoại…" : hasDoc ? "Nhập câu hỏi của bạn…" : "Chọn một PDF để bắt đầu…"}
+          disabled={chat.loading || chat.transcriptLoading || !hasDoc} className="max-h-[150px] min-h-11 flex-1 resize-none bg-transparent px-2 py-3 text-sm leading-5 text-slate-800 outline-none placeholder:text-slate-400 disabled:opacity-60" />
         {chat.loading ? <button type="button" onClick={chat.stop} className="send-button" aria-label="Dừng trả lời"><Square size={16} fill="currentColor" /></button>
-          : <button type="submit" className="send-button" disabled={!hasDoc || !chat.input.trim()} aria-label="Gửi"><ArrowUp size={19} /></button>}
+          : <button type="submit" className="send-button" disabled={!hasDoc || chat.transcriptLoading || !chat.input.trim()} aria-label="Gửi"><ArrowUp size={19} /></button>}
       </form>
       <p className="mt-2.5 text-center text-[10px] leading-4 text-slate-400">Câu trả lời dựa trên tài liệu của bạn · Bấm vào trích dẫn để xem nguồn</p>
     </div>

@@ -21,6 +21,7 @@ from starlette.concurrency import run_in_threadpool
 from app.core.config import AppConfig, get_config
 from app.core.errors import api_error
 from app.db import DatabaseNotConfigured, session_scope
+from app.services.transcripts import ensure_conversation, insert_message
 
 logger = logging.getLogger(__name__)
 
@@ -144,7 +145,8 @@ class QuotaService:
         return dict(row) if row else None
 
     def _admit_chat(self, session, workspace_id: str, user_id: str, request_id: str,
-                    doc_id: str, plan: str) -> dict:
+                    doc_id: str, plan: str, query: str = "",
+                    index_id: str | None = None) -> dict:
         workspace_id = _uuid(workspace_id, "workspace_invalid", "Workspace không hợp lệ.")
         user_id = _uuid(user_id, "invalid_user", "Người dùng không hợp lệ.")
         request_id = _uuid(request_id, "invalid_request_id", "Mã yêu cầu không hợp lệ.")
@@ -222,9 +224,32 @@ class QuotaService:
                 headers={"Retry-After": str(retry_after)},
             )
 
+        # The conversation, both messages and the chat request commit together
+        # with the quota reservation. A quota denial leaves no transcript row.
+        conversation_id = ensure_conversation(session, workspace_id, user_id, doc_id)
+        insert_message(
+            session, conversation_id, role="user", content=query, status="complete",
+        )
+        assistant_message_id = insert_message(
+            session, conversation_id, role="assistant", sources=[], index_id=index_id,
+            status="pending",
+        )
+        session.execute(text(
+            """
+            UPDATE doctrace.chat_requests
+            SET conversation_id = CAST(:conversation_id AS uuid)
+            WHERE id = CAST(:chat_request_id AS uuid)
+            """
+        ), {
+            "conversation_id": conversation_id,
+            "chat_request_id": inserted["chat_request_id"],
+        })
+
         return {
             "chat_request_id": inserted["chat_request_id"],
             "request_id": request_id,
+            "conversation_id": conversation_id,
+            "assistant_message_id": assistant_message_id,
             "used": int(used),
             "limit": limit,
             "reset_at": reset_iso(),
@@ -234,9 +259,11 @@ class QuotaService:
         return await self._run(self._existing, workspace_id, user_id, request_id)
 
     async def admit_chat(self, workspace_id: str, user_id: str, request_id: str,
-                         doc_id: str, plan: str) -> dict:
+                         doc_id: str, plan: str, *, query: str = "",
+                         index_id: str | None = None) -> dict:
         return await self._run(
             self._admit_chat, workspace_id, user_id, request_id, doc_id, plan,
+            query, index_id,
         )
 
     def _document_limit(self, session, plan: str) -> int:

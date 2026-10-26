@@ -23,7 +23,7 @@ export async function updateSession(request: NextRequest) {
 
   // Validate with Auth, not an unverified session from the request cookie.
   const { data: { user }, error } = await supabase.auth.getUser();
-  const isWorkspace = ["/chat", "/documents"].some((path) => request.nextUrl.pathname === path || request.nextUrl.pathname.startsWith(`${path}/`));
+  const isWorkspace = ["/chat", "/documents", "/usage"].some((path) => request.nextUrl.pathname === path || request.nextUrl.pathname.startsWith(`${path}/`));
   if (isWorkspace && (error || !user)) {
     const loginUrl = request.nextUrl.clone();
     loginUrl.pathname = "/auth/login";

@@ -75,6 +75,12 @@ it("protects the document library using the same verified session", async () => 
   expect(response.headers.get("location")).toBe("https://app.example.test/auth/login");
 });
 
+it("protects the usage page using the same verified session", async () => {
+  const response = await updateSession(new NextRequest("https://app.example.test/usage"));
+  expect(response.status).toBe(307);
+  expect(response.headers.get("location")).toBe("https://app.example.test/auth/login");
+});
+
 it("allows visitors to reach the public login page", async () => {
   const response = await updateSession(new NextRequest("https://app.example.test/auth/login"));
   expect(response.status).toBe(200);

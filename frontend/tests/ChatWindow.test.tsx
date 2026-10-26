@@ -2,18 +2,33 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { beforeEach, expect, it, vi } from "vitest";
 import { ChatWindow } from "@/components/ChatWindow";
 import { useChatSession } from "@/lib/use-chat-session";
-import { streamChat } from "@/lib/api";
+import { deleteConversation, getConversation, listConversations, streamChat } from "@/lib/api";
+import type { Transcript } from "@/types";
 
 vi.mock("@/lib/api", async (importOriginal) => ({
   ...await importOriginal<typeof import("@/lib/api")>(),
+  deleteConversation: vi.fn(),
+  getConversation: vi.fn(),
+  listConversations: vi.fn(),
   streamChat: vi.fn(),
 }));
 const streamMock = vi.mocked(streamChat);
+const listMock = vi.mocked(listConversations);
+const getMock = vi.mocked(getConversation);
+const deleteMock = vi.mocked(deleteConversation);
 const input = () => screen.getByLabelText("Câu hỏi của bạn");
-function send(question = "Question A") {
+
+function submit(question = "Question A") {
   fireEvent.change(input(), { target: { value: question } });
   fireEvent.click(screen.getByRole("button", { name: "Gửi" }));
 }
+
+async function send(question = "Question A") {
+  // The transcript restore effect briefly disables the composer.
+  await waitFor(() => expect(input()).toBeEnabled());
+  submit(question);
+}
+
 const response = () => new Response('event: token\ndata: "Answer A"\n\nevent: done\ndata: "[DONE]"\n\n');
 
 // The workspace owns the session; exercise that same ownership in component tests.
@@ -21,11 +36,38 @@ function ChatHarness(props: Parameters<typeof useChatSession>[0]) {
   const session = useChatSession(props);
   return <>
     <button onClick={session.clearMessages}>Clear chat</button>
-    <ChatWindow docId={props.docId} mock={props.mock} session={session} />
+    <button onClick={() => void session.newChat()}>New chat</button>
+    <ChatWindow docId={props.docId} mock={props.mock} session={session} onSelectSource={() => undefined} />
   </>;
 }
 
-beforeEach(() => { streamMock.mockReset(); });
+const savedTranscript: Transcript = {
+  id: "conversation-a", workspace_id: "workspace-a", doc_id: "a",
+  created_at: "2026-10-26T00:00:00Z", updated_at: "2026-10-26T00:01:00Z",
+  messages: [
+    {
+      id: "message-a", role: "user", content: "Câu hỏi cũ", sources: [],
+      index_id: null, status: "complete",
+      created_at: "2026-10-26T00:00:00Z", updated_at: "2026-10-26T00:00:00Z",
+    },
+    {
+      id: "message-b", role: "assistant", content: "Câu trả lời cũ [1]",
+      index_id: "old-index", status: "complete",
+      created_at: "2026-10-26T00:00:01Z", updated_at: "2026-10-26T00:00:01Z",
+      sources: [{
+        citation_id: 1, chunk_id: "old-chunk", doc_id: "a", page: 1,
+        source: "a.pdf", score: null, stale: true,
+      }],
+    },
+  ],
+};
+
+beforeEach(() => {
+  streamMock.mockReset();
+  listMock.mockReset().mockResolvedValue([]);
+  getMock.mockReset();
+  deleteMock.mockReset().mockResolvedValue(undefined);
+});
 
 it("renders summary sources without inventing a similarity percentage", async () => {
   streamMock.mockResolvedValue(new Response(
@@ -33,16 +75,74 @@ it("renders summary sources without inventing a similarity percentage", async ()
     + 'event: token\ndata: "Summary A"\n\nevent: done\ndata: "[DONE]"\n\n'
   ));
   render(<ChatHarness docId="a" workspaceId="workspace-a" mock={false} accessToken="token" />);
-  send("Tóm tắt PDF này");
+  await send("Tóm tắt PDF này");
   await screen.findByText("Summary A");
   expect(screen.getByText(/Nội dung tài liệu/)).toBeInTheDocument();
   expect(screen.queryByText(/Độ liên quan/)).not.toBeInTheDocument();
 });
 
+it("restores the latest transcript, disables stale citations and deletes it for a new chat", async () => {
+  listMock.mockResolvedValue([{
+    id: "conversation-a", doc_id: "a", message_count: 2,
+    created_at: "2026-10-26T00:00:00Z", updated_at: "2026-10-26T00:01:00Z",
+  }]);
+  getMock.mockResolvedValue(savedTranscript);
+  render(<ChatHarness docId="a" workspaceId="workspace-a" mock={false} accessToken="token" />);
+
+  await screen.findByText(/Câu trả lời cũ/);
+  expect(listMock).toHaveBeenCalledWith("token", "workspace-a", "a", expect.any(AbortSignal));
+  expect(getMock).toHaveBeenCalledWith(
+    "conversation-a", "token", "workspace-a", expect.any(AbortSignal),
+  );
+  // A stale generation is never fetched again: the citation renders as plain text
+  // and the source card stops being clickable.
+  expect(screen.queryByRole("button", { name: "Xem nguồn 1, trang 1" })).not.toBeInTheDocument();
+  expect(screen.getByText("a.pdf").closest("button")).toBeDisabled();
+  expect(screen.getByText(/Nguồn trích dẫn không còn khả dụng/)).toBeInTheDocument();
+
+  fireEvent.click(screen.getByRole("button", { name: "New chat" }));
+  await waitFor(() => expect(deleteMock).toHaveBeenCalledWith(
+    "conversation-a", "token", "workspace-a",
+  ));
+  expect(screen.queryByText(/Câu trả lời cũ/)).not.toBeInTheDocument();
+});
+
+it("does not resurrect a deleted transcript after a new chat", async () => {
+  listMock.mockResolvedValue([{
+    id: "conversation-a", doc_id: "a", message_count: 2,
+    created_at: "2026-10-26T00:00:00Z", updated_at: "2026-10-26T00:01:00Z",
+  }]);
+  getMock.mockResolvedValue(savedTranscript);
+  render(<ChatHarness docId="a" workspaceId="workspace-a" mock={false} accessToken="token" />);
+  await screen.findByText(/Câu trả lời cũ/);
+  const calls = listMock.mock.calls.length;
+
+  fireEvent.click(screen.getByRole("button", { name: "New chat" }));
+  await waitFor(() => expect(deleteMock).toHaveBeenCalledOnce());
+  expect(listMock).toHaveBeenCalledTimes(calls);
+});
+
+it("deletes the latest saved transcript when new chat is clicked during restore", async () => {
+  listMock
+    .mockReturnValueOnce(new Promise(() => {}))
+    .mockResolvedValueOnce([{
+      id: "conversation-a", doc_id: "a", message_count: 2,
+      created_at: "2026-10-26T00:00:00Z", updated_at: "2026-10-26T00:01:00Z",
+    }]);
+  render(<ChatHarness docId="a" workspaceId="workspace-a" mock={false} accessToken="token" />);
+  await waitFor(() => expect(listMock).toHaveBeenCalledOnce());
+
+  fireEvent.click(screen.getByRole("button", { name: "New chat" }));
+  await waitFor(() => expect(deleteMock).toHaveBeenCalledWith(
+    "conversation-a", "token", "workspace-a",
+  ));
+  expect(listMock).toHaveBeenLastCalledWith("token", "workspace-a", "a");
+});
+
 it("clears messages and draft when the selected document changes", async () => {
   streamMock.mockResolvedValue(response());
   const { rerender } = render(<ChatHarness docId="a" workspaceId="workspace-a" mock={false} accessToken="token" />);
-  send();
+  await send();
   await screen.findByText("Answer A");
   await waitFor(() => expect(input()).toBeEnabled());
   fireEvent.change(input(), { target: { value: "Draft about A" } });
@@ -50,7 +150,7 @@ it("clears messages and draft when the selected document changes", async () => {
   expect(screen.queryByText("Answer A")).not.toBeInTheDocument();
   expect(screen.queryByText("Question A")).not.toBeInTheDocument();
   expect(input()).toHaveValue("");
-  send("Question B");
+  await send("Question B");
   await waitFor(() => expect(streamMock).toHaveBeenLastCalledWith("Question B", "b", "token", "workspace-a", expect.stringMatching(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i), expect.any(AbortSignal)));
 });
 
@@ -59,13 +159,13 @@ it("clearing aborts the pending request and late results cannot unlock a newer r
   streamMock.mockReturnValueOnce(new Promise((r) => { resolveOld = r; }));
   streamMock.mockReturnValueOnce(new Promise(() => {}));
   render(<ChatHarness docId="a" workspaceId="workspace-a" mock={false} accessToken="token" />);
-  send();
+  await send();
   await waitFor(() => expect(streamMock).toHaveBeenCalledOnce());
   const signal = streamMock.mock.calls[0][5];
   fireEvent.click(screen.getByRole("button", { name: "Clear chat" }));
   expect(signal?.aborted).toBe(true);
   expect(input()).toBeEnabled();
-  send("New question");
+  await send("New question");
   await waitFor(() => expect(streamMock).toHaveBeenCalledTimes(2));
   await act(async () => resolveOld(response()));
   expect(screen.queryByText("Answer A")).not.toBeInTheDocument();
@@ -75,13 +175,12 @@ it("clearing aborts the pending request and late results cannot unlock a newer r
 it("aborts a pending stream when changing document or unmounting", async () => {
   streamMock.mockReturnValue(new Promise(() => {}));
   const { rerender, unmount } = render(<ChatHarness docId="a" workspaceId="workspace-a" mock={false} accessToken="token" />);
-  send();
+  await send();
   await waitFor(() => expect(streamMock).toHaveBeenCalledOnce());
   const firstSignal = streamMock.mock.calls[0][5];
   rerender(<ChatHarness docId="b" workspaceId="workspace-a" mock={false} accessToken="token" />);
   expect(firstSignal?.aborted).toBe(true);
-  expect(input()).toBeEnabled();
-  send("Question B");
+  await send("Question B");
   await waitFor(() => expect(streamMock).toHaveBeenCalledTimes(2));
   const secondSignal = streamMock.mock.calls[1][5];
   unmount();
@@ -91,14 +190,14 @@ it("aborts a pending stream when changing document or unmounting", async () => {
 it("aborts a pending stream when the workspace changes", async () => {
   streamMock.mockReturnValue(new Promise(() => {}));
   const { rerender } = render(<ChatHarness docId="a" workspaceId="workspace-a" mock={false} accessToken="token" />);
-  send();
+  await send();
   await waitFor(() => expect(streamMock).toHaveBeenCalledOnce());
   const signal = streamMock.mock.calls[0][5];
   rerender(<ChatHarness docId="a" workspaceId="workspace-b" mock={false} accessToken="token" />);
   expect(signal?.aborted).toBe(true);
   expect(screen.queryByText("Question A")).not.toBeInTheDocument();
   expect(input()).toHaveValue("");
-  send("Question B");
+  await send("Question B");
   await waitFor(() => expect(streamMock).toHaveBeenLastCalledWith(
     "Question B", "a", "token", "workspace-b",
     expect.stringMatching(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i),
@@ -110,7 +209,7 @@ it("stops demo output when chat is cleared", async () => {
   vi.useFakeTimers();
   try {
     render(<ChatHarness docId={null} workspaceId="workspace-a" mock />);
-    send();
+    submit();
     await act(async () => { await vi.advanceTimersByTimeAsync(100); });
     fireEvent.click(screen.getByRole("button", { name: "Clear chat" }));
     expect(input()).toBeEnabled();

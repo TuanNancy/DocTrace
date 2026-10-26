@@ -2,8 +2,11 @@ import type { PropsWithChildren } from "react";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, expect, it, vi } from "vitest";
 import { WorkspaceProvider, useWorkspace } from "@/components/workspace/WorkspaceProvider";
-import { deleteDocument, listDocuments, listWorkspaces, streamChat } from "@/lib/api";
-import type { ChatSource, LibraryDocument, Workspace } from "@/types";
+import {
+  deleteConversation, deleteDocument, getConversation, listConversations, listDocuments,
+  listWorkspaces, streamChat,
+} from "@/lib/api";
+import type { ChatSource, LibraryDocument, Transcript, Workspace } from "@/types";
 
 const client = vi.hoisted(() => ({ auth: {
   getUser: vi.fn(), getSession: vi.fn(), onAuthStateChange: vi.fn(),
@@ -11,7 +14,9 @@ const client = vi.hoisted(() => ({ auth: {
 vi.mock("@/lib/supabase/client", () => ({ createClient: () => client }));
 vi.mock("@/lib/api", async (importOriginal) => ({
   ...await importOriginal<typeof import("@/lib/api")>(),
-  deleteDocument: vi.fn(), listDocuments: vi.fn(), listWorkspaces: vi.fn(), streamChat: vi.fn(),
+  deleteConversation: vi.fn(), deleteDocument: vi.fn(), getConversation: vi.fn(),
+  listConversations: vi.fn(), listDocuments: vi.fn(), listWorkspaces: vi.fn(),
+  streamChat: vi.fn(),
 }));
 
 const documents: LibraryDocument[] = ["a", "b"].map((id) => ({
@@ -26,6 +31,23 @@ const source = (id: string): ChatSource => ({
   doc_id: id, chunk_id: `chunk-${id}`, citation_id: 1, page: 1, source: `${id}.pdf`, score: null,
 });
 const response = () => new Response('event: token\ndata: "Answer"\n\nevent: done\ndata: "[DONE]"\n\n');
+const savedTranscript: Transcript = {
+  id: "conversation-b", workspace_id: "workspace-a", doc_id: "b",
+  created_at: "2026-10-26T00:00:00Z", updated_at: "2026-10-26T00:01:00Z",
+  messages: [
+    {
+      id: "message-1", role: "user", content: "Câu hỏi đã lưu", sources: [],
+      index_id: null, status: "complete",
+      created_at: "2026-10-26T00:00:00Z", updated_at: "2026-10-26T00:00:00Z",
+    },
+    {
+      id: "message-2", role: "assistant", content: "Câu trả lời đã lưu",
+      index_id: "index-b", status: "complete",
+      created_at: "2026-10-26T00:00:01Z", updated_at: "2026-10-26T00:00:01Z",
+      sources: [{ ...source("b"), stale: false }],
+    },
+  ],
+};
 
 beforeEach(() => {
   vi.resetAllMocks();
@@ -35,6 +57,8 @@ beforeEach(() => {
   client.auth.getSession.mockResolvedValue({ data: { session: { user, access_token: "token" } } });
   client.auth.onAuthStateChange.mockReturnValue({ data: { subscription: { unsubscribe: vi.fn() } } });
   vi.mocked(listWorkspaces).mockResolvedValue(workspaces);
+  vi.mocked(listConversations).mockResolvedValue([]);
+  vi.mocked(deleteConversation).mockResolvedValue(undefined);
   vi.mocked(listDocuments).mockImplementation(async (_token, workspaceId) =>
     workspaceId === "workspace-a" ? documents : []);
 });
@@ -55,6 +79,55 @@ it("selects the personal workspace and scopes the library request to it", async 
   expect(listDocuments).toHaveBeenCalledWith("token", "workspace-a", expect.any(AbortSignal));
 });
 
+it("restores the latest ready conversation and new chat deletes that transcript", async () => {
+  const summary = {
+    id: savedTranscript.id, doc_id: savedTranscript.doc_id, message_count: 2,
+    created_at: savedTranscript.created_at, updated_at: savedTranscript.updated_at,
+  };
+  vi.mocked(listConversations).mockResolvedValue([summary]);
+  vi.mocked(getConversation).mockResolvedValue(savedTranscript);
+  const workspace = await mountWorkspace();
+
+  await waitFor(() => expect(workspace.current.docId).toBe("b"));
+  await waitFor(() => expect(workspace.current.chat.messages.map((message) => message.content))
+    .toEqual(["Câu hỏi đã lưu", "Câu trả lời đã lưu"]));
+  expect(listConversations).toHaveBeenCalledWith("token", "workspace-a");
+  expect(listConversations).toHaveBeenCalledWith(
+    "token", "workspace-a", "b", expect.any(AbortSignal),
+  );
+  expect(getConversation).toHaveBeenCalledWith(
+    "conversation-b", "token", "workspace-a", expect.any(AbortSignal),
+  );
+
+  await act(async () => { await workspace.current.chat.newChat(); });
+  expect(deleteConversation).toHaveBeenCalledWith("conversation-b", "token", "workspace-a");
+  expect(workspace.current.chat.messages).toEqual([]);
+  expect(workspace.current.docId).toBe("b");
+  // A deleted transcript must not be restored again for this workspace.
+  await act(async () => { await Promise.resolve(); });
+  expect(listConversations).toHaveBeenCalledTimes(2);
+});
+
+it("keeps the chat empty when new chat is clicked during the initial transcript lookup", async () => {
+  let resolveConversations!: (items: Awaited<ReturnType<typeof listConversations>>) => void;
+  vi.mocked(listConversations).mockReturnValue(new Promise((resolve) => { resolveConversations = resolve; }));
+  const workspace = await mountWorkspace();
+  await waitFor(() => expect(listConversations).toHaveBeenCalledWith("token", "workspace-a"));
+
+  act(() => workspace.current.newChat());
+  await act(async () => {
+    resolveConversations([{
+      id: "conversation-b", doc_id: "b", message_count: 2,
+      created_at: "2026-10-26T00:00:00Z", updated_at: "2026-10-26T00:01:00Z",
+    }]);
+    await Promise.resolve();
+  });
+
+  expect(workspace.current.docId).toBeNull();
+  expect(workspace.current.chat.messages).toEqual([]);
+  expect(deleteConversation).not.toHaveBeenCalled();
+});
+
 it("keeps archived workspaces listed but selects an active one by default", async () => {
   vi.mocked(listWorkspaces).mockResolvedValue([
     { ...workspaces[0], status: "archived" },
@@ -72,6 +145,7 @@ it("switching workspace clears document, source and chat, then rejects late answ
   vi.mocked(streamChat).mockReturnValue(new Promise((resolve) => { finishChat = resolve; }));
   const workspace = await mountWorkspace();
   act(() => workspace.current.selectDocument(documents[0]));
+  await waitFor(() => expect(workspace.current.chat.transcriptLoading).toBe(false));
   let chat!: Promise<void>;
   act(() => { chat = workspace.current.chat.submit("Question about A"); });
   act(() => workspace.current.selectSource(source("a")));
@@ -114,9 +188,11 @@ it("preserves the new selection, source and stream when an older deletion respon
   vi.mocked(streamChat).mockReturnValue(new Promise((resolve) => { finishChat = resolve; }));
   const workspace = await mountWorkspace();
   act(() => workspace.current.selectDocument(documents[0]));
+  await waitFor(() => expect(workspace.current.chat.transcriptLoading).toBe(false));
   let deletion!: Promise<void>;
   act(() => { deletion = workspace.current.operate(documents[0], "delete"); });
   act(() => workspace.current.selectDocument(documents[1]));
+  await waitFor(() => expect(workspace.current.chat.transcriptLoading).toBe(false));
   let chat!: Promise<void>;
   act(() => { chat = workspace.current.chat.submit("Question about B"); });
   act(() => workspace.current.selectSource(source("b")));
@@ -139,6 +215,7 @@ it("clears the source and cancels chat when the deleted document is still select
   vi.mocked(deleteDocument).mockResolvedValue({ ...documents[0], status: "deleting" });
   const workspace = await mountWorkspace();
   act(() => workspace.current.selectDocument(documents[0]));
+  await waitFor(() => expect(workspace.current.chat.transcriptLoading).toBe(false));
   let chat!: Promise<void>;
   act(() => { chat = workspace.current.chat.submit("Question about A"); });
   act(() => workspace.current.selectSource(source("a")));

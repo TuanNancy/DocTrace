@@ -1,6 +1,9 @@
 // @vitest-environment node
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { listWorkspaces, streamChat, uploadPDF } from "@/lib/api";
+import {
+  deleteConversation, getConversation, getUsage, listConversations, listWorkspaces,
+  streamChat, uploadPDF,
+} from "@/lib/api";
 
 describe("API transport", () => {
   beforeEach(() => vi.stubEnv("NEXT_PUBLIC_API_URL", "https://api.example.test/"));
@@ -42,6 +45,64 @@ describe("API transport", () => {
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe("https://api.example.test/api/workspaces");
     expect(init.headers).toEqual({ Authorization: "Bearer test-token" });
+  });
+
+  it("lists conversations with the tenant header and an optional document filter", async () => {
+    const item = {
+      id: "conversation-a", doc_id: "doc-a", message_count: 2,
+      created_at: "2026-10-26T00:00:00Z", updated_at: "2026-10-26T00:01:00Z",
+    };
+    const fetchMock = vi.fn().mockResolvedValue(Response.json({ items: [item] }));
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(listConversations("test-token", "workspace-a", "doc-a")).resolves.toEqual([item]);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("https://api.example.test/api/conversations?doc_id=doc-a");
+    expect(init.headers).toEqual({
+      Authorization: "Bearer test-token", "X-Workspace-Id": "workspace-a",
+    });
+    expect(init.cache).toBe("no-store");
+  });
+
+  it("loads and deletes a transcript through owner-scoped routes", async () => {
+    const transcript = {
+      id: "conversation-a", workspace_id: "workspace-a", doc_id: "doc-a",
+      created_at: "2026-10-26T00:00:00Z", updated_at: "2026-10-26T00:01:00Z",
+      messages: [],
+    };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(Response.json(transcript))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(getConversation("conversation/one", "test-token", "workspace-a"))
+      .resolves.toEqual(transcript);
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      "https://api.example.test/api/conversations/conversation%2Fone",
+    );
+    await expect(deleteConversation("conversation-a", "test-token", "workspace-a"))
+      .resolves.toBeUndefined();
+    const [url, init] = fetchMock.mock.calls[1];
+    expect(url).toBe("https://api.example.test/api/conversations/conversation-a");
+    expect(init.method).toBe("DELETE");
+    expect(init.headers["X-Workspace-Id"]).toBe("workspace-a");
+  });
+
+  it("fetches workspace usage with the tenant header", async () => {
+    const usage = {
+      workspace_id: "workspace-a", plan: "free",
+      period_start: "2026-10-01T00:00:00Z", reset_at: "2026-11-01T00:00:00Z",
+      chat: { used: 2, limit: 10, remaining: 8, metric: "chat_questions_month" },
+      documents: { used: 1, limit: 5, remaining: 4, metric: "documents" },
+      by_user: [],
+    };
+    const fetchMock = vi.fn().mockResolvedValue(Response.json(usage));
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(getUsage("test-token", "workspace-a")).resolves.toEqual(usage);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("https://api.example.test/api/usage");
+    expect(init.headers).toEqual({
+      Authorization: "Bearer test-token", "X-Workspace-Id": "workspace-a",
+    });
   });
 
   it("supplies the PDF MIME type when the browser leaves it empty", async () => {

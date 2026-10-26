@@ -35,6 +35,7 @@ def test_local_cloud_and_index_override():
     ("DATABASE_POOL_SIZE", "0"), ("DATABASE_POOL_MAX_OVERFLOW", "-1"),
     ("DATABASE_POOL_TIMEOUT_SECONDS", "nan"), ("DATABASE_CONNECT_TIMEOUT_SECONDS", "0"),
     ("DATABASE_STATEMENT_TIMEOUT_MS", "0"), ("LOG_LEVEL", "verbose"), ("LOG_JSON", "maybe"),
+    ("TRANSCRIPT_DELETE_MODE", "forever"), ("TRANSCRIPT_RETENTION_DAYS", "0"),
 ])
 def test_invalid_values_name_the_setting(key, value):
     with pytest.raises(ValueError, match=key):
@@ -78,6 +79,17 @@ def test_rate_limit_defaults_and_overrides():
 def test_summary_call_cap_defaults_and_overrides():
     assert AppConfig.from_env({}).summary_max_calls == 8
     assert AppConfig.from_env({"SUMMARY_MAX_CALLS": "12"}).summary_max_calls == 12
+
+
+def test_transcript_retention_defaults_and_overrides():
+    config = AppConfig.from_env({})
+    assert (config.transcript_delete_mode, config.transcript_retention_days) == ("retain_30d", 30)
+    overridden = AppConfig.from_env({
+        "TRANSCRIPT_DELETE_MODE": "cascade", "TRANSCRIPT_RETENTION_DAYS": "7",
+    })
+    assert (overridden.transcript_delete_mode, overridden.transcript_retention_days) == (
+        "cascade", 7,
+    )
 
 
 def test_s3_can_be_disabled_but_partial_credentials_are_rejected():

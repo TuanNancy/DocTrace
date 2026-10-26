@@ -7,6 +7,8 @@ export interface ChatSource {
   source: string;
   /** Similarity score; null for document summaries retrieved without vector search. */
   score: number | null;
+  /** True when the document was re-indexed or deleted after this answer. */
+  stale?: boolean;
 }
 
 /** Parsed SSE event types for streamChat() */
@@ -58,4 +60,59 @@ export interface Workspace {
   plan: "free" | "pro";
   status: "active" | "archived" | "purging";
   created_at: string | null;
+}
+
+/** One persisted message returned by GET /api/conversations/{id}. */
+export interface TranscriptMessage {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  sources: ChatSource[];
+  index_id: string | null;
+  status: "pending" | "streaming" | "complete" | "interrupted" | "error";
+  created_at: string;
+  updated_at: string;
+}
+
+/** Latest active conversation summary for the current user and document. */
+export interface ConversationSummary {
+  id: string;
+  doc_id: string;
+  created_at: string;
+  updated_at: string;
+  message_count: number;
+}
+
+export interface Transcript {
+  id: string;
+  workspace_id: string;
+  doc_id: string;
+  created_at: string;
+  updated_at: string;
+  messages: TranscriptMessage[];
+}
+
+export interface UsageMetric {
+  used: number;
+  limit: number;
+  remaining: number;
+  metric: string;
+}
+
+export interface UsageUser {
+  user_id: string;
+  chat_questions: number;
+  cost_micros: number;
+  cost_unknown_calls: number;
+}
+
+/** GET /api/usage: plan limits, monthly counters and owner-scoped costs. */
+export interface UsageSummary {
+  workspace_id: string;
+  plan: "free" | "pro";
+  period_start: string;
+  reset_at: string;
+  chat: UsageMetric;
+  documents: UsageMetric;
+  by_user: UsageUser[];
 }

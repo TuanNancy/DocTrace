@@ -3,7 +3,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import type { User } from "@supabase/supabase-js";
 import { createClient } from "@/lib/supabase/client";
-import { deleteDocument, listDocuments, listWorkspaces, retryDocument } from "@/lib/api";
+import { deleteDocument, listConversations, listDocuments, listWorkspaces, retryDocument } from "@/lib/api";
 import { isPending } from "@/lib/documents";
 import { useChatSession } from "@/lib/use-chat-session";
 import { useUpload } from "@/lib/use-upload";
@@ -47,6 +47,8 @@ function useWorkspaceState() {
   const [busyIds, setBusyIds] = useState<string[]>([]);
   const documentRequest = useRef<AbortController | null>(null);
   const workspaceRequest = useRef<AbortController | null>(null);
+  const restoreAttempted = useRef<string | null>(null);
+  const restoreRequest = useRef<string | null>(null);
   const workspaceIdRef = useRef<string | null>(workspaceId);
   workspaceIdRef.current = workspaceId;
   const userId = user?.id;
@@ -178,6 +180,35 @@ function useWorkspaceState() {
     }
   }, [documents, documentsLoading, docId]);
 
+  // Reload behaviour: if no document is selected yet, restore the latest
+  // conversation whose document is still ready in this workspace. This runs
+  // once per workspace so "Chat mới" cannot immediately resurrect an old chat.
+  useEffect(() => { restoreAttempted.current = null; }, [workspaceId]);
+  useEffect(() => {
+    if (mock || !accessToken || !userId || !workspaceId) return;
+    if (documentsLoading || docId || restoreAttempted.current === workspaceId
+        || restoreRequest.current === workspaceId) return;
+    const ready = new Set(
+      documents.filter((document) => document.status === "ready").map((document) => document.doc_id),
+    );
+    if (!ready.size) return;
+    restoreRequest.current = workspaceId;
+    void listConversations(accessToken, workspaceId)
+      .then((items) => {
+        if (workspaceIdRef.current !== workspaceId) return;
+        // "Chat mới" while this initial lookup is in flight must not select a
+        // document only to show the transcript the user just dismissed.
+        if (restoreAttempted.current === workspaceId) return;
+        const latest = items.find((item) => ready.has(item.doc_id));
+        if (latest) setDocId((current) => current ?? latest.doc_id);
+      })
+      .catch(() => { /* A transcript restore failure must not block the library. */ })
+      .finally(() => {
+        if (workspaceIdRef.current === workspaceId) restoreAttempted.current = workspaceId;
+        if (restoreRequest.current === workspaceId) restoreRequest.current = null;
+      });
+  }, [accessToken, docId, documents, documentsLoading, mock, userId, workspaceId]);
+
   const uploaded = useCallback((result: LibraryDocument) => {
     if (workspaceId !== workspaceIdRef.current) return;
     documentRequest.current?.abort();
@@ -238,7 +269,12 @@ function useWorkspaceState() {
     setDocId(document.doc_id); setSource(null); setSourcesOpen(false); setSidebarOpen(false);
   };
   const selectSource = (selected: ChatSource) => { setSource(selected); setSourcesOpen(true); };
-  const newChat = () => { chat.clearMessages(); setSource(null); setSidebarOpen(false); };
+  const newChat = () => {
+    restoreAttempted.current = workspaceId;
+    void chat.newChat();
+    setSource(null);
+    setSidebarOpen(false);
+  };
   const signOut = async () => {
     const { error } = await supabase.auth.signOut();
     if (error) { setNotice(error.message); return; }

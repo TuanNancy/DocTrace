@@ -8,7 +8,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.routers import chat, upload, documents, workspaces, usage
+from app.routers import chat, upload, documents, workspaces, usage, conversations
 from app.core.config import get_config
 from app.core.observability import RequestContextMiddleware, configure_logging
 from app.db import dispose_engines
@@ -39,7 +39,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=["Retry-After", "X-Request-ID"],
+    expose_headers=["Retry-After", "X-Request-ID", "X-Conversation-Id"],
 )
 app.add_middleware(RequestContextMiddleware)
 
@@ -48,6 +48,7 @@ app.include_router(chat.router)
 app.include_router(documents.router)
 app.include_router(workspaces.router)
 app.include_router(usage.router)
+app.include_router(conversations.router)
 
 
 @app.get("/ready", tags=["health"])

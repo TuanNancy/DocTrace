@@ -76,6 +76,8 @@ class AppConfig:
     rq_queue_name: str = "documents-v2"
     document_index_timeout_seconds: int = 900
     document_delete_timeout_seconds: int = 300
+    transcript_delete_mode: str = "retain_30d"
+    transcript_retention_days: int = 30
     supabase_s3_endpoint: Optional[str] = None
     supabase_s3_region: str = "ap-southeast-2"
     supabase_s3_access_key_id: Optional[str] = None
@@ -205,6 +207,10 @@ class AppConfig:
             errors.append("LOG_LEVEL must be DEBUG, INFO, WARNING, ERROR or CRITICAL")
         if not isinstance(self.log_json, bool):
             errors.append("LOG_JSON must be a boolean")
+        if self.transcript_delete_mode not in ("retain_30d", "cascade"):
+            errors.append("TRANSCRIPT_DELETE_MODE must be retain_30d or cascade")
+        if type(self.transcript_retention_days) is not int or self.transcript_retention_days <= 0:
+            errors.append("TRANSCRIPT_RETENTION_DAYS must be a positive integer")
         if not self.rq_queue_name:
             errors.append("RQ_QUEUE_NAME must not be empty")
         for attr in ("openrouter_base_url", "supabase_url", "supabase_s3_endpoint"):

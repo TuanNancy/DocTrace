@@ -6,10 +6,12 @@ Hỏi đáp PDF với nguồn trích dẫn có thể kiểm chứng. Giao diện
 
 - `/documents`: kéo thả PDF, tiến trình upload thực, trạng thái xử lý, tìm kiếm/lọc, xem PDF, thử lại và xóa.
 - `/chat`: chọn PDF sẵn sàng, trả lời streaming bằng Markdown/GFM, dừng, sao chép và xuất hội thoại.
+- `/usage`: plan hiện tại, lượt hỏi/tài liệu còn lại, ngày reset và chi phí OpenRouter theo user.
 - Citation `[1]`, `[2]` mở nguyên văn chunk và PDF ở trang tương ứng, qua URL có thời hạn.
-- Chat giữ trong bộ nhớ của layout dùng chung khi chuyển Chat ↔ Thư viện; reload bắt đầu mới. Backend vẫn trả lời từng câu hỏi độc lập, chưa lưu lịch sử hội thoại.
+- Hội thoại được lưu theo workspace + người dùng + tài liệu; reload khôi phục hội thoại mới nhất. “Chat mới” xóa hội thoại hiện tại. Backend vẫn trả lời từng câu hỏi độc lập.
+- Nguồn trích dẫn của generation cũ bị đánh dấu không khả dụng sau khi tài liệu được xử lý lại hoặc bị xóa; UI không mở chunk/PDF cũ.
 - Mỗi tài khoản có workspace cá nhân; sidebar hiển thị và chuyển giữa các workspace đang hoạt động. Đổi workspace xóa ngay thư viện/chat đang chọn và bỏ qua phản hồi cũ.
-- Tài liệu luôn riêng theo người tải. Thành viên cùng workspace không đọc được PDF, đoạn trích hay hội thoại của nhau.
+- Tài liệu và transcript luôn riêng theo người tải. Thành viên cùng workspace không đọc được PDF, đoạn trích hay hội thoại của nhau; owner chỉ thấy số liệu tổng hợp.
 - Sidebar và panel nguồn chuyển thành drawer trên mobile.
 
 ## Thành phần
@@ -149,12 +151,15 @@ Các endpoint `/api/*` đều yêu cầu `Authorization: Bearer <Supabase access
 | DELETE | `/api/documents/{doc_id}` | `202` và xếp tác vụ xóa; `409` nếu job hiện tại chưa kết thúc |
 | GET | `/api/documents/{doc_id}/file` | URL PDF riêng tư, hiệu lực 300 giây |
 | GET | `/api/documents/{doc_id}/chunks/{chunk_id}` | Đoạn trích gốc, tên PDF, trang |
-| POST | `/api/chat` | `{query, doc_id, language: "vi", request_id}` + workspace header → SSE |
+| POST | `/api/chat` | `{query, doc_id, language: "vi", request_id}` + workspace header → SSE, kèm `X-Conversation-Id` |
+| GET | `/api/conversations?doc_id=...&limit=20` | Hội thoại đang hoạt động của chính user; bỏ `doc_id` để lấy mới nhất trong workspace |
+| GET | `/api/conversations/{id}` | Transcript, sources và cờ `stale` theo generation hiện tại |
+| DELETE | `/api/conversations/{id}` | Xóa ngay hội thoại và messages của chính user (`204`) |
 | GET | `/api/usage` | Plan, kỳ tháng hiện tại, lượt chat/tài liệu và cost theo user |
 
 Mỗi user có workspace cá nhân với `id` bằng user id. Tài liệu chỉ thuộc về người tải (`owner_user_id`) và workspace đã chọn; owner workspace hay platform admin không đọc nội dung PDF/transcript, chỉ xem metadata và tổng hợp. Frontend hiện hỗ trợ chọn workspace; tạo/quản lý nhóm dùng API ở trên.
 
-SSE: `sources` chứa `{citation_id, chunk_id, doc_id, page, source, score}`, `token` chứa text delta, `error` chứa `{message}`, `done` chứa chuỗi `"[DONE]"`. `score: null` cho tóm tắt toàn tài liệu.
+SSE: `sources` chứa `{citation_id, chunk_id, doc_id, page, source, score}`, `token` chứa text delta, `error` chứa `{message}`, `done` chứa chuỗi `"[DONE]"`. `score: null` cho tóm tắt toàn tài liệu. Response chat trả thêm header `X-Conversation-Id`; khi tải lại transcript, mỗi source có thêm `stale: true/false`.
 
 Sau upload: `queued → processing → ready / error`; xóa: `deleting → deleted / delete_error`. Retry theo lịch vẫn là `queued` (hoặc `deleting`). Lỗi indexing thuộc trạng thái tài liệu, không thuộc request upload đã nhận `202`.
 
@@ -174,6 +179,15 @@ Workspace là đơn vị tính hạn mức; giới hạn seed trong bảng `doct
 - Lượt đã admit vẫn tính nếu stream lỗi hoặc người dùng dừng giữa chừng. Chat không trừ lượt khi tài liệu chưa ready hoặc không thuộc owner hiện tại.
 - Tài liệu: upload pre-check `ZCARD` trước khi lưu Storage; `create()` kiểm tra lại trong `WATCH/MULTI`. Nếu hai upload tranh slot cuối, upload thua nhận `429 quota_exceeded` và PDF vừa lưu được xóa. Slot chỉ được giải phóng khi tài liệu đạt `deleted`; `error`/`delete_error` vẫn tính.
 - `GET /api/usage` trả `{plan, period_start, reset_at, chat, documents, by_user}`. Owner thấy breakdown của mọi user; member chỉ thấy chính mình. Cost lấy từ `provider_calls`, gồm cả số call có cost `unknown`.
+
+### Hội thoại & lưu trữ
+
+- Một admission chat tạo/tìm conversation theo `(workspace, user, doc)`, ghi câu hỏi, placeholder assistant `pending` và `chat_requests` trong cùng transaction quota. Stream cập nhật `streaming`, rồi `complete`/`interrupted`/`error`; câu trả lời dở vẫn giữ phần đã gửi.
+- `GET /api/conversations` chỉ trả hội thoại của user hiện tại trong workspace đang chọn. Owner workspace và platform admin không có endpoint đọc transcript của thành viên.
+- “Chat mới” gọi `DELETE /api/conversations/{id}` và xóa vật lý hội thoại/messages ngay (demo chưa có lịch sử nhiều hội thoại). Reload khôi phục hội thoại mới nhất còn hiển thị cho tài liệu đang chọn.
+- Xóa tài liệu ẩn transcript ngay khi API nhận `DELETE`. Mặc định giữ nội dung 30 ngày (`TRANSCRIPT_DELETE_MODE=retain_30d`) rồi purge; đặt `cascade` để xóa ngay. `TRANSCRIPT_RETENTION_DAYS` đổi cửa sổ giữ.
+- Chạy `python -m app.purge_transcripts` từ `backend/` (hoặc trong worker container) hằng ngày để xóa conversation hết `purge_after`. `provider_calls` vẫn giữ số liệu cost, không chứa prompt/transcript.
+- Khi tải transcript, server so `messages.index_id` với `active_index_id` hiện tại. Tài liệu chưa ready, đã xóa hoặc đã re-index khiến mọi source của message đó `stale`; frontend không mở chunk/PDF và hiện “nguồn không còn khả dụng”.
 
 ### Giới hạn tần suất (burst)
 

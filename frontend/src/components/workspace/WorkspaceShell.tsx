@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { BookOpen, Building2, ChevronRight, FileText, LogOut, Menu, MessageSquare, Plus, Sparkles, X } from "lucide-react";
+import { BarChart3, BookOpen, Building2, ChevronRight, FileText, LogOut, Menu, MessageSquare, Plus, Sparkles, X } from "lucide-react";
 import { BrandMark } from "@/components/BrandMark";
 import { useWorkspace } from "./WorkspaceProvider";
 import { Drawer } from "./Drawer";
@@ -40,7 +40,7 @@ function Navigation() {
     </button>
     <p className="mb-3 px-3 text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-400">Điều hướng</p>
     <nav className="space-y-1.5" aria-label="Điều hướng chính">
-      {[{ href: "/chat", label: "Hỏi đáp tài liệu", icon: MessageSquare }, { href: "/documents", label: "Thư viện", icon: BookOpen }].map(({ href, label, icon: Icon }) =>
+      {[{ href: "/chat", label: "Hỏi đáp tài liệu", icon: MessageSquare }, { href: "/documents", label: "Thư viện", icon: BookOpen }, { href: "/usage", label: "Mức sử dụng", icon: BarChart3 }].map(({ href, label, icon: Icon }) =>
         <Link key={href} href={href} onClick={() => workspace.setSidebarOpen(false)} aria-current={pathname === href ? "page" : undefined}
           className={`nav-item ${pathname === href ? "nav-item-active" : ""}`}><Icon size={18} />{label}
           {href === "/documents" && <span className="ml-auto text-xs opacity-70">{workspace.documents.length}</span>}
@@ -66,7 +66,9 @@ function Navigation() {
 
 export function WorkspaceShell({ children }: { children: React.ReactNode }) {
   const workspace = useWorkspace();
-  const library = usePathname() === "/documents";
+  const pathname = usePathname();
+  const title = pathname === "/documents" ? "Thư viện tài liệu"
+    : pathname === "/usage" ? "Mức sử dụng" : "Hỏi đáp tài liệu";
   if (!workspace.authReady) return <div className="workspace flex min-h-dvh items-center justify-center text-sm text-slate-500">Đang kiểm tra phiên đăng nhập…</div>;
   if (!workspace.user || !workspace.accessToken) return <div className="workspace flex min-h-dvh flex-col items-center justify-center gap-5">
     <BrandMark /><h1 className="font-sans text-2xl">Chào mừng đến với DocTrace</h1>
@@ -80,7 +82,7 @@ export function WorkspaceShell({ children }: { children: React.ReactNode }) {
         <div className="flex min-w-0 items-center gap-3">
           <button className="icon-button lg:hidden" aria-label="Mở điều hướng" onClick={() => workspace.setSidebarOpen(true)}><Menu size={20} /></button>
           <div><p className="hidden text-[10px] font-semibold uppercase tracking-[0.2em] text-blue-500 sm:block">{workspace.activeWorkspace?.name ?? "DocTrace workspace"}</p>
-            <h1 className="mt-1 font-sans text-xl font-semibold tracking-tight">{library ? "Thư viện tài liệu" : "Hỏi đáp tài liệu"}</h1></div>
+            <h1 className="mt-1 font-sans text-xl font-semibold tracking-tight">{title}</h1></div>
         </div>
         <div className="flex items-center gap-2">
           {workspace.mock && <span className="status-badge status-queued">Demo</span>}

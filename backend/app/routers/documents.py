@@ -9,6 +9,7 @@ from app.core.workspace import require_workspace
 from app.services.document_repository import DocumentRepository, get_document_repository, public_document
 from app.services.supabase_pdf_storage import signed_pdf_url
 from app.services.rate_limiter import RateLimiter, get_rate_limiter
+from app.services.transcripts import TranscriptService, get_transcript_service
 from app.services.workspaces import WorkspaceContext
 from app.storage.factory import create_connected_vector_store
 
@@ -45,7 +46,15 @@ async def retry_document(doc_id: UUID, workspace: WorkspaceContext = Depends(req
 
 @router.delete("/{doc_id}", status_code=202)
 async def delete_document(doc_id: UUID, workspace: WorkspaceContext = Depends(require_workspace),
-                          repository: DocumentRepository = Depends(get_document_repository)):
+                          repository: DocumentRepository = Depends(get_document_repository),
+                          transcripts: TranscriptService = Depends(get_transcript_service)):
+    # Hide before accepting the delete so there is no window in which an
+    # accepted deletion leaves a readable transcript. If queueing then fails,
+    # the transcript stays hidden and the user can retry deletion, matching
+    # the retention contract.
+    await transcripts.hide_for_document(
+        workspace.workspace_id, workspace.user_id, str(doc_id),
+    )
     return public_document(await repository.queue(
         workspace.workspace_id, workspace.user_id, str(doc_id), "delete",
     ))
