@@ -23,7 +23,7 @@ function UploadHarness(props: Parameters<typeof useUpload>[0]) {
 it("allows choosing another PDF after a successful upload", async () => {
   uploadMock.mockResolvedValue(result);
   const onUploadComplete = vi.fn();
-  render(<UploadHarness mock={false} accessToken="token" onUploadComplete={onUploadComplete} />);
+  render(<UploadHarness mock={false} accessToken="token" workspaceId="workspace-a" onUploadComplete={onUploadComplete} />);
   fireEvent.change(screen.getByLabelText("Chọn file"), { target: { files: [pdf()] } });
   await screen.findByText("Tải lên thành công");
   fireEvent.change(screen.getByLabelText("Chọn file khác"), { target: { files: [pdf("b.pdf")] } });
@@ -32,7 +32,7 @@ it("allows choosing another PDF after a successful upload", async () => {
 
 it("allows retrying after an API error", async () => {
   uploadMock.mockRejectedValueOnce(new Error("Server unavailable")).mockResolvedValue(result);
-  render(<UploadHarness mock={false} accessToken="token" />);
+  render(<UploadHarness mock={false} accessToken="token" workspaceId="workspace-a" />);
   fireEvent.change(screen.getByLabelText("Chọn file"), { target: { files: [pdf()] } });
   await screen.findByText("Server unavailable");
   fireEvent.change(screen.getByLabelText("Thử lại"), { target: { files: [pdf()] } });
@@ -42,7 +42,7 @@ it("allows retrying after an API error", async () => {
 it("does not start a second upload when files are dropped while busy", async () => {
   let resolve!: (value: LibraryDocument) => void;
   uploadMock.mockReturnValue(new Promise((r) => { resolve = r; }));
-  const { container } = render(<UploadHarness mock={false} accessToken="token" />);
+  const { container } = render(<UploadHarness mock={false} accessToken="token" workspaceId="workspace-a" />);
   fireEvent.change(screen.getByLabelText("Chọn file"), { target: { files: [pdf()] } });
   const dropZone = container.firstElementChild!.firstElementChild!;
   fireEvent.dragOver(dropZone);
@@ -55,9 +55,9 @@ it("aborts on unmount and ignores a late upload result", async () => {
   let resolve!: (value: LibraryDocument) => void;
   uploadMock.mockReturnValue(new Promise((r) => { resolve = r; }));
   const onUploadComplete = vi.fn();
-  const { unmount } = render(<UploadHarness mock={false} accessToken="token" onUploadComplete={onUploadComplete} />);
+  const { unmount } = render(<UploadHarness mock={false} accessToken="token" workspaceId="workspace-a" onUploadComplete={onUploadComplete} />);
   fireEvent.change(screen.getByLabelText("Chọn file"), { target: { files: [pdf()] } });
-  const signal = uploadMock.mock.calls[0][2];
+  const signal = uploadMock.mock.calls[0][3];
   unmount();
   await act(async () => resolve(result));
   expect(signal?.aborted).toBe(true);
@@ -68,10 +68,10 @@ it("recovers after a token change and ignores late progress and results", async 
   let resolve!: (value: LibraryDocument) => void;
   uploadMock.mockReturnValueOnce(new Promise((r) => { resolve = r; })).mockResolvedValue(result);
   const onUploadComplete = vi.fn();
-  const { rerender } = render(<UploadHarness mock={false} accessToken="old-token" onUploadComplete={onUploadComplete} />);
+  const { rerender } = render(<UploadHarness mock={false} accessToken="old-token" workspaceId="workspace-a" onUploadComplete={onUploadComplete} />);
   fireEvent.change(screen.getByLabelText("Chọn file"), { target: { files: [pdf()] } });
-  const [, , signal, progress] = uploadMock.mock.calls[0];
-  rerender(<UploadHarness mock={false} accessToken="new-token" onUploadComplete={onUploadComplete} />);
+  const [, , , signal, progress] = uploadMock.mock.calls[0];
+  rerender(<UploadHarness mock={false} accessToken="new-token" workspaceId="workspace-a" onUploadComplete={onUploadComplete} />);
   expect(signal?.aborted).toBe(true);
   expect(screen.getByLabelText("Chọn file")).toBeEnabled();
   await act(async () => { progress?.(99); resolve(result); });
@@ -80,5 +80,6 @@ it("recovers after a token change and ignores late progress and results", async 
   fireEvent.change(screen.getByLabelText("Chọn file"), { target: { files: [pdf("b.pdf")] } });
   await screen.findByText("Tải lên thành công");
   expect(uploadMock.mock.calls[1][1]).toBe("new-token");
+  expect(uploadMock.mock.calls[1][2]).toBe("workspace-a");
   expect(onUploadComplete).toHaveBeenCalledOnce();
 });

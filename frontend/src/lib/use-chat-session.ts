@@ -5,8 +5,8 @@ import { streamChat } from "@/lib/api";
 import { streamChatSSEParser } from "@/lib/sse";
 import type { ChatMessage, ChatSource } from "@/types";
 
-export function useChatSession({ docId, mock = false, accessToken }: {
-  docId: string | null; mock?: boolean; accessToken?: string | null;
+export function useChatSession({ docId, workspaceId, mock = false, accessToken }: {
+  docId: string | null; workspaceId: string | null; mock?: boolean; accessToken?: string | null;
 }) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
@@ -31,11 +31,12 @@ export function useChatSession({ docId, mock = false, accessToken }: {
   useEffect(() => {
     clearMessages();
     return () => { activeRequest.current?.abort(); activeRequest.current = null; };
-  }, [docId, clearMessages]);
+  }, [docId, workspaceId, clearMessages]);
 
   const submit = useCallback(async (question?: string) => {
     const query = (question ?? input).trim();
     if (!query || activeRequest.current) return;
+    if (!workspaceId && !mock) { setError("Vui lòng chọn không gian làm việc."); return; }
     if (!docId && !mock) { setError("Vui lòng chọn một PDF sẵn sàng trong thư viện."); return; }
     if (!mock && !accessToken) { setError("Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại."); return; }
     const controller = new AbortController();
@@ -63,7 +64,7 @@ export function useChatSession({ docId, mock = false, accessToken }: {
           update({}, part);
         }
       } else {
-        const response = await streamChat(query, docId!, accessToken!, controller.signal);
+        const response = await streamChat(query, docId!, accessToken!, workspaceId!, controller.signal);
         if (controller.signal.aborted) { await response.body?.cancel(); return; }
         for await (const event of streamChatSSEParser(response.body!)) {
           if (controller.signal.aborted) break;
@@ -84,7 +85,7 @@ export function useChatSession({ docId, mock = false, accessToken }: {
         setLoading(false);
       }
     }
-  }, [input, docId, mock, accessToken]);
+  }, [input, docId, workspaceId, mock, accessToken]);
 
   const exportTranscript = useCallback(() => {
     const text = messages.map((message) => `${message.role === "user" ? "Bạn" : "DocTrace"}\n${message.content}\n${
