@@ -131,11 +131,14 @@ def dispose_engines(*, close: bool = True) -> None:
 def _ping_database(config: AppConfig) -> None:
     # Do not wait behind the application's connection pool or run a 15s business
     # query. These connections cannot change the cached runtime engine settings.
+    # A hosted cross-region pooler needs ~2s to accept a fresh session, so a 2s
+    # connect budget would flap health checks even when the database is healthy.
+    # The probe still fails closed: 5s to connect, 5s per statement.
     engine = create_engine(
         normalize_database_url(config.database_url or ""), poolclass=pool.NullPool,
         hide_parameters=True, connect_args={
-            **_connect_args(config), "connect_timeout": 2,
-            "options": "-c statement_timeout=2000 -c lock_timeout=1000",
+            **_connect_args(config), "connect_timeout": 5,
+            "options": "-c statement_timeout=5000 -c lock_timeout=2000",
         },
     )
     try:
