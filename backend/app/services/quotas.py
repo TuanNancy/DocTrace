@@ -163,6 +163,11 @@ class QuotaService:
         if existing:
             raise duplicate_error(existing)
 
+        from app.services.workspaces import WorkspaceService
+
+        # A header resolved earlier is not an admission fence. Archive/purge and
+        # plan changes wait for this transaction, including its Redis recheck.
+        plan = WorkspaceService(self.config)._lock_workspace(session, workspace_id)
         lock_document(session, workspace_id, user_id, doc_id)
         document = self.repository.get_sync(workspace_id, user_id, doc_id)
         if (document["status"] != "ready" or not document.get("active_index_id")
@@ -315,6 +320,16 @@ class QuotaService:
     async def mark_chat_status(self, chat_request_id: str, status: str,
                                error_code: str | None = None) -> bool:
         return await self._run(self._mark_chat, chat_request_id, status, error_code)
+
+    def _record_timing(self, session, chat_request_id: str, latency_ms: int, first_token_ms: int | None) -> None:
+        session.execute(text("""
+            UPDATE doctrace.chat_requests
+            SET latency_ms = COALESCE(latency_ms, :latency), first_token_ms = COALESCE(first_token_ms, :first)
+            WHERE id = CAST(:id AS uuid)
+        """), {"id": chat_request_id, "latency": latency_ms, "first": first_token_ms})
+
+    async def record_timing(self, chat_request_id: str, latency_ms: int, first_token_ms: int | None) -> None:
+        await self._run(self._record_timing, chat_request_id, latency_ms, first_token_ms)
 
     def _usage(self, session, workspace_id: str, plan: str, user_id: str, role: str) -> dict:
         workspace_id = _uuid(workspace_id, "workspace_invalid", "Workspace không hợp lệ.")

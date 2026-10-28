@@ -117,12 +117,12 @@ def session_scope(config: Optional[AppConfig] = None) -> Iterator[Session]:
         session.close()
 
 
-def dispose_engines() -> None:
+def dispose_engines(*, close: bool = True) -> None:
     """Release pooled connections on shutdown or after config changes."""
     global _engine, _engine_key, _session_factory
     with _lock:
         if _engine is not None:
-            _engine.dispose()
+            _engine.dispose(close=close)
         _engine = None
         _engine_key = None
         _session_factory = None

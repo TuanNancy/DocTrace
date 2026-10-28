@@ -6,6 +6,7 @@ import { BarChart3, BookOpen, Building2, ChevronRight, FileText, LogOut, Menu, M
 import { BrandMark } from "@/components/BrandMark";
 import { useWorkspace } from "./WorkspaceProvider";
 import { Drawer } from "./Drawer";
+import { AdminLink } from "./AdminLink";
 
 function Navigation() {
   const workspace = useWorkspace();
@@ -45,6 +46,8 @@ function Navigation() {
           className={`nav-item ${pathname === href ? "nav-item-active" : ""}`}><Icon size={18} />{label}
           {href === "/documents" && <span className="ml-auto text-xs opacity-70">{workspace.documents.length}</span>}
         </Link>)}
+      {!workspace.mock && workspace.accessToken && <AdminLink key={`${workspace.user?.id}:${workspace.accessToken}`}
+        token={workspace.accessToken} active={pathname === "/admin"} onNavigate={() => workspace.setSidebarOpen(false)} />}
     </nav>
     <div className="mt-9 rounded-2xl border border-white/80 bg-white/40 p-4">
       <Sparkles size={18} className="mb-3 text-blue-500" />
@@ -68,7 +71,7 @@ export function WorkspaceShell({ children }: { children: React.ReactNode }) {
   const workspace = useWorkspace();
   const pathname = usePathname();
   const title = pathname === "/documents" ? "Thư viện tài liệu"
-    : pathname === "/usage" ? "Mức sử dụng" : "Hỏi đáp tài liệu";
+    : pathname === "/usage" ? "Mức sử dụng" : pathname === "/admin" ? "Quản trị nền tảng" : "Hỏi đáp tài liệu";
   if (!workspace.authReady) return <div className="workspace flex min-h-dvh items-center justify-center text-sm text-slate-500">Đang kiểm tra phiên đăng nhập…</div>;
   if (!workspace.user || !workspace.accessToken) return <div className="workspace flex min-h-dvh flex-col items-center justify-center gap-5">
     <BrandMark /><h1 className="font-sans text-2xl">Chào mừng đến với DocTrace</h1>

@@ -102,6 +102,10 @@ def workspace_service(repository):
         return await repo.create(document, limit=limit)
 
     fake.create_document.side_effect = create
+    async def retry(workspace_id, user_id, doc_id, repo):
+        return await repo.queue(workspace_id, user_id, doc_id, "index")
+
+    fake.retry_document.side_effect = retry
     return fake
 
 

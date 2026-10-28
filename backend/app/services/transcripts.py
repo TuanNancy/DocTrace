@@ -391,6 +391,9 @@ class TranscriptService:
 
     def _queue_document_deletion(self, session, workspace_id: str, user_id: str,
                                   doc_id: str, repository: DocumentRepository) -> dict:
+        from app.services.workspaces import WorkspaceService
+
+        WorkspaceService(self.config)._lock_workspace(session, workspace_id)
         lock_document(session, workspace_id, user_id, doc_id)
         # Redis validates ownership/live jobs and commits deletion intent first.
         # A rejection leaves content untouched; a lost SQL commit is recovered by

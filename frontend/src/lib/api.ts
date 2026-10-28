@@ -121,6 +121,19 @@ export async function listWorkspaces(accessToken: string, signal?: AbortSignal):
   return Array.isArray(body.items) ? body.items : [];
 }
 
+/** Platform routes use Auth only; workspace ownership never grants admin access. */
+export async function adminRequest<T>(accessToken: string, path: string, options: {
+  signal?: AbortSignal; method?: "GET" | "POST" | "PATCH"; body?: unknown;
+} = {}): Promise<T> {
+  const response = await fetch(apiUrl(`/api/admin${path}`), {
+    method: options.method ?? "GET", signal: options.signal, cache: "no-store",
+    headers: { ...authorization(accessToken), ...(options.body === undefined ? {} : { "Content-Type": "application/json" }) },
+    body: options.body === undefined ? undefined : JSON.stringify(options.body),
+  });
+  await checkResponse(response);
+  return response.json();
+}
+
 export async function uploadPDF(
   file: File,
   accessToken: string,

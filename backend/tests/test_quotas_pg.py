@@ -157,6 +157,8 @@ async def test_free_chat_quota_rejects_exactly_at_the_limit(service, postgres_ur
     assert chat_count(postgres_url, workspace_id) == 11
 
     # A downgrade keeps the used count and blocks new questions immediately.
+    execute(postgres_url, "update doctrace.workspaces set plan = 'free' where id = :workspace",
+            {"workspace": workspace_id})
     with pytest.raises(HTTPException) as downgraded:
         await service.admit_chat(
             workspace_id, user_id, str(uuid4()), str(uuid4()), "free",

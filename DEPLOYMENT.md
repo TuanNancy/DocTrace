@@ -71,6 +71,7 @@ Copy `backend/.env.example` thành `backend/.env`, giữ các giá trị tuning 
 | OpenRouter | `OPENROUTER_API_KEY`, `RAG_MODEL`, `EMBEDDING_MODEL` theo model bạn chọn |
 | Usage/cost | Giữ `DATABASE_URL` cho cả API và worker để ghi `doctrace.provider_calls`; `SUMMARY_MAX_CALLS=8` giới hạn lượt tóm tắt mỗi request |
 | Transcript | `TRANSCRIPT_DELETE_MODE=retain_30d` hoặc `cascade`; `TRANSCRIPT_RETENTION_DAYS=30`. Chạy purge định kỳ (xem bên dưới) |
+| Admin / lỗi | Seed platform admin bằng migration identity; `SENTRY_DSN` tùy chọn (bỏ trống để tắt), `SENTRY_ENVIRONMENT`, `SENTRY_RELEASE` |
 | Queue | `RQ_QUEUE_NAME=documents-v2`; Compose đã override `REDIS_URL` cho API/worker |
 
 S3 access key/secret là credential riêng của Storage, không phải Supabase publishable key. Giữ `MILVUS_INDEX_TYPE` không khai báo để URI mode chọn AUTOINDEX. Dùng collection mới cho bộ embedding mới; không trộn vector từ hai model hoặc recreate collection đang có dữ liệu.
@@ -95,6 +96,24 @@ docker compose --env-file .env.production -f compose.production.yml run --rm --n
 Migration `0002_auth_member_lookup` thêm `doctrace.auth_user_exists(uuid)` để owner thêm đúng tài khoản Auth đang tồn tại. Hàm `SECURITY DEFINER` trả boolean, cố định `search_path`, chỉ đọc `id`/`deleted_at` của `auth.users` bằng quyền migration owner; `row_security=off` báo lỗi nếu owner mất quyền bypass RLS. Trên Supabase hosted, dùng migration identity `postgres` vốn có quyền đọc Auth và bypass RLS. Nếu dùng role migration tùy chỉnh, role đó phải có quyền tương đương cho đúng phép đọc này; kiểm tra trước khi chuyển credential. Backend kiểm tra owner trước khi gọi hàm, trả `404 member_user_not_found` cho tài khoản không tồn tại/đã xóa, kể cả thêm lại thành viên cũ.
 
 Supabase hosted không cho `postgres` cấp `USAGE` schema `auth` cho custom role. Vì vậy migration chỉ tạo hàm trong `doctrace`, không thay policy hay ACL của Auth, và thu hồi `EXECUTE` khỏi `PUBLIC`/`anon`/`authenticated`/`service_role`. Không thêm `doctrace_app` vào các role Data API để né lỗi quyền. `/ready` kiểm tra quyền gọi hàm, cấu hình definer, quyền Auth thừa và chạy thử lookup để phát hiện quyền underlying bị thiếu. Tham khảo [hướng dẫn Supabase](https://supabase.com/kb/troubleshooting/permission-errors-when-granting-custom-roles-access-to-the-auth-schema).
+
+Migration `0003_admin_observability` thêm `workspace_purges`, `workspace_purge_documents`, `document_failures`, cột timing của `chat_requests` và bỏ FK audit→workspace để giữ lịch sử sau hard purge. Runtime chỉ nhận DML cần thiết; bảng lỗi/audit là append-only. Seed platform admin bằng migration identity (runtime không có quyền ghi bảng này). Chỉ cấp cho tài khoản vận hành thực sự:
+
+```sql
+INSERT INTO doctrace.platform_admins (user_id)
+VALUES ('AUTH-USER-UUID')
+ON CONFLICT (user_id) DO NOTHING;
+```
+
+Gỡ quyền bằng `DELETE FROM doctrace.platform_admins WHERE user_id = ...` bằng cùng identity. Admin UI/API kiểm tra bảng này sau Auth; owner workspace không tự động có quyền. Admin chỉ thấy metadata/định danh/cost, không đọc PDF, chunk hay transcript.
+
+Worker duy trì outbox lỗi terminal và tiến trình purge mỗi chu kỳ maintenance (idle dequeue tối đa 30 giây). Có thể chạy bù một lượt giới hạn bằng:
+
+```sh
+docker compose --env-file .env.production -f compose.production.yml exec -T worker python -m app.purge_workspaces
+```
+
+Lệnh này drain `document_failures` và advance purge đang `running`; không xóa workspace chưa archive, không tự retry tài liệu `delete_error` (admin phải retry có audit), và không đụng workspace khác. Purge chỉ hoàn tất sau khi manifest xác nhận mọi tài liệu đã `deleted`; lỗi/restart để lại trạng thái `purging` để chạy tiếp. Sentry chỉ gửi event đã scrub; đặt `SENTRY_DSN` trong runtime env của cả API/worker và restart cả hai.
 
 Schema được tạo/xóa bằng Alembic. Không chạy `down -v` để "làm sạch" database; `down -v` chỉ xóa volume Redis/certificate. Không auto-downgrade khi rollback image: migration dùng expand/contract để image cũ vẫn đọc được schema mới trong thời gian chuyển tiếp.
 
@@ -153,7 +172,7 @@ Trong Supabase Auth, đặt Site URL bằng origin frontend và allowlist `https
 
 Popup trả ID token trực tiếp cho frontend, không dùng Vercel redirect URI trong Google Console. Giữ callback `https://YOUR-PROJECT.supabase.co/auth/v1/callback` nếu còn cần OAuth cũ; allowlist `/auth/callback` trong Supabase cho luồng cũ đó. Route `/auth/callback` không nhận Google ID token trực tiếp. Nếu Audience của Google ở Testing, thêm tài khoản vào Test users. Xem [frontend/README.md](frontend/README.md#google-login-google-identity-services) để cấu hình local và kiểm tra đăng nhập thật. CORS backend phải chứa origin frontend; Vercel Preview cần đăng ký riêng origin Google và URL email redirect tương ứng.
 
-Sau khi API đã có HTTPS, deploy/redeploy frontend; thay `NEXT_PUBLIC_*` cần rebuild trên Vercel. Kiểm tra thực tế theo luồng: đăng nhập → upload PDF → chờ ready → chat/citation → mở PDF → reload khôi phục transcript → “Chat mới” xóa transcript → trang Mức sử dụng → xóa tài liệu.
+Sau khi API đã có HTTPS, deploy/redeploy frontend; thay `NEXT_PUBLIC_*` cần rebuild trên Vercel. Kiểm tra thực tế theo luồng: đăng nhập → upload PDF → chờ ready → chat/citation → mở PDF → reload khôi phục transcript → “Chat mới” xóa transcript → trang Mức sử dụng → xóa tài liệu. Với platform admin đã seed, mở `/admin`, kiểm tra metadata không lộ tên/nội dung, đổi plan, archive/restore và chỉ purge một workspace test sau khi archive với đúng UUID.
 
 ### Rate limit theo user
 
@@ -266,7 +285,7 @@ Quan sát queue mặc định bằng:
 docker compose --env-file .env.production -f compose.production.yml exec worker rq info --url redis://redis:6379/0
 ```
 
-Theo dõi worker heartbeat, queue `documents-v2`, RAM Redis và trạng thái `error/delete_error`. Log nối bằng `request_id`, `workspace_id`, `user_id`, `doc_id`, `job_id`, `attempt`. Upload ghi request ID cùng transaction catalog/enqueue; automatic retry giữ ID, retry/delete thủ công ghi ID mới. `LOG_JSON=true` bật JSON; cả JSON và text chỉ ghi event đăng ký, metadata cho phép, exception class và vị trí code. SDK/RQ/SQL không ghi raw messages/parameters/exception values; RQ failure records dùng thông báo chung.
+Theo dõi worker heartbeat, queue `documents-v2`, RAM Redis và trạng thái `error/delete_error`. Platform admin xem `/admin` hoặc `GET /api/admin/health`, `GET /api/admin/overview`, `GET /api/admin/failures` để có queue depth/oldest job, Milvus, lỗi terminal, cost và latency p50/p95. Log nối bằng `request_id`, `workspace_id`, `user_id`, `doc_id`, `job_id`, `attempt`. Upload ghi request ID cùng transaction catalog/enqueue; automatic retry giữ ID, retry/delete thủ công ghi ID mới. `LOG_JSON=true` bật JSON; cả JSON và text chỉ ghi event đăng ký, metadata cho phép, exception class và vị trí code. SDK/RQ/SQL không ghi raw messages/parameters/exception values; RQ failure records dùng thông báo chung.
 
 Nginx phát JSON access log gồm route label, request ID, status/upstream status và thời gian; bỏ raw URL/query/header/IP/body. Request-level error log được tắt vì Nginx không hỗ trợ scrub request line; dùng access status `4xx/5xx` và log API để truy lỗi. Lỗi startup/config vẫn có diagnostic của Nginx. `X-Request-ID` được validate/generate tại proxy và truyền tới API. `/ready` là health gate; `/health` là liveness.
 

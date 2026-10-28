@@ -8,15 +8,17 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.routers import chat, upload, documents, workspaces, usage, conversations
+from app.routers import admin, chat, upload, documents, workspaces, usage, conversations
 from app.core.config import get_config
 from app.core.observability import RequestContextMiddleware, configure_logging
+from app.core.sentry import configure_sentry
 from app.db import dispose_engines
 from app.services.readiness import readiness
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    configure_sentry(get_config())
     app.state.upload_limiter = CapacityLimiter(get_config().upload_max_concurrent)
     try:
         yield
@@ -29,6 +31,7 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+app.include_router(admin.router)
 
 configure_logging(get_config())
 allowed_origins = list(get_config().cors_allow_origins)

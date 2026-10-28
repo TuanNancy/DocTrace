@@ -1,6 +1,9 @@
 // Loopback-only Auth/API fixture. Never used by application code or production.
 import { createServer } from "node:http";
 import { createHash, randomUUID } from "node:crypto";
+import { adminFixture } from "./admin.mjs";
+
+const admin = adminFixture();
 
 const user = {
   id: "11111111-1111-4111-8111-111111111111",
@@ -111,7 +114,7 @@ function json(response, status, body) {
 createServer(async (request, response) => {
   response.setHeader("Access-Control-Allow-Origin", "http://localhost:4310");
   response.setHeader("Access-Control-Allow-Headers", "authorization, apikey, content-type, x-client-info, x-supabase-api-version, x-workspace-id");
-  response.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
+  response.setHeader("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS");
   response.setHeader("Access-Control-Expose-Headers", "Retry-After, X-Conversation-Id");
   if (request.method === "OPTIONS") {
     response.writeHead(204).end();
@@ -122,6 +125,7 @@ createServer(async (request, response) => {
   if (url.pathname === "/test/status") return json(response, 200, { uploads, cancelledStreams });
   if (url.pathname === "/test/reset") {
     documents.clear(); conversations.clear(); questionsByWorkspace.clear(); chatRequests.clear(); uploads = 0; cancelledStreams = 0;
+    admin.reset();
     return json(response, 200, {});
   }
   if (url.pathname === "/fixture.pdf" && url.searchParams.get("signature") === "fixture") {
@@ -132,6 +136,10 @@ createServer(async (request, response) => {
   const parts = [];
   for await (const part of request) parts.push(part);
   const body = Buffer.concat(parts).toString();
+  if (url.pathname === "/test/admin") {
+    admin.setAllowed(JSON.parse(body).allowed);
+    return json(response, 200, {});
+  }
   if (url.pathname === "/auth/v1/signup") {
     const credentials = JSON.parse(body);
     if (credentials.email !== user.email || credentials.password !== "fixture-password" || credentials.data?.full_name !== "Test Student") {
@@ -164,6 +172,7 @@ createServer(async (request, response) => {
   }
   if (url.pathname === "/auth/v1/user") return json(response, 200, user);
   if (url.pathname === "/auth/v1/logout") return response.writeHead(204).end();
+  if (url.pathname.startsWith("/api/admin/")) return json(response, ...admin.handle(url, request.method, body));
   if (url.pathname === "/api/workspaces") return json(response, 200, { items: workspaces });
   if (url.pathname === "/api/upload") {
     const scope = workspaceFor(request);

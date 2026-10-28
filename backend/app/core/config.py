@@ -70,6 +70,9 @@ class AppConfig:
     database_statement_timeout_ms: int = 15000
     log_level: str = "INFO"
     log_json: bool = False
+    sentry_dsn: Optional[str] = None
+    sentry_environment: str = "development"
+    sentry_release: Optional[str] = None
     redis_url: str = "redis://localhost:6379/0"
     rq_queue_name: str = "documents-v2"
     document_index_timeout_seconds: int = 900

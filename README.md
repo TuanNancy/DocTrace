@@ -7,6 +7,7 @@ Hỏi đáp PDF với nguồn trích dẫn có thể kiểm chứng. Giao diện
 - `/documents`: kéo thả PDF, tiến trình upload thực, trạng thái xử lý, tìm kiếm/lọc, xem PDF, thử lại và xóa.
 - `/chat`: chọn PDF sẵn sàng, trả lời streaming bằng Markdown/GFM, dừng, sao chép và xuất hội thoại.
 - `/usage`: plan hiện tại, lượt hỏi/tài liệu còn lại, ngày reset và chi phí OpenRouter theo user.
+- `/admin`: chỉ platform admin; xem chi phí/độ trễ/queue, metadata tài liệu, lỗi xử lý, audit; đổi plan, archive/restore và purge workspace. Không trả tên/PDF/chunk/transcript.
 - Citation `[1]`, `[2]` mở nguyên văn chunk và PDF ở trang tương ứng, qua URL có thời hạn.
 - Hội thoại được lưu theo workspace + người dùng + tài liệu; reload khôi phục hội thoại mới nhất. “Chat mới” xóa hội thoại hiện tại. Backend vẫn trả lời từng câu hỏi độc lập.
 - Nguồn trích dẫn của generation cũ bị đánh dấu không khả dụng sau khi tài liệu được xử lý lại hoặc bị xóa; UI không mở chunk/PDF cũ.
@@ -22,7 +23,7 @@ Hỏi đáp PDF với nguồn trích dẫn có thể kiểm chứng. Giao diện
 | API | FastAPI; Supabase Bearer authentication; API thư viện và SSE |
 | Worker | RQ 2.12; `python -m app.worker`, JSON jobs, timeout và retry có scheduler |
 | Queue / thư viện | Redis 7.4: RQ jobs + metadata tài liệu riêng, AOF và volume giữ dữ liệu qua restart |
-| Control plane | PostgreSQL/Supabase schema `doctrace`: workspace, thành viên, plan, quota, transcript, usage |
+| Control plane | PostgreSQL/Supabase schema `doctrace`: workspace, thành viên, plan, quota, transcript, usage, admin/audit/purge |
 | PDF gốc | Bucket Supabase Storage riêng tư, giao thức S3 |
 | Vector/text chunks | Milvus local hoặc Zilliz URI/token |
 | Chat/embedding | OpenRouter, model cấu hình rõ trong env |
@@ -63,10 +64,13 @@ CI sử dụng Python **3.12** và Node **22**. Docker cần thiết cho Redis, 
    - Milvus host/port hoặc `MILVUS_URI` + `MILVUS_TOKEN` cho Zilliz.
    - `DATABASE_URL` dùng login riêng `doctrace_app` cho control plane Postgres (session pooler hỗ trợ IPv4).
    - `REDIS_URL=redis://localhost:6379/0`, `RQ_QUEUE_NAME=documents-v2`.
+   - Tùy chọn `SENTRY_DSN`/`SENTRY_ENVIRONMENT`/`SENTRY_RELEASE` cho báo lỗi đã lọc nội dung; bỏ trống thì tắt.
 
 Thư viện tài liệu vẫn dùng Redis và không cần service-role key. Postgres giữ control plane (workspace, thành viên, plan/quota, transcript, usage); schema nằm trong `doctrace` và không expose qua Supabase Data API. Tạo runtime role bằng `deploy/postgres/bootstrap-runtime-role.sql`, đặt mật khẩu riêng, rồi lưu credential DDL `DIRECT_DATABASE_URL` trong `backend/.env.migrations` theo file example. Xem [hướng dẫn tách quyền](DEPLOYMENT.md#tách-credential-runtime-và-migration) để bootstrap và chuyển cấu hình cũ. Alembic không dùng fallback `DATABASE_URL`.
 
 Migration `0002_auth_member_lookup` cung cấp hàm boolean riêng để xác nhận người được thêm vào workspace còn tồn tại trong Supabase Auth. Dùng migration identity có quyền đọc Auth/bypass RLS (`postgres` trên hosted); runtime chỉ có `EXECUTE` hàm, không đọc trực tiếp Auth. API chỉ cho owner tra cứu qua thao tác thêm thành viên; tài khoản không tồn tại/đã xóa trả `404 member_user_not_found`.
+
+Migration `0003_admin_observability` thêm manifest purge workspace, lỗi xử lý bền vững và cột latency/time-to-first-token cho admin. Runtime chỉ có DML cần thiết; không được sửa/xóa audit hoặc lỗi đã ghi. Bảng admin chỉ chứa định danh, trạng thái và số liệu, không chứa nội dung PDF/transcript.
 
 Chạy migration trong một subshell để credential DDL không đi theo API/worker:
 
@@ -165,6 +169,18 @@ Các endpoint `/api/*` đều yêu cầu `Authorization: Bearer <Supabase access
 | GET | `/api/conversations/{id}` | Transcript, sources và cờ `stale` theo generation hiện tại |
 | DELETE | `/api/conversations/{id}` | Xóa ngay hội thoại và messages của chính user (`204`) |
 | GET | `/api/usage` | Plan, kỳ tháng hiện tại, lượt chat/tài liệu và cost theo user |
+| GET | `/api/admin/access` | `{admin: true}` nếu user là platform admin |
+| GET | `/api/admin/overview` | Workspace, tài liệu, cost theo ngày/model/workspace/loại, latency p50/p95 và health queue/Milvus |
+| GET | `/api/admin/workspaces?limit=&offset=` | Metadata workspace, plan, trạng thái, số thành viên/tài liệu |
+| GET | `/api/admin/documents?workspace_id=&status=&limit=&offset=` | Metadata tài liệu kèm RQ state; không có tên/PDF/chunk |
+| GET | `/api/admin/failures?workspace_id=&limit=&offset=` | Lỗi terminal bền vững đã lọc nội dung |
+| GET | `/api/admin/audit?limit=&offset=` | Audit thao tác quản trị |
+| GET | `/api/admin/purges?limit=&offset=` | Tiến độ purge workspace |
+| PATCH | `/api/admin/workspaces/{id}/plan` | Đổi plan `free`/`pro`, giữ nguyên usage |
+| POST | `/api/admin/workspaces/{id}/archive` / `restore` | Archive hoặc khôi phục |
+| POST | `/api/admin/workspaces/{id}/purge` | Body `{confirm_workspace_id}`; archive trước, không còn job chạy |
+| POST | `/api/admin/documents/{doc_id}/retry` | Retry có audit cho tài liệu `error`/`delete_error` |
+| GET | `/api/admin/health` | Readiness Redis/Postgres + worker heartbeat/queue + Milvus |
 
 Mỗi user có workspace cá nhân với `id` bằng user id. Tài liệu chỉ thuộc về người tải (`owner_user_id`) và workspace đã chọn; owner workspace hay platform admin không đọc nội dung PDF/transcript, chỉ xem metadata và tổng hợp. Frontend hiện hỗ trợ chọn workspace; tạo/quản lý nhóm dùng API ở trên.
 
@@ -217,6 +233,14 @@ Khi `DATABASE_URL` được cấu hình, API và worker ghi mỗi lượt gọi 
 - Ghi usage là best effort: lỗi Postgres không làm hỏng chat/indexing. Bỏ `DATABASE_URL` thì tắt ghi usage.
 - `SUMMARY_MAX_CALLS` (mặc định 8) chặn tóm tắt quá lớn trước khi tốn thêm lượt gọi. SDK OpenRouter tắt retry tự động để một lượt logic không tạo request tính tiền ẩn.
 
+### Quản trị nền tảng
+
+- Platform admin được seed trong `doctrace.platform_admins`; quyền owner workspace không đủ để vào `/admin`. Mọi endpoint admin kiểm tra bảng này sau khi xác thực Supabase và trước khi đọc Redis/catalog.
+- Reports chỉ trả metadata/định danh/số liệu. Tên PDF, nội dung chunk, transcript, signed URL và prompt không xuất hiện trong API, audit, log hay Sentry.
+- Retry admin dùng lifecycle nội bộ (không gọi RQ requeue), ghi audit trước khi enqueue và chỉ nhận tài liệu `error`/`delete_error`. Lỗi terminal được lưu bền vững qua Redis outbox → `document_failures`, kể cả khi RQ job/result đã hết TTL.
+- Purge workspace yêu cầu archive, xác nhận đúng UUID và không còn job chạy. Manifest purge tiếp tục qua worker restart; chỉ xóa catalog/SQL khi mọi tài liệu đã `deleted`. Chạy bù một lượt bằng `python -m app.purge_workspaces` từ `backend/` hoặc trong worker container.
+- Sentry chỉ bật khi có `SENTRY_DSN`; event gửi đi bị dựng lại với event name/định danh lỗi, không có body, header, prompt, exception message hay biến local.
+
 ## Kiểm tra
 
 Từ `backend/` (pytest mock dịch vụ ngoài, không cần cloud credentials):
@@ -232,7 +256,7 @@ python scripts/verify_document_queue.py
 
 `verify_rate_limits.py` cần Docker, tạo Redis riêng để kiểm tra Lua/sliding window, TTL, quota qua nhiều process và tranh lượt cuối bằng request đồng thời; tự dọn container, không dùng Redis ứng dụng.
 
-Lệnh cuối cần Docker; build image rồi chạy Redis và hai RQ workers thật trên Linux. Nó kiểm tra transaction thư viện/queue, owner scope, Redis restart/outage, retry/timeout, kill worker và xóa; tự dọn tài nguyên. Có thể truyền `--api-image doctrace-api:verify` để dùng image đã build. Pytest dùng fake Redis và mocks; integration thay PDF/AI/S3/Milvus bằng fixture.
+Lệnh cuối cần Docker; build image rồi chạy Postgres/Redis và hai RQ workers thật trên Linux. Nó kiểm tra transaction thư viện/queue, owner scope, Redis restart/outage, retry/timeout, kill worker, lỗi terminal bền vững và purge qua worker restart; tự dọn tài nguyên. Có thể truyền `--api-image doctrace-api:verify` để dùng image đã build. Pytest dùng fake Redis và mocks; integration thay PDF/AI/S3/Milvus bằng fixture. `tests/test_admin_pg.py` chạy với Postgres/Redis/RQ thật và kiểm tra authorization, metadata, audit, purge và upload downgrade.
 
 Từ `frontend/`:
 

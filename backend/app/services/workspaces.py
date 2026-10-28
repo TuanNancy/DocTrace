@@ -17,6 +17,7 @@ from starlette.concurrency import run_in_threadpool
 from app.core.config import AppConfig, get_config
 from app.core.errors import api_error
 from app.db import DatabaseNotConfigured, session_scope
+from app.services.audit import write_audit
 
 if TYPE_CHECKING:
     from app.services.document_repository import DocumentRepository
@@ -146,7 +147,7 @@ class WorkspaceService:
     async def resolve(self, user_id: str, workspace_id: str) -> WorkspaceContext:
         return await self._run(self._resolve, user_id, workspace_id)
 
-    def _lock_workspace(self, session, workspace_id: str) -> None:
+    def _lock_workspace(self, session, workspace_id: str) -> str:
         """Lock order is always workspace, then membership; archive updates w.
 
         FOR SHARE conflicts with a status UPDATE, unlike FOR KEY SHARE. Uploads
@@ -154,21 +155,36 @@ class WorkspaceService:
         locks; only the bounded Redis catalog transaction runs while held.
         """
         row = session.execute(text(
-            "SELECT id FROM doctrace.workspaces WHERE id = :wid AND status = 'active' FOR SHARE"
+            "SELECT plan FROM doctrace.workspaces WHERE id = :wid AND status = 'active' FOR SHARE"
         ), {"wid": _uuid(workspace_id, "workspace_invalid")}).first()
         if not row:
             raise api_error(404, "workspace_not_found", "Không tìm thấy workspace.")
+        return row[0]
 
     def _create_document(self, session, document: dict, repository: DocumentRepository,
                          limit: int) -> dict:
-        self._lock_workspace(session, document["workspace_id"])
+        from app.services.quotas import DOCUMENT_METRIC, QuotaService
+
+        plan = self._lock_workspace(session, document["workspace_id"])
         self._resolve(session, document["owner_user_id"], document["workspace_id"], lock_member=True)
-        return repository.create_sync(document, limit=limit)
+        # Storage may have taken long enough for an admin to change the plan.
+        # The preflight limit is only advisory; admission uses the locked plan.
+        return repository.create_sync(document, limit=QuotaService._limit(session, plan, DOCUMENT_METRIC))
 
     async def create_document(self, document: dict, repository: DocumentRepository,
                               *, limit: int) -> dict:
         """Recheck membership and hold it through catalog commit, after PDF retention."""
         return await self._run(self._create_document, document, repository, limit)
+
+    def _retry_document(self, session, workspace_id: str, user_id: str, doc_id: str,
+                        repository: DocumentRepository) -> dict:
+        self._lock_workspace(session, workspace_id)
+        self._resolve(session, user_id, workspace_id, lock_member=True)
+        return repository.queue_sync(workspace_id, user_id, doc_id, "index")
+
+    async def retry_document(self, workspace_id: str, user_id: str, doc_id: str,
+                             repository: DocumentRepository) -> dict:
+        return await self._run(self._retry_document, workspace_id, user_id, doc_id, repository)
 
     def _owned_workspace(self, session, user_id: str, workspace_id: str,
                          *, allow_archived: bool = False) -> dict:
@@ -234,6 +250,7 @@ class WorkspaceService:
             VALUES (:wid, :uid, 'owner', 'active')
             """
         ), {"wid": row["id"], "uid": user_id})
+        write_audit(session, user_id, str(row["id"]), "workspace.created", str(row["id"]), kind="team")
         return {**_workspace({**row, "role": "owner"})}
 
     async def create(self, user_id: str, name: str) -> dict:
@@ -284,7 +301,9 @@ class WorkspaceService:
             RETURNING user_id, role, status, joined_at
             """
         ), {"wid": workspace_id, "member": member_id}).mappings().first()
-        if not row:
+        if row:
+            write_audit(session, user_id, workspace_id, "workspace.member_added", member_id)
+        else:
             row = session.execute(text(
                 """
                 SELECT user_id, role, status, joined_at
@@ -336,6 +355,7 @@ class WorkspaceService:
             WHERE workspace_id = :wid AND user_id = :member
             """
         ), {"wid": workspace_id, "member": member_id})
+        write_audit(session, user_id, workspace_id, "workspace.member_removed", member_id)
         return {"user_id": member_id, "status": "removed"}
 
     async def remove_member(self, user_id: str, workspace_id: str, member_id: str,
@@ -352,6 +372,7 @@ class WorkspaceService:
             RETURNING id, name, kind, plan, status, created_at
             """
         ), {"wid": _uuid(workspace_id, "workspace_invalid"), "uid": _uuid(user_id)}).mappings().one()
+        write_audit(session, user_id, workspace_id, "workspace.archived", workspace_id)
         return _workspace({**row, "role": "owner"})
 
     async def archive(self, user_id: str, workspace_id: str) -> dict:
@@ -373,6 +394,7 @@ class WorkspaceService:
         ), {"wid": _uuid(workspace_id, "workspace_invalid")}).mappings().first()
         if not row:
             raise api_error(404, "workspace_not_found", "Không tìm thấy workspace đã archive.")
+        write_audit(session, user_id, workspace_id, "workspace.restored", workspace_id)
         return _workspace({**row, "role": "owner"})
 
     async def restore(self, user_id: str, workspace_id: str) -> dict:

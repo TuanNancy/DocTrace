@@ -19,7 +19,7 @@ BACKEND = Path(__file__).resolve().parents[1]
 CONTROL_TABLES = {
     "workspaces", "workspace_members", "platform_admins", "profiles", "plan_limits",
     "audit_events", "conversations", "messages", "chat_requests", "provider_calls",
-    "usage_counters",
+    "usage_counters", "document_failures", "workspace_purges", "workspace_purge_documents",
 }
 
 
@@ -131,7 +131,7 @@ def test_upgrade_from_existing_control_plane_preserves_data(clean_database):
         with engine.connect() as connection:
             assert connection.execute(text("SELECT name FROM doctrace.workspaces WHERE id = :id"),
                                       {"id": workspace}).scalar_one() == "Existing team"
-            assert connection.execute(text("SELECT version_num FROM doctrace.alembic_version")).scalar_one() == "0002_auth_member_lookup"
+            assert connection.execute(text("SELECT version_num FROM doctrace.alembic_version")).scalar_one() == "0003_admin_observability"
             assert connection.execute(text("SELECT count(*) FROM pg_policy WHERE polrelid = 'auth.users'::regclass")).scalar_one() == 0
     finally:
         engine.dispose()
@@ -248,6 +248,9 @@ def test_auth_lookup_does_not_grant_data_api_roles_access(runtime_database, role
     "INSERT INTO doctrace.platform_admins (user_id) VALUES (gen_random_uuid())",
     "UPDATE doctrace.audit_events SET action = 'forged'",
     "DELETE FROM doctrace.audit_events",
+    "UPDATE doctrace.document_failures SET error_code = 'index_failed'",
+    "DELETE FROM doctrace.document_failures",
+    "DELETE FROM doctrace.workspace_purges",
     "UPDATE doctrace.alembic_version SET version_num = 'forged'",
     "SELECT * FROM auth.users",
     "SELECT id, deleted_at FROM auth.users",
@@ -274,6 +277,11 @@ def test_runtime_cannot_ddl_escalate_rewrite_audit_or_read_private_auth(runtime_
     "ALTER TABLE doctrace.messages DROP COLUMN sources",
     "DELETE FROM doctrace.alembic_version",
     "REVOKE INSERT ON doctrace.messages FROM doctrace_app",
+    "REVOKE INSERT ON doctrace.workspace_purges FROM doctrace_app",
+    "REVOKE UPDATE ON doctrace.workspace_purges FROM doctrace_app",
+    "REVOKE INSERT ON doctrace.workspace_purge_documents FROM doctrace_app",
+    "REVOKE UPDATE ON doctrace.workspace_purge_documents FROM doctrace_app",
+    "REVOKE DELETE ON doctrace.workspace_purge_documents FROM doctrace_app",
     "REVOKE USAGE ON SCHEMA doctrace FROM doctrace_app",
     "DROP FUNCTION doctrace.auth_user_exists(uuid)",
     "REVOKE EXECUTE ON FUNCTION doctrace.auth_user_exists(uuid) FROM doctrace_app",

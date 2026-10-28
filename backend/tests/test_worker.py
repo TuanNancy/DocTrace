@@ -24,6 +24,8 @@ def attempt():
 @pytest.fixture
 def dependencies(monkeypatch, attempt):
     repository = AsyncMock()
+    from app.core.config import AppConfig
+    repository.config = AppConfig()
     repository.begin.return_value = attempt
     repository.finish.return_value = True
     repository.internal_document.return_value = {"active_index_id": None, "status": "processing"}

@@ -149,11 +149,11 @@ def team(infrastructure, monkeypatch):
     with Redis.from_url(config.redis_url) as redis, TestClient(app) as client:
         queue = Queue(config.rq_queue_name, connection=redis, serializer=JSONSerializer)
 
-        def drain():
+        def drain(*, expected_failures=0):
             worker = SimpleWorker([queue], connection=redis, serializer=JSONSerializer)
             worker.work(burst=True, logging_level="WARNING")
             assert queue.count == 0
-            assert queue.failed_job_registry.count == 0
+            assert queue.failed_job_registry.count == expected_failures
 
         def request(who, method, path, *, workspace=None, **kwargs):
             headers = {"Authorization": f"Bearer {who}"}
@@ -189,6 +189,7 @@ def team(infrastructure, monkeypatch):
         yield SimpleNamespace(
             client=client, request=request, upload=upload_document, drain=drain, workspace=workspace,
             users=identities, docs=docs, pdfs=pdfs, vectors=vectors, admin=admin,
+            config=config, redis=redis,
         )
 
 

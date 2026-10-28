@@ -4,6 +4,7 @@ POST /api/chat: authenticated SSE with sources, token, error, and done events.
 import asyncio
 import json
 import logging
+from time import perf_counter
 from typing import AsyncIterator
 from uuid import uuid4
 
@@ -42,6 +43,8 @@ async def _stream_chat_sse(query: str, doc_id: str, user_id: str, language: str 
                            quotas: QuotaService | None = None,
                            transcripts: TranscriptService | None = None) -> AsyncIterator[str]:
     pipeline = None
+    started = perf_counter()
+    first_token_ms: int | None = None
     # Completion is only published after the done event is yielded. A closed
     # generator or a cancelled task therefore stays "interrupted" unless the
     # provider actually finished its answer.
@@ -92,6 +95,7 @@ async def _stream_chat_sse(query: str, doc_id: str, user_id: str, language: str 
                     else "No content was found for the selected document. Select or upload the PDF again."
                 )
             answer_parts.append(fallback)
+            first_token_ms = round((perf_counter() - started) * 1000)
             yield _sse_message("token", json.dumps(fallback))
             yield _sse_message("done", json.dumps("[DONE]"))
             outcome = "completed"
@@ -105,6 +109,8 @@ async def _stream_chat_sse(query: str, doc_id: str, user_id: str, language: str 
             retrieved_chunks_override=retrieved_chunks,
         ):
             if text_delta:
+                if first_token_ms is None:
+                    first_token_ms = round((perf_counter() - started) * 1000)
                 answer_parts.append(text_delta)
                 yield _sse_message("token", json.dumps(text_delta))
 
@@ -122,6 +128,7 @@ async def _stream_chat_sse(query: str, doc_id: str, user_id: str, language: str 
         yield _sse_message("done", json.dumps("[DONE]"))
 
     finally:
+        latency_ms = round((perf_counter() - started) * 1000)
         try:
             if pipeline:
                 await pipeline.shutdown()
@@ -143,6 +150,7 @@ async def _stream_chat_sse(query: str, doc_id: str, user_id: str, language: str 
                 if quotas is not None and chat_request_id:
                     try:
                         await quotas.mark_chat_status(chat_request_id, outcome, error_code)
+                        await quotas.record_timing(chat_request_id, latency_ms, first_token_ms)
                     except Exception:
                         logger.warning("chat_status_write_failed", exc_info=True)
                 if usage is not None:

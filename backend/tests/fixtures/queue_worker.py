@@ -3,11 +3,14 @@
 Only mounted by verify_document_queue.py; never copied into the production image.
 """
 import asyncio
+import os
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 from redis import Redis
+from sqlalchemy import event, text
 
+from app import db
 from app.core.config import get_config
 from app.jobs import documents
 from app.services.document_repository import DocumentRepository
@@ -25,7 +28,7 @@ def download(key):
     return key.encode()
 
 
-async def index(content, filename, generation, *, user_id):
+async def index(content, filename, generation, *, user_id, usage=None):
     doc_id = content.decode().split("/")[1]
     with connection() as redis:
         redis.set(f"vectors:{generation}", user_id)
@@ -43,6 +46,8 @@ async def index(content, filename, generation, *, user_id):
                 if redis.exists(f"release:{doc_id}"):
                     break
             await asyncio.sleep(0.1)
+    if usage:
+        usage.start("index_embedding", "fixture-embedding").apply_usage({"prompt_tokens": 4, "cost": "0.000010"})
     return SimpleNamespace(chunks_count=3, warnings=[])
 
 
@@ -77,7 +82,22 @@ documents.download_pdf = download
 documents.index_pdf_bytes = index
 documents.remove_generations = remove
 documents.delete_pdf = delete
-documents.TranscriptService = lambda config: SimpleNamespace(hide_for_document=AsyncMock(return_value=0))
+if not config.database_url:
+    documents.TranscriptService = lambda config: SimpleNamespace(hide_for_document=AsyncMock(return_value=0))
+else:
+    # Deliberately populate the parent's pool before any fork. Without the
+    # worker's child reset, metering/retention fails instead of reusing sockets.
+    engine = db.get_engine(config)
+    @event.listens_for(engine, "connect")
+    def connected(connection, record):
+        record.info["pid"] = os.getpid()
+
+    @event.listens_for(engine, "checkout")
+    def checked_out(connection, record, proxy):
+        assert record.info["pid"] == os.getpid(), "Inherited PostgreSQL connection"
+
+    with engine.connect() as sql:
+        sql.execute(text("SELECT 1"))
 DocumentRepository.finish = finish
 
 if __name__ == "__main__":

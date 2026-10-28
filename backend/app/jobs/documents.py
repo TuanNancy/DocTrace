@@ -8,6 +8,7 @@ from rq import get_current_job
 from app.core.config import get_config
 from app.core.observability import bind_log_context
 from app.services.document_repository import DocumentRepository
+from app.services.failures import flush_failures_async
 from app.services.job_queue import MAX_RETRIES
 from app.services.provider_calls import UsageAttribution, UsageCollector
 from app.services.pdf_indexing import InvalidPDFError, index_pdf_bytes
@@ -86,7 +87,8 @@ async def _process_attempt(repository: DocumentRepository, attempt: dict, retrie
                             or (attempt["kind"] == "delete" and current["status"] == "deleted")):
                 return
             permanent = isinstance(exc, InvalidPDFError)
-            await repository.finish(attempt, retryable=not permanent and retries_left > 0, error=(
+            await repository.finish(attempt, retryable=not permanent and retries_left > 0,
+                                    error_code="invalid_pdf" if permanent else None, error=(
                 "Không thể xóa hết dữ liệu. Vui lòng thử lại." if attempt["kind"] == "delete" else
                 "Không thể xử lý PDF. Kiểm tra tệp có văn bản, rồi thử lại hoặc tải lại tài liệu."
             ))
@@ -96,6 +98,7 @@ async def _process_attempt(repository: DocumentRepository, attempt: dict, retrie
         # Failed generations remain registered for the next retry/delete. No finally
         # deletion: a publication response can be lost after Redis has committed it.
     finally:
+        await flush_failures_async(repository.config)
         if usage is not None:
             await usage.flush()
 

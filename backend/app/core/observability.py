@@ -36,6 +36,8 @@ LOG_EVENTS = frozenset({
     "embedding_probe_failed", "embedding_dimension_changed", "provider_no_choices", "provider_call_failed", "provider_stream_failed",
     "vector_status_failed", "rag_provider_created", "rag_store_created", "rag_initialized",
     "rag_shutdown", "rag_retrieved", "rag_stream_failed", "transcripts_purged", "transcript_purge_failed",
+    "admin_operation_failed", "failure_persistence_failed", "admin_health_failed",
+    "workspace_purge_failed",
 })
 
 request_id_context: ContextVar[str] = ContextVar("request_id", default="-")

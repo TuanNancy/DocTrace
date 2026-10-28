@@ -38,7 +38,7 @@ The login route sets `Cross-Origin-Opener-Policy: same-origin-allow-popups` for 
 
 ## Workspace
 
-- `src/app/(workspace)/layout.tsx` mounts `WorkspaceProvider` for `/chat` and `/documents`; route changes preserve in-memory chat/upload state. Reload starts a new conversation. There is no localStorage/server chat persistence.
+- `src/app/(workspace)/layout.tsx` mounts `WorkspaceProvider` for `/chat`, `/documents`, `/usage` and `/admin`; route changes preserve in-memory chat/upload state. Reload restores the latest ready transcript for the workspace; “Chat mới” physically deletes the current conversation.
 - `/documents` uploads PDF via XHR byte progress and receives the same `LibraryDocument` contract as the library endpoints. Upload progress is local UI state; persisted documents start at queued. `src/lib/documents.ts` shares pending/indexing checks across polling, filters and actions.
 - The Redis library and Linux RQ worker described in the root README are required for real processing. Re-upload PDFs when moving from the old PostgreSQL library; no SQL migration is needed. Delete/retry is blocked until the current job ends; a stale UI may receive a 409 and refresh.
 - Chat uses only a selected ready PDF. `useChatSession` owns streaming, clear/stop, export and cancellation. Switching PDFs clears messages; navigation between workspace pages preserves them.
@@ -47,6 +47,7 @@ The login route sets `Cross-Origin-Opener-Policy: same-origin-allow-popups` for 
 - `src/lib/supabase/` contains browser/server clients, public configuration and session middleware. `src/lib/` has explicit exceptions to the root Python `lib/` ignore rule.
 - `src/lib/api.ts` owns HTTP transport; `src/lib/sse.ts` validates and decodes the chat event contract, including required citation IDs and explicit completion.
 - `ChatWindow` and `UploadZone` receive sessions from the workspace provider. Their hooks own requests and cancellation; components only render the shared state and dispatch user actions.
+- `/admin` is platform-admin only. `AdminLink` and the page check `/api/admin/access`; reports are metadata/cost/queue data, and lifecycle actions expose plan changes, archive/restore, audited retry and exact-ID purge confirmation. Losing admin access clears rendered reports on refresh. There is no member transcript or PDF access from this UI.
 
 ## Verification
 
@@ -61,6 +62,6 @@ npm run build
 
 Focused unit test: `npm test -- tests/ChatWindow.test.tsx`.
 
-Playwright owns `localhost:4310` (Next) and `127.0.0.1:4311` (Auth/API fixtures); keep them free. It runs `next build` followed by `next start`, with fixture env applied to both commands, so tests never wait for on-demand route compilation. This replaces `.next` with a fixture-configured build: run `npm run build` again with deployment env before a regular `npm start` or deployment. CI performs this final build explicitly. Tests cover desktop/mobile library lifecycle, retry/filtering, streaming/stop, citation navigation, transient chat and logout. Screenshots go to ignored `test-results/`; CI also publishes Playwright failure annotations through its GitHub reporter.
+Playwright owns `localhost:4310` (Next) and `127.0.0.1:4311` (Auth/API fixtures); keep them free. It runs `next build` followed by `next start`, with fixture env applied to both commands, so tests never wait for on-demand route compilation. This replaces `.next` with a fixture-configured build: run `npm run build` again with deployment env before a regular `npm start` or deployment. CI performs this final build explicitly. Tests cover desktop/mobile library lifecycle, retry/filtering, streaming/stop, citation navigation, transient chat, logout and admin authorization/metadata/action flows. Screenshots go to ignored `test-results/`; CI also publishes Playwright failure annotations through its GitHub reporter.
 
 Build requires public Supabase settings; CI uses placeholders. Browser tests intercept the Google SDK and use local Auth/API fixtures, including ID-token exchange, nonce matching and session-cookie persistence across reloads. Focused Google checks: `npm test -- tests/GoogleSignInButton.test.tsx` and `npm run test:e2e -- tests/e2e/google-auth.spec.ts`. Tests do not call real Google, Supabase, Milvus or OpenRouter. Verify live OAuth/RAG separately when deploying.

@@ -24,15 +24,28 @@ from app.core.config import AppConfig, get_config
 from app.core.observability import current_request_id
 from app.services.job_queue import DocumentQueue, LIVE_STATES
 from app.services.quotas import document_quota_error
+from app.services.failures import ERROR_MESSAGES, stage_failure
 
 PREFIX = "doctrace:library:v2"
 PUBLIC_FIELDS = (
     "doc_id", "name", "size_bytes", "status", "chunks_count", "warnings", "error", "created_at", "updated_at",
 )
+ADMIN_FIELDS = (
+    "doc_id", "workspace_id", "owner_user_id", "status", "chunks_count", "size_bytes",
+    "created_at", "updated_at", "error_code",
+    "job_id", "request_id", "attempt_number", "queue_state",
+)
 
 
 def public_document(document: dict) -> dict:
     return {key: document.get(key) for key in PUBLIC_FIELDS}
+
+
+def admin_document(document: dict) -> dict:
+    """Never use the owner serializer in administrative endpoints."""
+    result = {key: document.get(key) for key in ADMIN_FIELDS}
+    result["error_code"] = document.get("error_code") if document.get("error_code") in ERROR_MESSAGES else None
+    return result
 
 
 def now() -> str:
@@ -133,9 +146,12 @@ class DocumentRepository:
                         error = "Công việc bị gián đoạn hoặc không còn trong hàng đợi. Vui lòng thử lại."
                     if (status, error) == (document["status"], document["error"]):
                         return document
-                    document.update(status=status, error=error, updated_at=now())
+                    document.update(status=status, error=error, error_code="job_interrupted" if error else None,
+                                    updated_at=now())
                     pipe.multi()
                     write_document(pipe, document)
+                    if error:
+                        stage_failure(pipe, document, "job_interrupted")
                     pipe.execute()
                     return document
                 except WatchError:
@@ -209,7 +225,7 @@ class DocumentRepository:
             record = {**document, "user_id": owner_user_id, "owner_user_id": owner_user_id,
                       "workspace_id": workspace_id,
                       "request_id": current_request_id(),
-                      "status": "queued", "chunks_count": 0, "warnings": [], "error": None,
+                      "status": "queued", "chunks_count": 0, "warnings": [], "error": None, "error_code": None,
                       "created_at": timestamp, "updated_at": timestamp, "active_index_id": None,
                       "job_id": f"index-{document['doc_id']}", "job_kind": "index",
                       "attempt_number": 0, "attempt_id": None, "generations": []}
@@ -271,7 +287,7 @@ class DocumentRepository:
                             raise HTTPException(409, "Tài liệu chưa thể thực hiện thao tác này.")
                         document.update(job_id=job_id, job_kind=kind, attempt_number=0, attempt_id=None,
                                         request_id=current_request_id(),
-                                        status="queued" if kind == "index" else "deleting", error=None,
+                                        status="queued" if kind == "index" else "deleting", error=None, error_code=None,
                                         active_index_id=None, updated_at=now())
                         if kind == "delete":
                             document.setdefault("delete_requested_at", document["updated_at"])
@@ -308,6 +324,96 @@ class DocumentRepository:
     async def internal_document(self, doc_id: str) -> dict | None:
         return await self._run(read_document, doc_id)
 
+    def purge_snapshot_sync(self, workspace_id: str) -> list[dict]:
+        """Called with the exclusive workspace admission lock held in Postgres.
+
+        Deleted hashes outlive all library indexes. Scan canonical hashes too so
+        a hard purge includes old tombstones and pre-workspace records. SCAN is
+        incremental; this administrative operation never uses blocking KEYS.
+        """
+        def snapshot(connection):
+            queue = DocumentQueue(self.config, connection)
+            documents = {}
+            def include(doc, doc_id):
+                if doc["doc_id"] != doc_id:
+                    raise HTTPException(409, "Workspace catalog is inconsistent.")
+                if queue.status(doc.get("job_id")) in LIVE_STATES:
+                    raise HTTPException(409, detail={"code": "workspace_jobs_live", "message": "Hãy chờ các job kết thúc trước khi xóa workspace."})
+                documents[doc_id] = {"doc_id": doc_id, "owner_user_id": doc["owner_user_id"]}
+
+            for raw_id, _ in connection.zscan_iter(workspace_key(workspace_id), count=100):
+                doc = read_document(connection, raw_id.decode())
+                # Missing/foreign catalog records must not silently orphan PDFs.
+                if not doc or doc["workspace_id"] != workspace_id:
+                    raise HTTPException(409, "Workspace catalog is inconsistent.")
+                include(doc, raw_id.decode())
+            for key in connection.scan_iter(match=f"{PREFIX}:document:*", count=100):
+                doc_id = key.decode().rsplit(":", 1)[1]
+                if doc_id in documents:
+                    continue
+                doc = read_document(connection, doc_id)
+                if doc and doc["workspace_id"] == workspace_id:
+                    include(doc, doc_id)
+            return list(documents.values())
+        return self._run_sync(snapshot)
+
+    def purge_cleanup_sync(self, workspace_id: str, documents: list[dict]) -> None:
+        """Only after a durable manifest says every external deletion finished.
+
+        Missing hashes are an idempotent replay of a previously accepted cleanup.
+        The SQL workspace lock fences every enqueue while this runs.
+        """
+        def cleanup(connection):
+            if connection.zcard(workspace_key(workspace_id)):
+                raise HTTPException(409, "Workspace still has documents.")
+            for item in documents:
+                key = document_key(item["doc_id"])
+                with connection.pipeline() as pipe:
+                    pipe.watch(key)
+                    doc = read_document(pipe, item["doc_id"])
+                    if doc and (doc["workspace_id"] != workspace_id or doc["owner_user_id"] != item["owner_user_id"]
+                                or doc["status"] != "deleted"):
+                        raise HTTPException(409, "Document cleanup is incomplete.")
+                    pipe.multi()
+                    pipe.delete(key)
+                    for index in (workspace_user_key(workspace_id, item["owner_user_id"]),
+                                  legacy_user_key(item["owner_user_id"]), global_key()):
+                        pipe.zrem(index, item["doc_id"])
+                    pipe.execute()
+        self._run_sync(cleanup)
+
+    def admin_catalog_sync(self, workspace_id: str | None = None, *, status: str | None = None,
+                           limit: int = 100, offset: int = 0) -> dict:
+        """Bounded metadata scan, authorized by the admin service before entry.
+
+        Offset is a catalog scan cursor, not a filtered-row offset. Even with a
+        selective status filter, one request reads at most limit records.
+        """
+        def listing(connection):
+            key = workspace_key(workspace_id) if workspace_id else global_key()
+            identifiers = connection.zrevrange(key, offset, offset + limit)
+            items = []
+            for raw_id in identifiers[:limit]:
+                doc_id = raw_id.decode()
+                doc = read_document(connection, doc_id)
+                if not doc or (workspace_id and doc["workspace_id"] != workspace_id):
+                    continue
+                try:
+                    doc = self._get(connection, doc["workspace_id"], doc["owner_user_id"], doc_id)
+                except HTTPException as exc:
+                    if exc.status_code == 404:
+                        continue
+                    raise
+                if status is None or doc["status"] == status:
+                    doc["queue_state"] = DocumentQueue(self.config, connection).status(doc.get("job_id"))
+                    items.append(admin_document(doc))
+            return {"items": items, "next_offset": offset + limit if len(identifiers) > limit else None}
+        return self._run_sync(listing)
+
+    async def admin_catalog(self, workspace_id: str | None = None, *, status: str | None = None,
+                            limit: int = 100, offset: int = 0) -> dict:
+        return await run_in_threadpool(self.admin_catalog_sync, workspace_id, status=status, limit=limit, offset=offset)
+
     async def begin(self, doc_id: str, job_id: str, attempt_number: int) -> dict | None:
         def begin(connection):
             token = str(uuid4())
@@ -323,7 +429,7 @@ class DocumentRepository:
                                 or document["status"] in ("ready", "deleted")
                                 or attempt_number <= document["attempt_number"]):
                             return None
-                        document.update(attempt_number=attempt_number, attempt_id=token, error=None,
+                        document.update(attempt_number=attempt_number, attempt_id=token, error=None, error_code=None,
                                         status="processing" if document["job_kind"] == "index" else "deleting",
                                         updated_at=now())
                         if document["job_kind"] == "index":
@@ -338,7 +444,7 @@ class DocumentRepository:
             raise HTTPException(409, "Tài liệu đang thay đổi. Vui lòng thử lại.")
         return await self._run(begin)
 
-    async def finish(self, attempt: dict, *, error=None, retryable=False, chunks_count=0, warnings=None) -> bool:
+    async def finish(self, attempt: dict, *, error=None, error_code=None, retryable=False, chunks_count=0, warnings=None) -> bool:
         def finish(connection):
             doc_id = attempt["document"]["doc_id"]
             for _ in range(10):
@@ -355,14 +461,18 @@ class DocumentRepository:
                         if error:
                             status = ("deleting" if deleting else "queued") if retryable else (
                                 "delete_error" if deleting else "error")
-                            document.update(status=status, error=None if retryable else error)
+                            code = error_code or ("delete_failed" if deleting else "index_failed")
+                            document.update(status=status, error=None if retryable else error,
+                                            error_code=None if retryable else code)
                         else:
-                            document.update(status="deleted" if deleting else "ready", error=None,
+                            document.update(status="deleted" if deleting else "ready", error=None, error_code=None,
                                             active_index_id=None if deleting else attempt["attempt_id"],
                                             chunks_count=chunks_count, warnings=warnings or [])
                         document["updated_at"] = now()
                         pipe.multi()
                         write_document(pipe, document)
+                        if error and not retryable:
+                            stage_failure(pipe, document, code)
                         if document["status"] == "deleted":
                             owner_user_id = document["owner_user_id"]
                             workspace_id = document["workspace_id"]

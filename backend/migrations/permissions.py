@@ -26,7 +26,8 @@ def grant_runtime_access(connection) -> None:
     connection.execute(text(f'GRANT USAGE ON SCHEMA doctrace TO "{RUNTIME_ROLE}"'))
     connection.execute(text(f'REVOKE ALL ON ALL TABLES IN SCHEMA doctrace FROM "{RUNTIME_ROLE}"'))
     for table, privileges in TABLE_PRIVILEGES.items():
-        connection.execute(text(f'GRANT {", ".join(privileges)} ON doctrace."{table}" TO "{RUNTIME_ROLE}"'))
+        if connection.execute(text("SELECT to_regclass(:table)"), {"table": f"doctrace.{table}"}).scalar():
+            connection.execute(text(f'GRANT {", ".join(privileges)} ON doctrace."{table}" TO "{RUNTIME_ROLE}"'))
     # No default grant on future functions: opt in explicitly. A per-schema
     # default REVOKE cannot override Postgres's global PUBLIC EXECUTE default.
     connection.execute(text(f'REVOKE ALL ON ALL FUNCTIONS IN SCHEMA doctrace FROM "{RUNTIME_ROLE}"'))
