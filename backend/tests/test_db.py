@@ -40,6 +40,27 @@ def test_connect_arguments_bound_statements_and_pooler_compatibility():
     assert replace(config, database_pool_size=4) != config
 
 
+async def test_database_probe_bounds_but_tolerates_slow_hosted_pooler(monkeypatch):
+    captured = {}
+
+    class ProbeEngine:
+        def __init__(self, *args, **kwargs):
+            captured.update(kwargs)
+
+        def connect(self):
+            raise RuntimeError("probe configuration only")
+
+        def dispose(self):
+            pass
+
+    monkeypatch.setattr(db, "create_engine", ProbeEngine)
+    result = await db.check_database(AppConfig(database_url="postgresql://u:p@db.test/app"))
+    assert result["status"] == "error"
+    assert captured["connect_args"]["connect_timeout"] == 5
+    assert "statement_timeout=5000" in captured["connect_args"]["options"]
+    assert "lock_timeout=2000" in captured["connect_args"]["options"]
+
+
 async def test_database_probe_fails_closed_without_config_or_on_failure(monkeypatch):
     assert (await db.check_database(AppConfig())) == {
         "status": "error", "latency_ms": None, "error_code": "database_not_configured",
