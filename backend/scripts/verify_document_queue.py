@@ -24,6 +24,7 @@ from rq.serializers import JSONSerializer
 from alembic import command as migrations
 from alembic.config import Config as AlembicConfig
 from sqlalchemy import create_engine, text
+from sqlalchemy.exc import OperationalError
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app.core.config import AppConfig
@@ -45,6 +46,23 @@ def eventually(check, timeout=90):
             return result
         time.sleep(0.2)
     raise AssertionError("Timed out waiting for queue state")
+
+
+def retry_operational(action, timeout=90):
+    """Retry SQL bootstrap until the final Postgres server accepts connections.
+
+    `pg_isready` can succeed against the entrypoint's temporary init server,
+    which is then shut down before the real server starts. The bootstrap is
+    idempotent, so retrying the whole transaction is safe.
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            return action()
+        except OperationalError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(0.2)
 
 
 def main():
@@ -113,15 +131,20 @@ def main():
         docker("network", "create", prefix)
         postgres_name = launch("postgres", "--network-alias", "postgres", "-p", "127.0.0.1::5432",
                                "-e", "POSTGRES_PASSWORD=fixture-only", "postgres:16-alpine")
-        eventually(lambda: "accepting connections" in docker("exec", postgres_name, "pg_isready", "-U", "postgres", check=False))
         port = docker("port", postgres_name, "5432").rsplit(":", 1)[1]
         migration_url = f"postgresql+psycopg://postgres:fixture-only@127.0.0.1:{port}/postgres"
         database = create_engine(migration_url)
-        with database.begin() as sql:
-            sql.exec_driver_sql("CREATE SCHEMA auth")
-            sql.exec_driver_sql("CREATE TABLE auth.users (id uuid PRIMARY KEY, deleted_at timestamptz)")
-            sql.exec_driver_sql((ROOT.parent / "deploy/postgres/bootstrap-runtime-role.sql").read_text())
-            sql.exec_driver_sql("ALTER ROLE doctrace_app PASSWORD 'fixture-runtime'")
+
+        def bootstrap():
+            with database.begin() as sql:
+                sql.exec_driver_sql("CREATE SCHEMA IF NOT EXISTS auth")
+                sql.exec_driver_sql(
+                    "CREATE TABLE IF NOT EXISTS auth.users (id uuid PRIMARY KEY, deleted_at timestamptz)"
+                )
+                sql.exec_driver_sql((ROOT.parent / "deploy/postgres/bootstrap-runtime-role.sql").read_text())
+                sql.exec_driver_sql("ALTER ROLE doctrace_app PASSWORD 'fixture-runtime'")
+
+        retry_operational(bootstrap)
         migration = AlembicConfig(str(ROOT / "alembic.ini"))
         migration.set_main_option("sqlalchemy.url", migration_url)
         migrations.upgrade(migration, "head")

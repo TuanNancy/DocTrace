@@ -1,5 +1,5 @@
 import type { Page } from "@playwright/test";
-import { expect, test } from "./fixtures";
+import { expect, expectLibrary, test } from "./fixtures";
 
 const PERSONAL = "11111111-1111-4111-8111-111111111111";
 const TEAM = "33333333-3333-4333-8333-333333333333";
@@ -25,7 +25,7 @@ test("switching workspace isolates the library and restores it on switch back", 
 
   await page.getByRole("navigation", { name: "Điều hướng chính" })
     .getByRole("link", { name: /Thư viện/ }).click();
-  await expect(page).toHaveURL(/\/documents$/);
+  await expectLibrary(page);
   await page.getByLabel("Chọn file", { exact: true }).setInputFiles(file);
   const row = page.getByTestId("document-row").filter({ hasText: "workspace.pdf" });
   await expect(row.getByText("Sẵn sàng", { exact: true })).toBeVisible({ timeout: 15000 });
