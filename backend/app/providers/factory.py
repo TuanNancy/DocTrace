@@ -6,10 +6,10 @@ from app.providers.base import ChatProvider
 from app.providers.openrouter import OpenRouterChatProvider
 
 
-def create_chat_provider(config: Optional[AppConfig] = None) -> ChatProvider:
+def create_chat_provider(config: Optional[AppConfig] = None, *, model: Optional[str] = None) -> ChatProvider:
     config = config if config is not None else get_config()
     config.require_openrouter()
     return OpenRouterChatProvider(
-        api_key=config.openrouter_api_key, model=config.model,
+        api_key=config.openrouter_api_key, model=model or config.model,
         base_url=config.openrouter_base_url, timeout=config.upstream_timeout_seconds,
     )

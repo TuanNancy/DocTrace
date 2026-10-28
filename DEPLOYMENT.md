@@ -9,7 +9,8 @@ VPS: Nginx container ──→ api:8000 (FastAPI container)
           └── certificate volume ← Certbot (chạy khi cấp/gia hạn)
 
 FastAPI → Redis (thư viện + queue + quota) → RQ worker → Supabase S3 / Zilliz
-                                      └──────→ cập nhật metadata Redis
+   │                                  └──────→ cập nhật metadata Redis
+   └──→ cache Redis riêng (đáp án exact, disposable)
 ```
 
 ## Trạng thái checkout
@@ -28,12 +29,13 @@ Tạo bucket PDF private, cấu hình Supabase Auth cùng S3 keys trong `backend
 | `api` | Build từ `backend/Dockerfile` + context `backend/` | Python, dependency và code FastAPI |
 | `worker` | Cùng image API; `python -m app.worker` | RQ + scheduler: indexing, xóa, timeout/retry |
 | `redis` | `redis:7.4.8-alpine` | Thư viện + queue/RQ; AOF `everysec`, volume `redis_data`, `noeviction` |
+| `cache` | `redis:7.4.8-alpine` | Cache đáp án exact; không persist, `allkeys-lru`, tách hoàn toàn khỏi Redis thư viện/queue |
 | `nginx` | Image `nginx:1.28-alpine` có sẵn | TLS, reverse proxy, upload/SSE |
 | `certbot` | Image `certbot/certbot:v5.1.0` có sẵn | Cấp/gia hạn certificate qua HTTP-01 |
 
 `docker build` tạo image; `docker compose up` tạo/chạy container từ image. Compose thiết lập network, env, mount và healthcheck. API image không chứa database server hay frontend. Frontend được build/deploy riêng trên Vercel với Root Directory là `frontend`.
 
-Root `docker-compose.yml` chạy Redis + cụm Milvus; profile `jobs` thêm worker. Production chạy API + Redis + worker + Nginx; Certbot ở profile `tools`.
+Root `docker-compose.yml` chạy Redis + cụm Milvus; profile `jobs` thêm worker. Production chạy API + Redis + cache Redis + worker + Nginx; Certbot ở profile `tools`.
 
 ## 2. Chuẩn bị VPS, DNS và env
 
@@ -70,6 +72,8 @@ Copy `backend/.env.example` thành `backend/.env`, giữ các giá trị tuning 
 | Zilliz Cloud | `MILVUS_URI` là endpoint HTTPS của cluster; `MILVUS_TOKEN` là credential được cấp quyền truy cập; `MILVUS_COLLECTION=pdf_chunks_owned_v1` |
 | OpenRouter | `OPENROUTER_API_KEY`, `RAG_MODEL`, `EMBEDDING_MODEL` theo model bạn chọn |
 | Usage/cost | Giữ `DATABASE_URL` cho cả API và worker để ghi `doctrace.provider_calls`; `SUMMARY_MAX_CALLS=8` giới hạn lượt tóm tắt mỗi request |
+| Cache đáp án | `ANSWER_CACHE_URL` trỏ Redis cache riêng (Compose đặt `redis://cache:6379/0`); để trống để tắt. `ANSWER_CACHE_TTL_SECONDS` mặc định 259200 (3 ngày) |
+| Routing/ngân sách | `MODEL_ROUTING_ENABLED=false` mặc định; nếu bật phải đặt `CHEAP_MODEL`. `REQUEST_COST_CAP_MICROS=100000`, giá `MODEL_*_MICROS_PER_MTOK`/`CHEAP_*_MICROS_PER_MTOK` phải khớp model thật |
 | Transcript | `TRANSCRIPT_DELETE_MODE=retain_30d` hoặc `cascade`; `TRANSCRIPT_RETENTION_DAYS=30`. Chạy purge định kỳ (xem bên dưới) |
 | Admin / lỗi | Seed platform admin bằng migration identity; `SENTRY_DSN` tùy chọn (bỏ trống để tắt), `SENTRY_ENVIRONMENT`, `SENTRY_RELEASE` |
 | Queue | `RQ_QUEUE_NAME=documents-v2`; Compose đã override `REDIS_URL` cho API/worker |
@@ -106,6 +110,8 @@ ON CONFLICT (user_id) DO NOTHING;
 ```
 
 Gỡ quyền bằng `DELETE FROM doctrace.platform_admins WHERE user_id = ...` bằng cùng identity. Admin UI/API kiểm tra bảng này sau Auth; owner workspace không tự động có quyền. Admin chỉ thấy metadata/định danh/cost, không đọc PDF, chunk hay transcript.
+
+Migration `0004_answer_cache` thêm cột `chat_requests.cache_hit` (mặc định `false`, tương thích image cũ trong rollout). Cache đáp án không nằm trong Postgres và không dùng chung Redis thư viện/queue: Compose production chạy service `cache` riêng, không volume, `maxmemory=64mb`, `allkeys-lru`; mất cache chỉ làm tăng chi phí/latency, không mất tài liệu hay quota. `/ready` kiểm tra cột mới; API/worker vẫn cần migration hoàn tất trước khi nhận traffic.
 
 Worker duy trì outbox lỗi terminal và tiến trình purge mỗi chu kỳ maintenance (idle dequeue tối đa 30 giây). Có thể chạy bù một lượt giới hạn bằng:
 
@@ -148,11 +154,31 @@ CORS_ALLOW_ORIGINS=https://YOUR-FRONTEND
 
 **Networking:** `MILVUS_URI` được ưu tiên hơn host/port, nên VPS dùng endpoint Zilliz thay vì chạy cụm Milvus local. Dùng `compose.production.yml` cho production; `docker compose up -d` không chỉ định file sẽ chạy stack phát triển gồm Milvus/etcd/MinIO. `localhost` trong API container là chính container đó.
 
-API và worker có giới hạn riêng `1400m`; Redis `256m`, Nginx `128m` (tổng khoảng 3.1 GiB chưa tính OS). Redis `maxmemory=128mb` chừa dung lượng cho persistence; khi đầy nó từ chối ghi và API báo lỗi để người dùng thử lại. Redis chỉ truy cập qua mạng Docker, không publish port production. Metadata tài liệu không có TTL; theo dõi RAM và backup volume vì Redis giữ toàn bộ thư viện.
+API và worker có giới hạn riêng `1400m`; Redis `256m`, cache `96m`, Nginx `128m` (tổng khoảng 3.2 GiB chưa tính OS). Redis `maxmemory=128mb` chừa dung lượng cho persistence; khi đầy nó từ chối ghi và API báo lỗi để người dùng thử lại. Cache dùng `maxmemory=64mb` và `allkeys-lru`; đầy cache chỉ gây miss. Redis chỉ truy cập qua mạng Docker, không publish port production. Metadata tài liệu không có TTL; theo dõi RAM và backup volume vì Redis giữ toàn bộ thư viện.
 
 Compose đặt `REDIS_URL=redis://redis:6379/0` cho API và worker. Cả hai phải dùng cùng `RQ_QUEUE_NAME` (mặc định `documents-v2`). `DOCUMENT_INDEX_TIMEOUT_SECONDS=900`, `DOCUMENT_DELETE_TIMEOUT_SECONDS=300`; tăng timeout cần điều chỉnh `stop_grace_period` (mặc định 16 phút) tương ứng. RQ graceful shutdown chờ job hiện tại; force kill cần chờ RQ phát hiện job bị bỏ dở và lên lịch retry.
 
+Service `cache` chỉ phục vụ exact-answer cache và không cần backup: xóa/restart cache chỉ làm miss toàn bộ. Không trỏ `ANSWER_CACHE_URL` vào `redis` thư viện/queue và không bật persistence cho cache. Theo dõi `docker compose ... logs cache` và `docker stats`; cache đầy sẽ tự loại key cũ (`allkeys-lru`). Cache hit vẫn tính một lượt quota nhưng không ghi `provider_calls`; admin report có `cache_hits`.
+
 `backend/.env` và `backend/.env.migrations` được inject riêng lúc chạy; không copy vào image. Cả hai cùng `.env.production` được Git ignore; giới hạn quyền đọc các file credential trên host (`chmod 600`). Các giá trị `NEXT_PUBLIC_*` của frontend được cấu hình trên Vercel; API URL phải dùng HTTPS.
+
+### Đánh giá RAG và chi phí model
+
+Golden set và baseline nằm trong repository (`backend/evals/`); VPS không cần thêm service. Chạy smoke offline trong CI hoặc từ checkout:
+
+```sh
+cd backend
+python -m pip install -r requirements-dev.txt
+python -m evals --mode smoke
+```
+
+`verify.yml` chạy smoke và upload artifact; smoke không gọi provider. Live eval chỉ chạy khi cấu hình secret `OPENROUTER_EVAL_API_KEY` trong GitHub Actions (workflow `.github/workflows/eval-live.yml`). Dùng project/key OpenRouter riêng với hard budget cho eval, không dùng key production; CLI còn giới hạn `--budget-micros` và `--request-cap-micros` như guardrail thứ hai:
+
+```sh
+python -m evals --mode live --budget-micros 2000000 --request-cap-micros 100000 --plan pro
+```
+
+Nếu bật routing production, đặt `CHEAP_MODEL` và giá micro-USD/triệu token cho cả hai model. `REQUEST_COST_CAP_MICROS` chặn trước khi gọi provider và trả `budget_exceeded` thay vì âm thầm đổi model. Sau khi đổi prompt/retrieval/model hoặc golden set, chạy live eval và cập nhật baseline có review; threshold live hiện là provisional cho tới lần chạy thật đầu tiên.
 
 ### Vercel và kết nối Auth/API
 

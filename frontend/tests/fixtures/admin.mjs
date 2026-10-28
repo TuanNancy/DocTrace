@@ -29,7 +29,7 @@ export function adminFixture() {
       if (path === "/overview") return [200, { since: timestamp, documents: document ? 1 : 0,
         workspaces: workspace ? [{ status: workspace.status, count: 1 }] : [],
         costs: [{ cost_status: "reported", calls: 1, known_micros: 250000 }, { cost_status: "unknown", calls: 2, known_micros: 0 }],
-        chat: { requests: 1, failed: 0, interrupted: 0, latency_p50_ms: 100, latency_p95_ms: 200, first_token_p50_ms: 25, first_token_p95_ms: 50 },
+        chat: { requests: 1, failed: 0, interrupted: 0, cache_hits: 1, latency_p50_ms: 100, latency_p95_ms: 200, first_token_p50_ms: 25, first_token_p95_ms: 50 },
         by: { day: [], model: [], workspace: [], kind: [] } }];
       if (path === "/health") return [200, { status: "ok", checks: {
         postgres: { status: "ok", latency_ms: 2 }, redis: { status: "ok", latency_ms: 1 }, milvus: { status: "ok", collection_exists: true },

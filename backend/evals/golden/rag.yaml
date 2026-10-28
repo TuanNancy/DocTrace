@@ -1,0 +1,370 @@
+version: 1
+
+documents:
+  - id: handbook
+    title: Northwind Employee Handbook
+    pages:
+      - page: 1
+        text: >-
+          Northwind Labs builds document search tools for regulated teams. Our
+          mission is to make evidence-based answers easy to verify. Our values
+          include customer privacy, clear citations and careful handling of
+          sensitive data.
+      - page: 2
+        text: >-
+          Full-time employees receive 24 days of paid annual leave each calendar
+          year. Unused annual leave may be carried over up to 5 days into the
+          next year. Leave requests should be submitted at least 10 business
+          days in advance.
+      - page: 3
+        text: >-
+          Employees may work remotely up to three days per week. Core
+          collaboration hours are 10:00 to 15:00 Central European Time. Remote
+          work outside the country requires manager approval.
+      - page: 4
+        text: >-
+          Submit business expense receipts within 30 days of the purchase. Meals
+          are reimbursed up to 45 USD per day during business travel. Alcohol is
+          not reimbursable.
+      - page: 5
+        text: >-
+          Report suspected phishing to security@northwind.example within one
+          hour. Never approve a multi-factor authentication prompt you did not
+          initiate. Lock your laptop whenever you leave your desk.
+
+  - id: security
+    title: Chính sách bảo mật nội bộ
+    pages:
+      - page: 1
+        text: >-
+          Mật khẩu phải có ít nhất 14 ký tự và được thay đổi mỗi 180 ngày.
+          Không dùng lại mật khẩu cũ.
+      - page: 2
+        text: >-
+          Bắt buộc bật xác thực đa yếu tố cho mọi tài khoản quản trị. Khóa bảo
+          mật phải được lưu trong két an toàn.
+      - page: 3
+        text: >-
+          Sự cố bảo mật mức nghiêm trọng phải được báo cho đội ứng cứu trong
+          vòng 15 phút. Mọi sự cố đều phải được ghi nhận.
+      - page: 4
+        text: >-
+          Dữ liệu khách hàng chỉ được lưu trong khu vực EU. Không sao chép dữ
+          liệu khách hàng sang thiết bị cá nhân.
+      - page: 5
+        text: >-
+          Thiết bị lưu trữ phải được mã hóa toàn bộ và không dùng chung tài
+          khoản. Mất thiết bị phải báo ngay cho bộ phận CNTT.
+
+  - id: product
+    title: DocTrace Product Guide
+    pages:
+      - page: 1
+        text: >-
+          The Free plan includes 10 questions per month and 5 documents per
+          workspace. It is intended for individual evaluation.
+      - page: 2
+        text: >-
+          The Pro plan includes 100 questions per month, 50 documents and 10
+          workspaces. Pro also includes priority support.
+      - page: 3
+        text: >-
+          Deleted documents keep their transcripts for 30 days by default. After
+          retention expires, transcript content is permanently removed.
+      - page: 4
+        text: >-
+          PDF answers cite one-based physical page numbers. Blank pages are
+          counted so citations match the original file.
+      - page: 5
+        text: >-
+          The API returns 429 with a reset_at field when the monthly question
+          quota is exhausted. Clients should wait until reset_at before retrying.
+
+cases:
+  - id: handbook-leave-days
+    doc: handbook
+    query: How many days of paid annual leave do full-time employees receive?
+    language: en
+    category: lookup
+    must_include: ["24 days"]
+    must_not_include: ["unlimited"]
+    evidence:
+      - page: 2
+        text: 24 days of paid annual leave
+
+  - id: handbook-leave-carryover
+    doc: handbook
+    query: How many unused annual leave days can be carried over?
+    language: en
+    category: lookup
+    must_include: ["5 days"]
+    must_not_include: ["unlimited"]
+    evidence:
+      - page: 2
+        text: carried over up to 5 days
+
+  - id: handbook-leave-request
+    doc: handbook
+    query: How far in advance should leave requests be submitted?
+    language: en
+    category: lookup
+    must_include: ["10 business days"]
+    evidence:
+      - page: 2
+        text: 10 business days in advance
+
+  - id: handbook-remote-days
+    doc: handbook
+    query: How many days per week may employees work remotely?
+    language: en
+    category: lookup
+    must_include: ["three days per week"]
+    must_not_include: ["five days"]
+    evidence:
+      - page: 3
+        text: up to three days per week
+
+  - id: handbook-core-hours
+    doc: handbook
+    query: What are the core collaboration hours?
+    language: en
+    category: lookup
+    must_include: ["10:00 to 15:00"]
+    evidence:
+      - page: 3
+        text: Core collaboration hours are 10:00 to 15:00
+
+  - id: handbook-receipts
+    doc: handbook
+    query: When must business expense receipts be submitted?
+    language: en
+    category: lookup
+    must_include: ["30 days"]
+    evidence:
+      - page: 4
+        text: receipts within 30 days
+
+  - id: handbook-meals
+    doc: handbook
+    query: What is the daily meal reimbursement limit during business travel?
+    language: en
+    category: lookup
+    must_include: ["45 USD"]
+    evidence:
+      - page: 4
+        text: Meals are reimbursed up to 45 USD per day
+
+  - id: handbook-phishing
+    doc: handbook
+    query: How quickly must suspected phishing be reported?
+    language: en
+    category: lookup
+    must_include: ["one hour"]
+    evidence:
+      - page: 5
+        text: suspected phishing to security@northwind.example within one hour
+
+  - id: handbook-mfa
+    doc: handbook
+    query: What should employees do when they receive an MFA prompt they did not initiate?
+    language: en
+    category: lookup
+    must_include: ["never approve", "did not initiate"]
+    evidence:
+      - page: 5
+        text: Never approve a multi-factor authentication prompt you did not initiate
+
+  - id: handbook-mission
+    doc: handbook
+    query: What is the company mission?
+    language: en
+    category: lookup
+    must_include: ["evidence-based answers"]
+    evidence:
+      - page: 1
+        text: mission is to make evidence-based answers easy to verify
+
+  - id: handbook-values
+    doc: handbook
+    query: Which values does Northwind Labs emphasize?
+    language: en
+    category: lookup
+    must_include: ["customer privacy", "clear citations"]
+    evidence:
+      - page: 1
+        text: values include customer privacy, clear citations
+
+  - id: handbook-leave-and-remote
+    doc: handbook
+    query: How many annual leave days and remote work days are allowed?
+    language: en
+    category: multi_hop
+    must_include: ["24 days", "three days"]
+    evidence:
+      - page: 2
+        text: 24 days of paid annual leave
+      - page: 3
+        text: up to three days per week
+
+  - id: handbook-overview
+    doc: handbook
+    query: Summarize this PDF
+    language: en
+    category: overview
+    must_include: ["Northwind Labs", "24 days", "three days"]
+    evidence:
+      - page: 1
+        text: Northwind Labs builds document search tools
+      - page: 2
+        text: 24 days of paid annual leave
+      - page: 3
+        text: up to three days per week
+
+  - id: handbook-unanswerable-stock
+    doc: handbook
+    query: What is the stock option vesting schedule?
+    language: en
+    category: refusal
+    expected_refusal: true
+    must_not_include: ["vesting schedule is four years"]
+    evidence: []
+
+  - id: security-password-length
+    doc: security
+    query: Mật khẩu phải có độ dài tối thiểu bao nhiêu ký tự?
+    language: vi
+    category: lookup
+    must_include: ["14 ký tự"]
+    evidence:
+      - page: 1
+        text: Mật khẩu phải có ít nhất 14 ký tự
+
+  - id: security-password-rotation
+    doc: security
+    query: Bao lâu phải thay đổi mật khẩu?
+    language: vi
+    category: lookup
+    must_include: ["180 ngày"]
+    evidence:
+      - page: 1
+        text: thay đổi mỗi 180 ngày
+
+  - id: security-mfa
+    doc: security
+    query: Tài khoản quản trị có bắt buộc xác thực đa yếu tố không?
+    language: vi
+    category: lookup
+    must_include: ["xác thực đa yếu tố"]
+    evidence:
+      - page: 2
+        text: Bắt buộc bật xác thực đa yếu tố cho mọi tài khoản quản trị
+
+  - id: security-incident
+    doc: security
+    query: Sự cố bảo mật nghiêm trọng phải báo trong bao lâu?
+    language: vi
+    category: lookup
+    must_include: ["15 phút"]
+    evidence:
+      - page: 3
+        text: báo cho đội ứng cứu trong vòng 15 phút
+
+  - id: security-data-region
+    doc: security
+    query: Dữ liệu khách hàng được lưu ở khu vực nào?
+    language: vi
+    category: lookup
+    must_include: ["khu vực EU"]
+    evidence:
+      - page: 4
+        text: Dữ liệu khách hàng chỉ được lưu trong khu vực EU
+
+  - id: security-encryption
+    doc: security
+    query: Yêu cầu mã hóa đối với thiết bị lưu trữ là gì?
+    language: vi
+    category: lookup
+    must_include: ["mã hóa toàn bộ"]
+    evidence:
+      - page: 5
+        text: Thiết bị lưu trữ phải được mã hóa toàn bộ
+
+  - id: security-unanswerable-parental
+    doc: security
+    query: Chính sách nghỉ thai sản kéo dài bao lâu?
+    language: vi
+    category: refusal
+    expected_refusal: true
+    must_not_include: ["nghỉ thai sản là 24 tuần"]
+    evidence: []
+
+  - id: product-free-plan
+    doc: product
+    query: How many questions and documents does the Free plan include?
+    language: en
+    category: lookup
+    must_include: ["10 questions", "5 documents"]
+    evidence:
+      - page: 1
+        text: Free plan includes 10 questions per month and 5 documents
+
+  - id: product-pro-workspaces
+    doc: product
+    query: How many workspaces does the Pro plan include?
+    language: en
+    category: lookup
+    must_include: ["10 workspaces"]
+    evidence:
+      - page: 2
+        text: 10 workspaces
+
+  - id: product-compare-plans
+    doc: product
+    query: Compare the question limits of the Free and Pro plans.
+    language: en
+    category: multi_hop
+    must_include: ["10 questions", "100 questions"]
+    evidence:
+      - page: 1
+        text: 10 questions per month
+      - page: 2
+        text: 100 questions per month
+
+  - id: product-retention
+    doc: product
+    query: How long are transcripts kept after a document is deleted?
+    language: en
+    category: lookup
+    must_include: ["30 days"]
+    evidence:
+      - page: 3
+        text: transcripts for 30 days by default
+
+  - id: product-page-numbers
+    doc: product
+    query: How are PDF page numbers cited in answers?
+    language: en
+    category: lookup
+    must_include: ["one-based physical page numbers"]
+    evidence:
+      - page: 4
+        text: one-based physical page numbers
+
+  - id: product-quota-error
+    doc: product
+    query: What does the API return when the monthly question quota is exhausted?
+    language: en
+    category: lookup
+    must_include: ["429", "reset_at"]
+    evidence:
+      - page: 5
+        text: returns 429 with a reset_at field
+
+  - id: product-unanswerable-hotline
+    doc: product
+    query: Does the Pro plan include a dedicated phone hotline?
+    language: en
+    category: refusal
+    expected_refusal: true
+    must_not_include: ["dedicated phone hotline is included"]
+    evidence: []

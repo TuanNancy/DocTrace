@@ -131,7 +131,7 @@ def team(infrastructure, monkeypatch):
     monkeypatch.setattr(documents, "create_connected_vector_store", AsyncMock(return_value=store))
     monkeypatch.setattr(jobs, "create_connected_vector_store", AsyncMock(return_value=store))
 
-    async def pipeline(*, usage):
+    async def pipeline(*, usage, budget=None, model=None):
         async def retrieve(query, generation, *, user_id):
             return [vectors[user_id, generation]]
 

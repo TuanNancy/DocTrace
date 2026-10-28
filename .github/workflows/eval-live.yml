@@ -1,0 +1,71 @@
+name: Budgeted live RAG evaluation
+
+on:
+  workflow_dispatch:
+    inputs:
+      budget_micros:
+        description: "Total known-cost cap in integer micro-USD"
+        required: true
+        default: "2000000"
+      request_cap_micros:
+        description: "Worst-case generation cap per request in micro-USD"
+        required: true
+        default: "100000"
+      plan:
+        description: "Plan policy used for routing"
+        required: true
+        type: choice
+        default: pro
+        options: [pro, free]
+  schedule:
+    # Nightly after the transcript purge window. Requires a separate OpenRouter
+    # project/key with its own hard budget; the CLI cap is a second guard.
+    - cron: "15 4 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rag-eval-live
+  cancel-in-progress: false
+
+jobs:
+  live:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: backend
+    env:
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_EVAL_API_KEY }}
+      RAG_MODEL: ${{ vars.EVAL_RAG_MODEL || 'openai/gpt-4o-mini' }}
+      EMBEDDING_MODEL: ${{ vars.EVAL_EMBEDDING_MODEL || 'openai/text-embedding-3-small' }}
+      MODEL_ROUTING_ENABLED: "false"
+      EVAL_BUDGET_MICROS: ${{ inputs.budget_micros || '2000000' }}
+      EVAL_REQUEST_CAP_MICROS: ${{ inputs.request_cap_micros || '100000' }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements*.txt
+      - name: Check the dedicated evaluation key is configured
+        run: |
+          if [ -z "$OPENROUTER_API_KEY" ]; then
+            echo "Set the OPENROUTER_EVAL_API_KEY repository secret (separate project with a hard budget)." >&2
+            exit 1
+          fi
+      - run: python -m pip install -r requirements-dev.txt
+      - name: Run live golden set with cost caps
+        run: |
+          python -m evals --mode live \
+            --budget-micros "$EVAL_BUDGET_MICROS" \
+            --request-cap-micros "$EVAL_REQUEST_CAP_MICROS" \
+            --plan "${{ inputs.plan || 'pro' }}"
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: rag-eval-live
+          path: backend/evals/results/live.json
+          retention-days: 14

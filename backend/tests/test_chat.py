@@ -41,7 +41,7 @@ def chat_dependencies(monkeypatch):
     monkeypatch.setattr(vector_store_factory, "create_vector_store", lambda **kwargs: vector_store)
 
     async def completion_stream():
-        for text in ["Twelve ", "days."]:
+        for text in ["Twelve ", "days [1]."]:
             yield SimpleNamespace(
                 id="gen-answer",
                 choices=[SimpleNamespace(delta=SimpleNamespace(content=text))],
@@ -107,7 +107,7 @@ def test_chat_sse_stream(chat_dependencies, client: TestClient) -> None:
     assert parse_sse_events(response) == [
         ("sources", [{"citation_id": 1, "chunk_id": "chunk-1", "doc_id": "test-doc-id", "page": 2, "source": "policy.pdf", "score": 0.9}]),
         ("token", "Twelve "),
-        ("token", "days."),
+        ("token", "days [1]."),
         ("done", "[DONE]"),
     ]
     deps.embedder.embed_documents.assert_called_once_with(["How much leave?"])
@@ -383,7 +383,7 @@ def test_chat_admission_uses_the_client_request_id_and_finalizes_status(
     )
     final = transcripts.finalize_message.await_args_list[-1]
     assert final.args[:2] == ("00000000-0000-0000-0000-0000000000c4", "complete")
-    assert final.args[2] == "Twelve days."
+    assert final.args[2] == "Twelve days [1]."
     assert final.args[3][0]["chunk_id"] == "chunk-1"
 
 
@@ -514,3 +514,98 @@ async def test_cancelled_chat_is_marked_interrupted(quotas, transcripts, monkeyp
     message = transcripts.finalize_message.await_args_list[-1]
     assert message.args[1] == "interrupted"
     assert message.args[2] == "partial"
+
+
+class _Cache:
+    enabled = True
+
+    def __init__(self, hit=None, get_error=None):
+        self.hit, self.get_error = hit, get_error
+        self.gets, self.puts = [], []
+
+    async def get(self, key, *, doc_id=None):
+        self.gets.append((key, doc_id))
+        if self.get_error:
+            raise self.get_error
+        return self.hit
+
+    async def put(self, key, payload):
+        self.puts.append((key, payload))
+
+
+def _cache_override(cache):
+    from app.services.answer_cache import get_answer_cache
+
+    app.dependency_overrides[get_answer_cache] = lambda: cache
+    return lambda: app.dependency_overrides.pop(get_answer_cache, None)
+
+
+def test_chat_cache_hit_skips_retrieval_provider_and_still_consumes_one_quota(
+    chat_dependencies, client, quotas, transcripts,
+):
+    cached_sources = [{"citation_id": 1, "chunk_id": "cached-chunk", "doc_id": "test-doc-id",
+                       "page": 2, "source": "policy.pdf", "score": 0.9}]
+    cache = _Cache(hit={"answer": "Cached answer [1].", "sources": cached_sources})
+    cleanup = _cache_override(cache)
+    try:
+        response = client.post(
+            "/api/chat",
+            json={"query": "How much leave?", "doc_id": "test-doc-id", "language": "en"},
+        )
+    finally:
+        cleanup()
+
+    assert response.status_code == 200
+    assert parse_sse_events(response) == [
+        ("sources", cached_sources), ("token", "Cached answer [1]."), ("done", "[DONE]"),
+    ]
+    assert len(cache.gets) == 1
+    assert cache.puts == []
+    chat_dependencies.vector_store.connect.assert_not_awaited()
+    chat_dependencies.create_completion.assert_not_called()
+    assert [call.args[1] for call in quotas.mark_chat_status.await_args_list] == ["streaming", "completed"]
+    timing = quotas.record_timing.await_args_list[-1]
+    assert timing.kwargs["cache_hit"] is True
+    final = transcripts.finalize_message.await_args_list[-1]
+    assert final.args[1:4] == ("complete", "Cached answer [1].", cached_sources)
+
+
+def test_chat_cache_miss_stores_only_a_complete_cited_answer(
+    chat_dependencies, client, quotas,
+):
+    cache = _Cache()
+    cleanup = _cache_override(cache)
+    try:
+        response = client.post(
+            "/api/chat",
+            json={"query": "How much leave?", "doc_id": "test-doc-id", "language": "en"},
+        )
+    finally:
+        cleanup()
+
+    assert response.status_code == 200
+    assert len(cache.puts) == 1
+    _, payload = cache.puts[0]
+    assert payload["answer"] == "Twelve days [1]."
+    assert payload["sources"][0]["chunk_id"] == "chunk-1"
+    timing = quotas.record_timing.await_args_list[-1]
+    assert timing.kwargs["cache_hit"] is False
+
+
+def test_chat_cache_failure_is_a_miss_not_a_chat_failure(
+    chat_dependencies, client,
+):
+    cache = _Cache(get_error=RuntimeError("cache down"))
+    cleanup = _cache_override(cache)
+    try:
+        response = client.post(
+            "/api/chat",
+            json={"query": "How much leave?", "doc_id": "test-doc-id", "language": "en"},
+        )
+    finally:
+        cleanup()
+
+    assert response.status_code == 200
+    events = parse_sse_events(response)
+    assert [event[0] for event in events] == ["sources", "token", "token", "done"]
+    chat_dependencies.vector_store.connect.assert_awaited_once()

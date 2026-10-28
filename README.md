@@ -8,6 +8,8 @@ Hỏi đáp PDF với nguồn trích dẫn có thể kiểm chứng. Giao diện
 - `/chat`: chọn PDF sẵn sàng, trả lời streaming bằng Markdown/GFM, dừng, sao chép và xuất hội thoại.
 - `/usage`: plan hiện tại, lượt hỏi/tài liệu còn lại, ngày reset và chi phí OpenRouter theo user.
 - `/admin`: chỉ platform admin; xem chi phí/độ trễ/queue, metadata tài liệu, lỗi xử lý, audit; đổi plan, archive/restore và purge workspace. Không trả tên/PDF/chunk/transcript.
+- Cache câu trả lời chính xác theo workspace + owner + tài liệu + generation + prompt/retrieval/model, nên re-index hoặc đổi policy không dùng lại đáp án cũ. Chỉ lưu câu trả lời hoàn chỉnh có citation hợp lệ; cache lỗi được coi là miss.
+- Routing model là tùy chọn; có thể dùng model rẻ hơn cho gói free và giữ model chất lượng cho câu hỏi pro phức tạp/tóm tắt. Mỗi request có thể bị chặn trước khi gọi provider nếu vượt ngân sách micro-USD.
 - Citation `[1]`, `[2]` mở nguyên văn chunk và PDF ở trang tương ứng, qua URL có thời hạn.
 - Hội thoại được lưu theo workspace + người dùng + tài liệu; reload khôi phục hội thoại mới nhất. “Chat mới” xóa hội thoại hiện tại. Backend vẫn trả lời từng câu hỏi độc lập.
 - Nguồn trích dẫn của generation cũ bị đánh dấu không khả dụng sau khi tài liệu được xử lý lại hoặc bị xóa; UI không mở chunk/PDF cũ.
@@ -95,6 +97,12 @@ python scripts/backfill_workspaces.py --apply
 `/ready` yêu cầu Redis và Postgres sẵn sàng: có migration stamp, đủ bảng/cột/quyền, runtime không có quyền DDL/admin. Thiếu DB hoặc dùng login migration sẽ trả `503`; schema mở rộng tương thích vẫn qua check khi rollback image. `/health` chỉ là liveness của process.
 
 Root `.env` được hỗ trợ; `backend/.env` ghi đè cả root và biến process. `get_config()` cache một lần, nên khởi động lại API/worker sau khi đổi cấu hình.
+
+P5 thêm cache đáp án và ngân sách chi phí, mặc định an toàn:
+
+- `ANSWER_CACHE_URL` phải trỏ tới Redis **riêng** với `REDIS_URL` (thư viện/queue). Để trống để tắt cache. `ANSWER_CACHE_TTL_SECONDS` mặc định 3 ngày. Cache chỉ lưu câu trả lời hoàn chỉnh có citation hợp lệ; key gắn workspace/owner/tài liệu/generation/prompt/retrieval/model. Cache lỗi hoặc dữ liệu hỏng là miss, không làm hỏng chat.
+- `MODEL_ROUTING_ENABLED=false` mặc định. Khi bật, phải đặt `CHEAP_MODEL`; request free dùng model rẻ, request pro giữ `RAG_MODEL` (kể cả câu phức tạp/tóm tắt). `COMPLEX_QUERY_WORDS` chỉnh ngưỡng nhận diện câu dài.
+- `REQUEST_COST_CAP_MICROS` (mặc định `100000`, integer micro-USD) là ngân sách worst-case trước mỗi generation; `0` tắt. Giá `MODEL_*_MICROS_PER_MTOK` và `CHEAP_*_MICROS_PER_MTOK` phải khớp model đang dùng; cập nhật khi đổi model. Vượt ngân sách trả lỗi SSE `budget_exceeded`, không tự hạ model.
 
 Phiên bản này bắt đầu thư viện mới (`doctrace:library:v2` và queue `documents-v2`); tải lại các PDF cần dùng. Chuyển từ bản PostgreSQL: xem [DEPLOYMENT.md](DEPLOYMENT.md#chuyển-từ-thư-viện-postgresql-sang-redis). Dữ liệu cloud cũ không bị xóa.
 
@@ -230,6 +238,8 @@ Khi `DATABASE_URL` được cấu hình, API và worker ghi mỗi lượt gọi 
 - Generation trùng được upsert, không tạo dòng thứ hai. Nếu response thiếu cost, server tra `GET /generation` một lần (best effort) và đánh dấu `reconciled`.
 - Embedding nhiều batch gộp vào một dòng; nếu một batch thiếu cost, tổng được đánh dấu `unknown`. Dimension probe không tính.
 - Không gửi cost qua SSE; dữ liệu để dành cho usage/admin UI.
+- Cache hit vẫn tính một lượt hỏi đã admit nhưng không gọi provider, nên cost của lượt đó là 0; `chat_requests.cache_hit` giúp admin đối chiếu. Cache chỉ dùng sau khi đã xác thực workspace/owner/tài liệu/generation.
+- Routing ghi `route_reason` vào log đã đăng ký. Ngân sách request được kiểm tra trước khi gọi provider và chia sẻ cho các lượt tóm tắt của cùng request; đây là guardrail, không thay thế cost thực tế trả về từ provider.
 - Ghi usage là best effort: lỗi Postgres không làm hỏng chat/indexing. Bỏ `DATABASE_URL` thì tắt ghi usage.
 - `SUMMARY_MAX_CALLS` (mặc định 8) chặn tóm tắt quá lớn trước khi tốn thêm lượt gọi. SDK OpenRouter tắt retry tự động để một lượt logic không tạo request tính tiền ẩn.
 
@@ -241,6 +251,25 @@ Khi `DATABASE_URL` được cấu hình, API và worker ghi mỗi lượt gọi 
 - Purge workspace yêu cầu archive, xác nhận đúng UUID và không còn job chạy. Manifest purge tiếp tục qua worker restart; chỉ xóa catalog/SQL khi mọi tài liệu đã `deleted`. Chạy bù một lượt bằng `python -m app.purge_workspaces` từ `backend/` hoặc trong worker container.
 - Sentry chỉ bật khi có `SENTRY_DSN`; event gửi đi bị dựng lại với event name/định danh lỗi, không có body, header, prompt, exception message hay biến local.
 
+## Đánh giá RAG
+
+Golden set nằm ở `backend/evals/golden/rag.yaml` (3 tài liệu, 28 câu hỏi lookup/multi-hop/overview/refusal, EN/VI) và baseline đã kiểm tra ở `backend/evals/baseline.json`. Từ `backend/`:
+
+```sh
+python -m pip install -r requirements-dev.txt
+python -m evals --mode smoke
+```
+
+Smoke chạy offline, dùng BM25 + provider trích xuất, kiểm tra retrieval recall/MRR, citation precision/recall, refusal, answer accuracy và ghi artifact vào `evals/results/` (đã ignore). CI chạy bước này và upload artifact.
+
+Live eval gọi embedding/chat provider thật và bắt buộc có ngân sách:
+
+```sh
+python -m evals --mode live --budget-micros 2000000 --request-cap-micros 100000 --plan pro
+```
+
+Đặt `OPENROUTER_API_KEY`, `RAG_MODEL`, `EMBEDDING_MODEL`; nên dùng project/key OpenRouter **riêng** với hard budget cho eval. CLI dừng khi tổng cost đã biết vượt `--budget-micros`; artifact ghi cost/unknown calls, latency và pass/fail theo baseline. Khi cố ý đổi golden set hoặc threshold, cập nhật baseline bằng `--write-baseline` và review diff. Workflow `.github/workflows/eval-live.yml` chạy nightly/thủ công với `OPENROUTER_EVAL_API_KEY`; `verify.yml` chỉ chạy smoke.
+
 ## Kiểm tra
 
 Từ `backend/` (pytest mock dịch vụ ngoài, không cần cloud credentials):
@@ -248,6 +277,7 @@ Từ `backend/` (pytest mock dịch vụ ngoài, không cần cloud credentials)
 ```sh
 python -m pip install -r requirements-dev.txt
 python -m pytest
+python -m evals --mode smoke
 python -m pytest tests/test_chat.py::test_chat_sse_stream
 python -m pytest tests/test_documents.py tests/test_worker.py
 python scripts/verify_rate_limits.py
@@ -280,4 +310,4 @@ python scripts/inspect_retrieval.py <user_id> <doc_id> "câu hỏi" --top-k 8 --
 
 ## Deploy
 
-[DEPLOYMENT.md](DEPLOYMENT.md) hướng dẫn API + Redis + RQ worker + Nginx/Certbot; frontend deploy riêng. `/health` chỉ kiểm tra API process, không kiểm tra queue hay nhà cung cấp AI.
+[DEPLOYMENT.md](DEPLOYMENT.md) hướng dẫn API + Redis + cache Redis + RQ worker + Nginx/Certbot; frontend deploy riêng. `/health` chỉ kiểm tra API process, không kiểm tra queue hay nhà cung cấp AI.

@@ -137,7 +137,7 @@ function Overview() {
         ["Độ trễ p50 / p95", `${milliseconds(data.chat.latency_p50_ms)} / ${milliseconds(data.chat.latency_p95_ms)}`],
         ["Token đầu p50 / p95", `${milliseconds(data.chat.first_token_p50_ms)} / ${milliseconds(data.chat.first_token_p95_ms)}`],
       ].map(([label, value]) => <section key={label} className="glass-panel p-5"><h2 className="text-xs font-medium text-slate-600">{label}</h2><p className="mt-3 text-lg font-semibold tabular-nums">{value}</p></section>)}</div>
-      <p className="text-sm text-slate-600">{data.chat.failed} chat lỗi · {data.chat.interrupted} bị gián đoạn · {data.workspaces.map((row) => `${row.count} workspace ${row.status}`).join(" · ")}</p>
+      <p className="text-sm text-slate-600">{data.chat.failed} chat lỗi · {data.chat.interrupted} bị gián đoạn · cache {data.chat.cache_hits}/{data.chat.requests} ({data.chat.requests ? Math.round(data.chat.cache_hits / data.chat.requests * 100) : 0}%) · {data.workspaces.map((row) => `${row.count} workspace ${row.status}`).join(" · ")}</p>
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">{["reported", "reconciled", "estimated", "unknown"].map((status) => {
         const item = data.costs.find((row) => row.cost_status === status);
         return <section key={status} className="glass-panel p-5"><h2 className="text-xs font-medium text-slate-600">{status}</h2>

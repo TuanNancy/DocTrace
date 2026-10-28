@@ -131,7 +131,7 @@ def test_upgrade_from_existing_control_plane_preserves_data(clean_database):
         with engine.connect() as connection:
             assert connection.execute(text("SELECT name FROM doctrace.workspaces WHERE id = :id"),
                                       {"id": workspace}).scalar_one() == "Existing team"
-            assert connection.execute(text("SELECT version_num FROM doctrace.alembic_version")).scalar_one() == "0003_admin_observability"
+            assert connection.execute(text("SELECT version_num FROM doctrace.alembic_version")).scalar_one() == "0004_answer_cache"
             assert connection.execute(text("SELECT count(*) FROM pg_policy WHERE polrelid = 'auth.users'::regclass")).scalar_one() == 0
     finally:
         engine.dispose()
