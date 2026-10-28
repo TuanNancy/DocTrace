@@ -17,8 +17,16 @@ function restoredMessage(message: TranscriptMessage): ChatMessage {
   };
 }
 
-export function useChatSession({ docId, workspaceId, mock = false, accessToken }: {
-  docId: string | null; workspaceId: string | null; mock?: boolean; accessToken?: string | null;
+interface ChatAttempt {
+  id: string;
+  query: string;
+  workspaceId: string | null;
+  docId: string | null;
+  failed: boolean;
+}
+
+export function useChatSession({ docId, workspaceId, userId, mock = false, accessToken }: {
+  docId: string | null; workspaceId: string | null; userId?: string | null; mock?: boolean; accessToken?: string | null;
 }) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
@@ -27,12 +35,21 @@ export function useChatSession({ docId, workspaceId, mock = false, accessToken }
   const [resetting, setResetting] = useState(false);
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [retryMode, setRetryMode] = useState<"same" | "new" | null>(null);
+  const lastAttempt = useRef<ChatAttempt | null>(null);
   const activeRequest = useRef<AbortController | null>(null);
   const transcriptRequest = useRef<AbortController | null>(null);
   const resetRequest = useRef<AbortController | null>(null);
   const restoreEpoch = useRef(0);
+  const tokenRef = useRef(accessToken);
+  tokenRef.current = accessToken;
+  const authenticated = !!accessToken;
+  // Provider supplies the authenticated identity, so routine token renewal
+  // does not discard an uncertain request id or interrupt a valid stream.
+  const identity = userId ?? accessToken;
 
   const stop = useCallback(() => {
+    if (activeRequest.current && lastAttempt.current) setRetryMode("same");
     activeRequest.current?.abort();
     activeRequest.current = null;
     setLoading(false);
@@ -55,25 +72,28 @@ export function useChatSession({ docId, workspaceId, mock = false, accessToken }
     setConversationId(null);
     setInput("");
     setError(null);
+    lastAttempt.current = null;
+    setRetryMode(null);
   }, []);
 
   // Reload the latest transcript for the selected document. The epoch guard
   // prevents a late transcript response from leaking into a newer selection.
   useEffect(() => {
     clearMessages();
-    if (mock || !docId || !workspaceId || !accessToken) return;
+    const token = tokenRef.current;
+    if (mock || !docId || !workspaceId || !token || !authenticated || !identity) return;
     const epoch = ++restoreEpoch.current;
     const controller = new AbortController();
     transcriptRequest.current = controller;
     setTranscriptLoading(true);
     void (async () => {
       try {
-        const items = await listConversations(accessToken, workspaceId, docId, controller.signal);
+        const items = await listConversations(token, workspaceId, docId, controller.signal);
         if (controller.signal.aborted || restoreEpoch.current !== epoch) return;
         const latest = items[0];
         if (!latest) return;
         const transcript = await getConversation(
-          latest.id, accessToken, workspaceId, controller.signal,
+          latest.id, token, workspaceId, controller.signal,
         );
         if (controller.signal.aborted || restoreEpoch.current !== epoch) return;
         setConversationId(transcript.id);
@@ -90,7 +110,7 @@ export function useChatSession({ docId, workspaceId, mock = false, accessToken }
       }
     })();
     return () => controller.abort();
-  }, [docId, workspaceId, mock, accessToken, clearMessages]);
+  }, [docId, workspaceId, mock, authenticated, identity, clearMessages]);
 
   useEffect(() => () => {
     activeRequest.current?.abort();
@@ -109,14 +129,27 @@ export function useChatSession({ docId, workspaceId, mock = false, accessToken }
     transcriptRequest.current?.abort();
     transcriptRequest.current = null;
     restoreEpoch.current += 1;
-    const id = crypto.randomUUID();
+    const previous = lastAttempt.current;
+    const reuse = previous && !previous.failed && previous.query === query
+      && previous.docId === docId && previous.workspaceId === workspaceId;
+    const attempt: ChatAttempt = reuse ? previous : {
+      id: crypto.randomUUID(), query, docId, workspaceId, failed: false,
+    };
+    lastAttempt.current = attempt;
+    const { id } = attempt;
+    const current = () => activeRequest.current === controller && !controller.signal.aborted;
+    setRetryMode(null);
     setError(null);
     setInput("");
     setLoading(true);
-    setMessages((items) => [...items, { id: crypto.randomUUID(), role: "user", content: query },
-      { id, role: "assistant", content: "", isStreaming: true }]);
+    if (reuse) {
+      setMessages((items) => items.map((item) => item.id === id ? { ...item, isStreaming: true } : item));
+    } else {
+      setMessages((items) => [...items, { id: crypto.randomUUID(), role: "user", content: query },
+        { id, role: "assistant", content: "", isStreaming: true }]);
+    }
     const update = (values: Partial<ChatMessage>, delta?: string) => {
-      if (activeRequest.current !== controller || controller.signal.aborted) return;
+      if (!current()) return;
       setMessages((items) => items.map((item) => item.id === id
         ? { ...item, ...values, content: delta === undefined ? item.content : item.content + delta } : item));
     };
@@ -133,32 +166,70 @@ export function useChatSession({ docId, workspaceId, mock = false, accessToken }
         }
       } else {
         const response = await streamChat(query, docId!, accessToken!, workspaceId!, id, controller.signal);
-        if (activeRequest.current !== controller || controller.signal.aborted) {
+        if (!current()) {
           await response.body?.cancel();
           return;
         }
         const activeConversation = response.headers.get("X-Conversation-Id");
         if (activeConversation) setConversationId(activeConversation);
         for await (const event of streamChatSSEParser(response.body!)) {
-          if (activeRequest.current !== controller || controller.signal.aborted) break;
+          if (!current()) break;
           if (event.type === "sources") update({ sources: event.data });
           if (event.type === "token") update({}, event.data);
-          if (event.type === "error") { setError(event.data.message); interrupted = true; }
+          if (event.type === "error") { setError(event.data.message); interrupted = true; attempt.failed = true; }
         }
       }
     } catch (cause) {
-      if (activeRequest.current === controller && !controller.signal.aborted) {
+      if (current()) {
         interrupted = true;
-        setError(cause instanceof Error ? cause.message : "Không thể gửi câu hỏi.");
+        const duplicate = cause instanceof ApiError && cause.status === 409 ? cause : null;
+        const target = duplicate && typeof duplicate.detail.conversation_id === "string"
+          ? duplicate.detail.conversation_id : null;
+        if (duplicate?.code === "request_completed") {
+          if (!target) {
+            lastAttempt.current = null;
+            setError("Yêu cầu đã hoàn tất nhưng hội thoại không còn khả dụng.");
+          } else {
+            try {
+              const transcript = await getConversation(target, accessToken!, workspaceId!, controller.signal);
+              if (!current()) return;
+              if (transcript.workspace_id !== workspaceId || transcript.doc_id !== docId) {
+                throw new Error("Hội thoại không khớp tài liệu hiện tại.");
+              }
+              setConversationId(transcript.id);
+              setMessages(transcript.messages.map(restoredMessage));
+              interrupted = false;
+            } catch (restoreError) {
+              if (!current()) return;
+              if (restoreError instanceof ApiError && restoreError.status === 404) {
+                lastAttempt.current = null;
+                setError("Yêu cầu đã hoàn tất nhưng hội thoại không còn khả dụng.");
+              } else {
+                setError(restoreError instanceof Error ? restoreError.message : "Không thể khôi phục câu trả lời.");
+              }
+            }
+          }
+        } else {
+          if (duplicate?.code === "request_failed") attempt.failed = true;
+          if (target && ["request_failed", "request_in_progress"].includes(duplicate?.code ?? "")) setConversationId(target);
+          setError(cause instanceof Error ? cause.message : "Không thể gửi câu hỏi.");
+        }
       }
     } finally {
-      if (activeRequest.current === controller && !controller.signal.aborted) {
+      if (current()) {
         update({ isStreaming: false, interrupted });
+        if (!interrupted) lastAttempt.current = null;
+        setRetryMode(lastAttempt.current ? (attempt.failed ? "new" : "same") : null);
         activeRequest.current = null;
         setLoading(false);
       }
     }
   }, [input, docId, workspaceId, mock, accessToken, transcriptLoading]);
+
+  const retryLastRequest = useCallback(async () => {
+    const attempt = lastAttempt.current;
+    if (attempt) await submit(attempt.query);
+  }, [submit]);
 
   const newChat = useCallback(async () => {
     if (resetRequest.current) return;
@@ -221,7 +292,7 @@ export function useChatSession({ docId, workspaceId, mock = false, accessToken }
 
   return {
     messages, input, setInput, loading, transcriptLoading, resetting, conversationId,
-    error, submit, stop, clearMessages, newChat, exportTranscript,
+    error, retryMode, retryLastRequest, submit, stop, clearMessages, newChat, exportTranscript,
   };
 }
 

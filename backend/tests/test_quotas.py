@@ -40,8 +40,7 @@ def test_duplicate_requests_never_reserve_another_question(status, code):
     assert error.status_code == 409
     assert error.detail["code"] == code
     assert error.detail["chat_request_id"] == "request-row"
-    if status == "completed":
-        assert error.detail["conversation_id"] == "conversation"
+    assert error.detail["conversation_id"] == "conversation"
     if status in ("failed", "interrupted"):
         assert error.detail["retryable"] is True
 

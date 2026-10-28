@@ -86,11 +86,11 @@ def document_quota_error(limit: int, used: int) -> HTTPException:
 def duplicate_error(row: dict) -> HTTPException:
     """Reject a repeated client request id without reserving another question."""
     status = row.get("status")
-    extra = {"chat_request_id": row.get("chat_request_id")}
+    extra = {"chat_request_id": row.get("chat_request_id"), "conversation_id": row.get("conversation_id")}
     if status == "completed":
         return api_error(
             409, "request_completed", "Yêu cầu này đã hoàn tất.",
-            conversation_id=row.get("conversation_id"), **extra,
+            **extra,
         )
     if status in ("admitted", "streaming"):
         return api_error(
@@ -319,8 +319,10 @@ class QuotaService:
     def _usage(self, session, workspace_id: str, plan: str, user_id: str, role: str) -> dict:
         workspace_id = _uuid(workspace_id, "workspace_invalid", "Workspace không hợp lệ.")
         user_id = _uuid(user_id, "invalid_user", "Người dùng không hợp lệ.")
-        period = period_start()
-        start = period_utc()
+        now = utcnow()
+        period = period_start(now)
+        start, end = period_utc(now), reset_at(now)
+        owner = role == "owner"
         chat_limit = self._limit(session, plan, CHAT_METRIC)
         document_limit = self._limit(session, plan, DOCUMENT_METRIC)
         chat_used = session.execute(text(
@@ -331,18 +333,18 @@ class QuotaService:
             """
         ), {
             "workspace_id": workspace_id, "period_start": period, "metric": CHAT_METRIC,
-        }).scalar_one_or_none()
+        }).scalar_one_or_none() if owner else None
 
-        scope = "" if role == "owner" else " AND user_id = CAST(:user_id AS uuid)"
-        params = {"workspace_id": workspace_id, "start": start}
-        if role != "owner":
+        scope = "" if owner else " AND user_id = CAST(:user_id AS uuid)"
+        params = {"workspace_id": workspace_id, "start": start, "end": end}
+        if not owner:
             params["user_id"] = user_id
         chats = session.execute(text(
             f"""
             SELECT user_id::text AS user_id, count(*) AS chat_questions
             FROM doctrace.chat_requests
             WHERE workspace_id = CAST(:workspace_id AS uuid)
-              AND created_at >= :start{scope}
+              AND created_at >= :start AND created_at < :end{scope}
             GROUP BY user_id
             """
         ), params).mappings().all()
@@ -353,7 +355,7 @@ class QuotaService:
                    count(*) FILTER (WHERE cost_micros IS NULL) AS cost_unknown_calls
             FROM doctrace.provider_calls
             WHERE workspace_id = CAST(:workspace_id AS uuid)
-              AND created_at >= :start AND user_id IS NOT NULL{scope}
+              AND created_at >= :start AND created_at < :end{scope}
             GROUP BY user_id
             """
         ), params).mappings().all()
@@ -367,6 +369,10 @@ class QuotaService:
                 "cost_unknown_calls": 0,
             }
         for row in costs:
+            # Workspace costs include unattributed calls, but those do not form
+            # a fictional member. A member's SQL scope excludes them entirely.
+            if row["user_id"] is None:
+                continue
             entry = by_user.setdefault(row["user_id"], {
                 "user_id": row["user_id"], "chat_questions": 0,
                 "cost_micros": 0, "cost_unknown_calls": 0,
@@ -374,25 +380,30 @@ class QuotaService:
             entry["cost_micros"] = int(row["cost_micros"] or 0)
             entry["cost_unknown_calls"] = int(row["cost_unknown_calls"] or 0)
 
-        used = int(chat_used or 0)
+        used = int(chat_used or 0) if owner else sum(row["chat_questions"] for row in by_user.values())
         return {
             "workspace_id": workspace_id,
+            "scope": "workspace" if owner else "self",
             "plan": plan,
             "period_start": period.isoformat(),
-            "reset_at": reset_iso(),
+            "reset_at": reset_iso(now),
             "chat": {
                 "used": used,
                 "limit": chat_limit,
-                "remaining": max(0, chat_limit - used),
+                "remaining": max(0, chat_limit - used) if owner else None,
                 "metric": CHAT_METRIC,
             },
             "documents": {
                 "used": 0,
                 "limit": document_limit,
-                "remaining": max(0, document_limit),
+                "remaining": max(0, document_limit) if owner else None,
                 "metric": DOCUMENT_METRIC,
             },
             "by_user": sorted(by_user.values(), key=lambda item: item["user_id"]),
+            "costs": {
+                "known_micros": sum(int(row["cost_micros"]) for row in costs),
+                "unknown_calls": sum(int(row["cost_unknown_calls"]) for row in costs),
+            },
         }
 
     async def usage(self, workspace_id: str, plan: str, user_id: str, role: str) -> dict:

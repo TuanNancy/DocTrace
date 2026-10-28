@@ -81,6 +81,12 @@ export function ChatWindow({ docId, mock = false, session: chat, onSelectSource 
     <div className="shrink-0 px-3 pb-3 pt-2 sm:px-6 sm:pb-4">
       {chat.resetting && <p role="status" className="mb-3 text-xs text-slate-500">Đang xóa hội thoại cũ…</p>}
       {chat.error && <div role="alert" className="mb-3 rounded-xl bg-red-50 p-3 text-xs text-red-700">{chat.error}</div>}
+      {chat.retryMode && !chat.loading && <div className="mb-3 flex flex-wrap items-center gap-2 text-xs text-slate-600">
+        <button type="button" className="secondary-button text-xs" disabled={chat.resetting || chat.transcriptLoading}
+          onClick={() => void chat.retryLastRequest()}>{chat.retryMode === "same" ? "Kiểm tra / thử lại" : "Gửi lại (tính lượt mới)"}</button>
+        <span>{chat.retryMode === "same" ? "Dùng lại mã yêu cầu để tránh tính thêm lượt cho câu hỏi đã nhận."
+          : "Yêu cầu trước đã kết thúc; gửi lại sẽ dùng một lượt mới."}</span>
+      </div>}
       <form onSubmit={(event) => { event.preventDefault(); stickToBottom.current = true; void chat.submit(); }} className="composer">
         <textarea ref={inputRef} value={chat.input} onChange={(event) => chat.setInput(event.target.value)} rows={1} maxLength={8000}
           onKeyDown={(event) => {

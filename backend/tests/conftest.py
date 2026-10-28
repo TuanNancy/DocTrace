@@ -97,12 +97,14 @@ def quotas():
     fake.mark_chat_status.return_value = True
     fake.usage.return_value = {
         "workspace_id": "00000000-0000-0000-0000-0000000000ab",
+        "scope": "workspace",
         "plan": "free",
         "period_start": "2026-10-01",
         "reset_at": "2026-11-01T00:00:00Z",
         "chat": {"used": 1, "limit": 10, "remaining": 9, "metric": "chat_questions_month"},
         "documents": {"used": 0, "limit": 5, "remaining": 5, "metric": "documents"},
         "by_user": [],
+        "costs": {"known_micros": 0, "unknown_calls": 0},
     }
     return fake
 

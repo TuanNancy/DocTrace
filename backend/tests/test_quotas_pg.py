@@ -312,6 +312,8 @@ async def test_usage_is_owner_scoped_and_unknown_costs_stay_visible(service, pos
         (owner, 1_000_000, "reported"),
         (owner, None, "unknown"),
         (member, 2_000_000, "reported"),
+        (None, 500_000, "reported"),
+        (None, None, "unknown"),
     ):
         execute(
             postgres_url,
@@ -324,7 +326,21 @@ async def test_usage_is_owner_scoped_and_unknown_costs_stay_visible(service, pos
             },
         )
 
+    # Neighboring UTC months must not enter the current month's aggregates.
+    for offset in (-1, 1):
+        params = {"w": workspace_id, "u": member, "d": doc_id, "r": str(uuid4()), "offset": offset}
+        execute(postgres_url,
+                "insert into doctrace.chat_requests (request_id, workspace_id, user_id, doc_id, status, created_at) "
+                "values (:r, :w, :u, :d, 'completed', (date_trunc('month', now() at time zone 'utc') "
+                "+ make_interval(months => :offset)) at time zone 'utc')", params)
+        execute(postgres_url,
+                "insert into doctrace.provider_calls (workspace_id, user_id, kind, model, cost_micros, cost_status, created_at) "
+                "values (:w, :u, 'answer', 'outside-period', 999999999, 'reported', "
+                "(date_trunc('month', now() at time zone 'utc') + make_interval(months => :offset)) at time zone 'utc')", params)
+
     owner_usage = await service.usage(workspace_id, "pro", owner, "owner")
+    assert owner_usage["scope"] == "workspace"
+    assert owner_usage["costs"] == {"known_micros": 3_500_000, "unknown_calls": 2}
     assert owner_usage["chat"] == {
         "used": 3, "limit": 100, "remaining": 97, "metric": "chat_questions_month",
     }
@@ -343,6 +359,12 @@ async def test_usage_is_owner_scoped_and_unknown_costs_stay_visible(service, pos
     }
 
     member_usage = await service.usage(workspace_id, "pro", member, "member")
+    assert member_usage["scope"] == "self"
+    assert member_usage["chat"] == {
+        "used": 1, "limit": 100, "remaining": None, "metric": "chat_questions_month",
+    }
+    assert member_usage["documents"]["remaining"] is None
+    assert member_usage["costs"] == {"known_micros": 2_000_000, "unknown_calls": 0}
     assert member_usage["by_user"] == [{
         "user_id": member, "chat_questions": 1,
         "cost_micros": 2_000_000, "cost_unknown_calls": 0,
@@ -350,3 +372,21 @@ async def test_usage_is_owner_scoped_and_unknown_costs_stay_visible(service, pos
 
     assert await service.document_limit("free") == 5
     assert await service.document_limit("pro") == 50
+
+
+async def test_usage_with_only_unknown_costs_does_not_claim_a_free_call(service, postgres_url):
+    workspace_id, user_id = create_workspace(postgres_url), str(uuid4())
+    execute(postgres_url,
+            "insert into doctrace.provider_calls (workspace_id, user_id, kind, model, cost_status) "
+            "values (:w, :u, 'index_embedding', 'test-model', 'unknown')",
+            {"w": workspace_id, "u": user_id})
+    result = await service.usage(workspace_id, "free", user_id, "member")
+    assert result["costs"] == {"known_micros": 0, "unknown_calls": 1}
+    assert result["by_user"] == [{
+        "user_id": user_id, "chat_questions": 0, "cost_micros": 0, "cost_unknown_calls": 1,
+    }]
+    empty = await service.usage(workspace_id, "free", str(uuid4()), "member")
+    assert empty["chat"]["used"] == 0
+    assert empty["chat"]["remaining"] is None
+    assert empty["costs"] == {"known_micros": 0, "unknown_calls": 0}
+    assert empty["by_user"] == []

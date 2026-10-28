@@ -301,3 +301,136 @@ it("stops demo output when chat is cleared", async () => {
     vi.useRealTimers();
   }
 });
+
+it("reuses the logical request id after a lost response and restores the completed answer", async () => {
+  streamMock.mockRejectedValueOnce(new TypeError("Network unavailable"))
+    .mockRejectedValueOnce(new ApiError("Completed", 409, "request_completed", { conversation_id: savedTranscript.id }));
+  getMock.mockResolvedValue(savedTranscript);
+  render(<ChatHarness docId="a" workspaceId="workspace-a" accessToken="token" />);
+  await send("Câu hỏi cũ");
+  await screen.findByRole("alert");
+  expect(streamMock).toHaveBeenCalledOnce(); // No automatic retry of uncertain admission.
+  fireEvent.click(screen.getByRole("button", { name: "Kiểm tra / thử lại" }));
+  await screen.findByText(/Câu trả lời cũ/);
+  expect(streamMock.mock.calls[1][4]).toBe(streamMock.mock.calls[0][4]);
+  expect(screen.getAllByText("Câu hỏi cũ")).toHaveLength(1);
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Kiểm tra / thử lại" })).not.toBeInTheDocument();
+});
+
+it("manual resubmission of the same uncertain question keeps the request id", async () => {
+  streamMock.mockRejectedValueOnce(new Error("Network failed")).mockResolvedValueOnce(response());
+  render(<ChatHarness docId="a" workspaceId="workspace-a" accessToken="token" />);
+  await send();
+  await screen.findByRole("alert");
+  await send();
+  await screen.findByText("Answer A");
+  expect(streamMock.mock.calls[1][4]).toBe(streamMock.mock.calls[0][4]);
+  expect(screen.getAllByText("Question A")).toHaveLength(1);
+});
+
+it("an in-progress duplicate keeps its id and a failed duplicate requires an explicit new charged request", async () => {
+  streamMock.mockRejectedValueOnce(new TypeError("Connection lost"))
+    .mockRejectedValueOnce(new ApiError("Still running", 409, "request_in_progress", { conversation_id: savedTranscript.id }))
+    .mockRejectedValueOnce(new ApiError("Request failed", 409, "request_failed", { retryable: true }))
+    .mockResolvedValueOnce(response());
+  render(<ChatHarness docId="a" workspaceId="workspace-a" accessToken="token" />);
+  await send();
+  await screen.findByRole("alert");
+  fireEvent.click(screen.getByRole("button", { name: "Kiểm tra / thử lại" }));
+  expect(await screen.findByRole("alert")).toHaveTextContent("Still running");
+  expect(streamMock.mock.calls[1][4]).toBe(streamMock.mock.calls[0][4]);
+  fireEvent.click(screen.getByRole("button", { name: "Kiểm tra / thử lại" }));
+  await screen.findByRole("button", { name: "Gửi lại (tính lượt mới)" });
+  expect(streamMock.mock.calls[2][4]).toBe(streamMock.mock.calls[0][4]);
+  expect(streamMock).toHaveBeenCalledTimes(3);
+  fireEvent.click(screen.getByRole("button", { name: "Gửi lại (tính lượt mới)" }));
+  await screen.findByText("Answer A");
+  expect(streamMock.mock.calls[3][4]).not.toBe(streamMock.mock.calls[0][4]);
+});
+
+it("keeps the id when a completed answer cannot yet be restored", async () => {
+  streamMock.mockRejectedValue(new ApiError("Completed", 409, "request_completed", { conversation_id: savedTranscript.id }));
+  getMock.mockRejectedValueOnce(new Error("Transcript offline")).mockResolvedValueOnce(savedTranscript);
+  render(<ChatHarness docId="a" workspaceId="workspace-a" accessToken="token" />);
+  await send();
+  expect(await screen.findByRole("alert")).toHaveTextContent("Transcript offline");
+  fireEvent.click(screen.getByRole("button", { name: "Kiểm tra / thử lại" }));
+  await screen.findByText(/Câu trả lời cũ/);
+  expect(streamMock.mock.calls[1][4]).toBe(streamMock.mock.calls[0][4]);
+});
+
+it.each(["missing id", "deleted"])("does not resubmit a completed request with a %s transcript", async (kind) => {
+  streamMock.mockRejectedValue(new ApiError("Completed", 409, "request_completed",
+    kind === "deleted" ? { conversation_id: savedTranscript.id } : {}));
+  getMock.mockRejectedValue(new ApiError("Deleted", 404));
+  render(<ChatHarness docId="a" workspaceId="workspace-a" accessToken="token" />);
+  await send();
+  expect(await screen.findByRole("alert")).toHaveTextContent("hội thoại không còn khả dụng");
+  expect(streamMock).toHaveBeenCalledOnce();
+  expect(screen.queryByRole("button", { name: "Kiểm tra / thử lại" })).not.toBeInTheDocument();
+});
+
+it("rejects recovery for a different document", async () => {
+  streamMock.mockRejectedValue(new ApiError("Completed", 409, "request_completed", { conversation_id: savedTranscript.id }));
+  getMock.mockResolvedValue({ ...savedTranscript, doc_id: "other" });
+  render(<ChatHarness docId="a" workspaceId="workspace-a" accessToken="token" />);
+  await send();
+  expect(await screen.findByRole("alert")).toHaveTextContent("không khớp tài liệu");
+  expect(screen.queryByText(/Câu trả lời cũ/)).not.toBeInTheDocument();
+});
+
+it("discards late recovery after switching workspace and allocates a fresh request there", async () => {
+  streamMock.mockRejectedValueOnce(new ApiError("Completed", 409, "request_completed", { conversation_id: savedTranscript.id }))
+    .mockResolvedValueOnce(response());
+  let finish!: (transcript: Transcript) => void;
+  getMock.mockReturnValueOnce(new Promise((resolve) => { finish = resolve; }));
+  const { rerender } = render(<ChatHarness docId="a" workspaceId="workspace-a" accessToken="token" />);
+  await send();
+  await waitFor(() => expect(getMock).toHaveBeenCalledOnce());
+  const signal = getMock.mock.calls[0][3];
+  rerender(<ChatHarness docId="b" workspaceId="workspace-b" accessToken="token" />);
+  await waitFor(() => expect(input()).toBeEnabled());
+  expect(signal?.aborted).toBe(true);
+  await act(async () => finish(savedTranscript));
+  expect(screen.queryByText(/Câu trả lời cũ/)).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Kiểm tra / thử lại" })).not.toBeInTheDocument();
+  await send();
+  await screen.findByText("Answer A");
+  expect(streamMock.mock.calls[1][4]).not.toBe(streamMock.mock.calls[0][4]);
+});
+
+it("EOF without done keeps the id for recovery, while a successful new question gets a fresh id", async () => {
+  streamMock.mockResolvedValueOnce(new Response('event: token\ndata: "Partial"\n\n'))
+    .mockRejectedValueOnce(new ApiError("Completed", 409, "request_completed", { conversation_id: savedTranscript.id }))
+    .mockResolvedValueOnce(response());
+  getMock.mockResolvedValue(savedTranscript);
+  render(<ChatHarness docId="a" workspaceId="workspace-a" accessToken="token" />);
+  await send();
+  expect(await screen.findByRole("alert")).toHaveTextContent("Kết nối chat bị ngắt");
+  fireEvent.click(screen.getByRole("button", { name: "Kiểm tra / thử lại" }));
+  await screen.findByText(/Câu trả lời cũ/);
+  expect(streamMock.mock.calls[1][4]).toBe(streamMock.mock.calls[0][4]);
+  await send("Another question");
+  await screen.findByText("Answer A");
+  expect(streamMock.mock.calls[2][4]).not.toBe(streamMock.mock.calls[0][4]);
+});
+
+it("keeps recovery across token renewal but clears it for a different authenticated user", async () => {
+  streamMock.mockRejectedValue(new Error("Connection lost"));
+  const { rerender } = render(<ChatHarness docId="a" workspaceId="workspace-a" userId="owner" accessToken="token" />);
+  await send();
+  await screen.findByRole("alert");
+  rerender(<ChatHarness docId="a" workspaceId="workspace-a" userId="owner" accessToken="renewed-token" />);
+  fireEvent.click(screen.getByRole("button", { name: "Kiểm tra / thử lại" }));
+  await waitFor(() => expect(streamMock).toHaveBeenCalledTimes(2));
+  expect(streamMock.mock.calls[1][2]).toBe("renewed-token");
+  expect(streamMock.mock.calls[1][4]).toBe(streamMock.mock.calls[0][4]);
+  rerender(<ChatHarness docId="a" workspaceId="workspace-a" userId="other" accessToken="other-token" />);
+  await waitFor(() => expect(input()).toBeEnabled());
+  expect(screen.queryByRole("button", { name: "Kiểm tra / thử lại" })).not.toBeInTheDocument();
+  expect(screen.queryByText("Question A")).not.toBeInTheDocument();
+  await send();
+  await screen.findByRole("alert");
+  expect(streamMock.mock.calls[2][4]).not.toBe(streamMock.mock.calls[0][4]);
+});

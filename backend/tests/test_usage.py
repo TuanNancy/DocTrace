@@ -42,7 +42,7 @@ def test_usage_remaining_never_goes_negative(client, quotas, repository):
     assert body["documents"]["remaining"] == 0
 
 
-def test_member_usage_only_requests_the_member_breakdown(client, quotas, repository):
+def test_member_usage_never_reads_workspace_document_total(client, quotas, repository):
     async def member():
         return WorkspaceContext(
             workspace_id="00000000-0000-0000-0000-0000000000ab",
@@ -52,14 +52,21 @@ def test_member_usage_only_requests_the_member_breakdown(client, quotas, reposit
 
     original = app.dependency_overrides.get(require_workspace)
     app.dependency_overrides[require_workspace] = member
+    repository.count_workspace.return_value = 2
     try:
-        assert client.get("/api/usage").status_code == 200
+        response = client.get("/api/usage")
+        assert response.status_code == 200
+        assert response.json()["documents"]["used"] == 2
+        assert response.json()["documents"]["remaining"] is None
     finally:
         app.dependency_overrides[require_workspace] = original
 
     quotas.usage.assert_awaited_once_with(
         "00000000-0000-0000-0000-0000000000ab", "pro",
         "00000000-0000-0000-0000-000000000002", "member",
+    )
+    repository.count_workspace.assert_awaited_once_with(
+        "00000000-0000-0000-0000-0000000000ab", "00000000-0000-0000-0000-000000000002",
     )
 
 

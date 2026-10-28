@@ -25,7 +25,8 @@ const teamWorkspace = {
 const workspaces = [personalWorkspace, teamWorkspace];
 let uploads = 0;
 let cancelledStreams = 0;
-let chatQuestions = 0;
+const questionsByWorkspace = new Map();
+const chatRequests = new Map();
 const documents = new Map();
 const conversations = new Map();
 const chunkId = "22222222-2222-4222-8222-222222222222";
@@ -120,7 +121,7 @@ createServer(async (request, response) => {
   if (url.pathname === "/health") return json(response, 200, { status: "ok" });
   if (url.pathname === "/test/status") return json(response, 200, { uploads, cancelledStreams });
   if (url.pathname === "/test/reset") {
-    documents.clear(); conversations.clear(); uploads = 0; cancelledStreams = 0; chatQuestions = 0;
+    documents.clear(); conversations.clear(); questionsByWorkspace.clear(); chatRequests.clear(); uploads = 0; cancelledStreams = 0;
     return json(response, 200, {});
   }
   if (url.pathname === "/fixture.pdf" && url.searchParams.get("signature") === "fixture") {
@@ -259,14 +260,17 @@ createServer(async (request, response) => {
     const scope = workspaceFor(request);
     if (scope.error) return json(response, ...scope.error);
     const now = new Date();
+    const owner = workspaces.find((workspace) => workspace.id === scope.workspaceId).role === "owner";
+    const chatQuestions = questionsByWorkspace.get(scope.workspaceId) ?? 0;
     const documentCount = [...documents.values()]
       .filter((document) => document.workspace_id === scope.workspaceId).length;
     return json(response, 200, {
-      workspace_id: scope.workspaceId, plan: "free",
+      workspace_id: scope.workspaceId, scope: owner ? "workspace" : "self", plan: "free",
       period_start: new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString(),
       reset_at: new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1)).toISOString(),
-      chat: { used: chatQuestions, limit: 10, remaining: Math.max(0, 10 - chatQuestions), metric: "chat_questions_month" },
-      documents: { used: documentCount, limit: 5, remaining: Math.max(0, 5 - documentCount), metric: "documents" },
+      chat: { used: chatQuestions, limit: 10, remaining: owner ? Math.max(0, 10 - chatQuestions) : null, metric: "chat_questions_month" },
+      documents: { used: documentCount, limit: 5, remaining: owner ? Math.max(0, 5 - documentCount) : null, metric: "documents" },
+      costs: { known_micros: chatQuestions * 250000, unknown_calls: 0 },
       by_user: chatQuestions ? [{
         user_id: user.id, chat_questions: chatQuestions,
         cost_micros: chatQuestions * 250000, cost_unknown_calls: 0,
@@ -285,6 +289,14 @@ createServer(async (request, response) => {
     const document = documents.get(chat.doc_id);
     if (!document || document.workspace_id !== scope.workspaceId || document.status !== "ready") {
       return json(response, 409, { detail: "Tài liệu chưa sẵn sàng." });
+    }
+    const requestKey = `${scope.workspaceId}:${chat.request_id}`;
+    const previous = chatRequests.get(requestKey);
+    if (previous) {
+      const code = previous.status === "completed" ? "request_completed"
+        : previous.status === "streaming" ? "request_in_progress" : "request_failed";
+      return json(response, 409, { detail: { code, message: "Yêu cầu đã được tiếp nhận.",
+        conversation_id: previous.conversation_id, retryable: code === "request_failed" } });
     }
 
     const now = new Date().toISOString();
@@ -309,8 +321,10 @@ createServer(async (request, response) => {
       index_id: document.doc_id, status: "streaming", created_at: now, updated_at: now,
     };
     conversation.messages.push(userMessage, assistantMessage);
+    const admission = { conversation_id: conversation.id, status: "streaming" };
+    chatRequests.set(requestKey, admission);
     conversation.updated_at = now;
-    chatQuestions += 1;
+    questionsByWorkspace.set(scope.workspaceId, (questionsByWorkspace.get(scope.workspaceId) ?? 0) + 1);
 
     response.writeHead(200, {
       "Content-Type": "text/event-stream", "Cache-Control": "no-cache",
@@ -327,6 +341,7 @@ createServer(async (request, response) => {
       event("token", second);
       assistantMessage.content += second;
       assistantMessage.status = "complete";
+      admission.status = "completed";
       assistantMessage.updated_at = new Date().toISOString();
       conversation.updated_at = assistantMessage.updated_at;
       event("done", "[DONE]");
@@ -338,6 +353,7 @@ createServer(async (request, response) => {
       if (finished) return;
       cancelledStreams += 1;
       assistantMessage.status = "interrupted";
+      admission.status = "interrupted";
       assistantMessage.updated_at = new Date().toISOString();
       conversation.updated_at = assistantMessage.updated_at;
     });
