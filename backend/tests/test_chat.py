@@ -77,6 +77,27 @@ def parse_sse_events(response):
     return events
 
 
+def test_chat_reasoning_mode_reaches_provider(chat_dependencies, client: TestClient) -> None:
+    """MODEL_REASONING=off keeps hidden thinking out of the answer budget."""
+    deps = chat_dependencies
+    rag_pipeline.get_config().model_reasoning = "off"
+    client.post("/api/chat", json={"query": "How much leave?", "doc_id": "test-doc-id", "language": "en"})
+    assert deps.create_completion.call_args.kwargs["extra_body"] == {"reasoning": {"enabled": False}}
+
+
+def test_chat_reasoning_effort_reaches_provider(chat_dependencies, client: TestClient) -> None:
+    deps = chat_dependencies
+    rag_pipeline.get_config().model_reasoning = "low"
+    client.post("/api/chat", json={"query": "How much leave?", "doc_id": "test-doc-id", "language": "en"})
+    assert deps.create_completion.call_args.kwargs["extra_body"] == {"reasoning": {"effort": "low"}}
+
+
+def test_chat_omits_reasoning_when_default(chat_dependencies, client: TestClient) -> None:
+    deps = chat_dependencies
+    client.post("/api/chat", json={"query": "How much leave?", "doc_id": "test-doc-id", "language": "en"})
+    assert "extra_body" not in deps.create_completion.call_args.kwargs
+
+
 def test_chat_422_when_query_empty(client: TestClient) -> None:
     """422 (Pydantic validation) when body has empty query."""
     response = client.post(

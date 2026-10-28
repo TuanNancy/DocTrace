@@ -36,6 +36,7 @@ def test_local_cloud_and_index_override():
     ("DATABASE_POOL_TIMEOUT_SECONDS", "nan"), ("DATABASE_CONNECT_TIMEOUT_SECONDS", "0"),
     ("DATABASE_STATEMENT_TIMEOUT_MS", "0"), ("LOG_LEVEL", "verbose"), ("LOG_JSON", "maybe"),
     ("TRANSCRIPT_DELETE_MODE", "forever"), ("TRANSCRIPT_RETENTION_DAYS", "0"),
+    ("MODEL_REASONING", "sometimes"),
 ])
 def test_invalid_values_name_the_setting(key, value):
     with pytest.raises(ValueError, match=key):
@@ -57,6 +58,13 @@ def test_rate_limit_boolean_is_explicit(raw, expected):
 def test_invalid_rate_limit_boolean_is_rejected():
     with pytest.raises(ValueError, match="RATE_LIMIT_ENABLED"):
         AppConfig.from_env({"RATE_LIMIT_ENABLED": "maybe"})
+
+
+@pytest.mark.parametrize("raw,expected", [
+    ("off", "off"), (" OFF ", "off"), ("low", "low"), ("high", "high"), ("default", "default"),
+])
+def test_model_reasoning_is_normalized(raw, expected):
+    assert AppConfig.from_env({"MODEL_REASONING": raw}).model_reasoning == expected
 
 
 @pytest.mark.parametrize("action", ["UPLOAD", "CHAT", "INDEX_RETRY"])

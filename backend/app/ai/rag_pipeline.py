@@ -115,6 +115,15 @@ class RAGPipeline:
                 break
         return selected
 
+    def _reasoning_kwargs(self) -> dict:
+        """Translate MODEL_REASONING into an OpenRouter request body fragment."""
+        mode = getattr(self.config, "model_reasoning", "default")
+        if mode == "off":
+            return {"extra_body": {"reasoning": {"enabled": False}}}
+        if mode in ("low", "medium", "high"):
+            return {"extra_body": {"reasoning": {"effort": mode}}}
+        return {}
+
     def _usage_model(self) -> str:
         return (
             getattr(self.chat_provider, "model", None)
@@ -251,7 +260,7 @@ class RAGPipeline:
                 system_prompt=system_prompt,
                 temperature=self.config.temperature,
                 max_tokens=allowed,
-                **({"extra_body": {"reasoning": {"enabled": False}}} if overview else {}),
+                **({"extra_body": {"reasoning": {"enabled": False}}} if overview else self._reasoning_kwargs()),
                 **kwargs,
             ):
                 yield text_delta
