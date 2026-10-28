@@ -66,6 +66,8 @@ CI sử dụng Python **3.12** và Node **22**. Docker cần thiết cho Redis, 
 
 Thư viện tài liệu vẫn dùng Redis và không cần service-role key. Postgres giữ control plane (workspace, thành viên, plan/quota, transcript, usage); schema nằm trong `doctrace` và không expose qua Supabase Data API. Tạo runtime role bằng `deploy/postgres/bootstrap-runtime-role.sql`, đặt mật khẩu riêng, rồi lưu credential DDL `DIRECT_DATABASE_URL` trong `backend/.env.migrations` theo file example. Xem [hướng dẫn tách quyền](DEPLOYMENT.md#tách-credential-runtime-và-migration) để bootstrap và chuyển cấu hình cũ. Alembic không dùng fallback `DATABASE_URL`.
 
+Migration `0002_auth_member_lookup` cung cấp hàm boolean riêng để xác nhận người được thêm vào workspace còn tồn tại trong Supabase Auth. Dùng migration identity có quyền đọc Auth/bypass RLS (`postgres` trên hosted); runtime chỉ có `EXECUTE` hàm, không đọc trực tiếp Auth. API chỉ cho owner tra cứu qua thao tác thêm thành viên; tài khoản không tồn tại/đã xóa trả `404 member_user_not_found`.
+
 Chạy migration trong một subshell để credential DDL không đi theo API/worker:
 
 ```sh

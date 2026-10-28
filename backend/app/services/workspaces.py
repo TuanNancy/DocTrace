@@ -266,6 +266,14 @@ class WorkspaceService:
         self._owned_workspace(session, user_id, workspace_id)
         workspace_id = _uuid(workspace_id, "workspace_invalid")
         member_id = _uuid(member_id, "member_invalid")
+        # Authorize first: membership management must not become an Auth-user
+        # lookup for strangers. Check on every add, including reactivation and
+        # duplicate adds; a stale profile/membership is not proof of an account.
+        exists = session.execute(text(
+            "SELECT doctrace.auth_user_exists(CAST(:member AS uuid))"
+        ), {"member": member_id}).scalar()
+        if not exists:
+            raise api_error(404, "member_user_not_found", "Không tìm thấy tài khoản người dùng.")
         row = session.execute(text(
             """
             INSERT INTO doctrace.workspace_members (workspace_id, user_id, role, status)

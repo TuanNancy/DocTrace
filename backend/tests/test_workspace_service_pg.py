@@ -11,6 +11,7 @@ from fastapi import HTTPException
 import pytest
 import fakeredis
 from sqlalchemy import create_engine, text
+from sqlalchemy.engine import make_url
 
 from app import db
 from app.core.config import AppConfig
@@ -40,15 +41,23 @@ pytestmark = pytest.mark.skipif(
 
 
 @pytest.fixture(scope="module")
-def postgres_url():
+def postgres_url(install_auth_schema):
     from testcontainers.postgres import PostgresContainer
 
     container = PostgresContainer("postgres:16-alpine", driver="psycopg")
     container.start()
     try:
         url = container.get_connection_url()
+        migration_url = install_auth_schema(url)
+        engine = create_engine(url)
+        try:
+            with engine.begin() as connection:
+                connection.exec_driver_sql((BACKEND.parent / "deploy/postgres/bootstrap-runtime-role.sql").read_text())
+                connection.exec_driver_sql("ALTER ROLE doctrace_app PASSWORD 'local-test-only'")
+        finally:
+            engine.dispose()
         config = Config(str(BACKEND / "alembic.ini"))
-        config.set_main_option("sqlalchemy.url", url)
+        config.set_main_option("sqlalchemy.url", migration_url)
         command.upgrade(config, "head")
         yield url
     finally:
@@ -58,7 +67,8 @@ def postgres_url():
 @pytest.fixture
 def service(postgres_url):
     db.dispose_engines()
-    yield WorkspaceService(AppConfig(database_url=postgres_url))
+    url = make_url(postgres_url).set(username="doctrace_app", password="local-test-only")
+    yield WorkspaceService(AppConfig(database_url=url.render_as_string(hide_password=False)))
     db.dispose_engines()
 
 
@@ -78,15 +88,21 @@ def execute(postgres_url, statement, params=None):
         engine.dispose()
 
 
-async def provision_personal(service):
+def auth_user(postgres_url):
     user_id = str(uuid4())
+    execute(postgres_url, "INSERT INTO auth.users (id) VALUES (:id)", {"id": user_id})
+    return user_id
+
+
+async def provision_personal(service, postgres_url):
+    user_id = auth_user(postgres_url)
     workspaces = await service.list_for_user(user_id)
     assert [workspace["id"] for workspace in workspaces] == [user_id]
     return user_id, workspaces[0]
 
 
 async def test_personal_workspace_is_idempotent_and_membership_is_verified(service, postgres_url):
-    user_id, workspace = await provision_personal(service)
+    user_id, workspace = await provision_personal(service, postgres_url)
     assert workspace == {**workspace, "kind": "personal", "role": "owner", "plan": "free",
                          "status": "active"}
     again = await service.list_for_user(user_id)
@@ -104,7 +120,7 @@ async def test_personal_workspace_is_idempotent_and_membership_is_verified(servi
 
 
 async def test_creation_respects_plan_limit_then_adds_the_owner(service, postgres_url):
-    user_id, _ = await provision_personal(service)
+    user_id, _ = await provision_personal(service, postgres_url)
     with pytest.raises(HTTPException) as error:
         await service.create(user_id, "Nhóm")
     assert error.value.status_code == 403
@@ -120,12 +136,12 @@ async def test_creation_respects_plan_limit_then_adds_the_owner(service, postgre
 
 async def test_member_removal_requires_cleanup_and_archive_is_owner_scoped(service, postgres_url, catalog):
     repository, redis = catalog
-    owner_id, _ = await provision_personal(service)
+    owner_id, _ = await provision_personal(service, postgres_url)
     execute(postgres_url, "update doctrace.workspaces set plan = 'pro' where id = :id",
             {"id": owner_id})
     workspace = await service.create(owner_id, "Nhóm")
     workspace_id = workspace["id"]
-    member_id = str(uuid4())
+    member_id = auth_user(postgres_url)
     await service.add_member(owner_id, workspace_id, member_id)
     assert [member["user_id"] for member in await service.members(owner_id, workspace_id)] == [
         owner_id, member_id,
@@ -170,10 +186,10 @@ async def test_member_removal_requires_cleanup_and_archive_is_owner_scoped(servi
 
 
 async def team_with_member(service, postgres_url):
-    owner, _ = await provision_personal(service)
+    owner, _ = await provision_personal(service, postgres_url)
     execute(postgres_url, "update doctrace.workspaces set plan = 'pro' where id = :id", {"id": owner})
     workspace = (await service.create(owner, "Concurrent team"))["id"]
-    member = str(uuid4())
+    member = auth_user(postgres_url)
     await service.add_member(owner, workspace, member)
     document = {"doc_id": str(uuid4()), "workspace_id": workspace,
                 "owner_user_id": member, "name": "test.pdf", "size_bytes": 100, "storage_key": "fixture"}
@@ -290,3 +306,74 @@ async def test_removal_authorizes_before_count_and_rolls_back_on_redis_failure(
         await service.remove_member(owner, workspace, member, repository)
     assert error.value.status_code == 503
     assert (await service.resolve(member, workspace)).role == "member"
+
+
+async def test_existing_auth_user_can_join_without_profile_and_rejoin_after_removal(service, postgres_url, catalog):
+    repository, _ = catalog
+    owner, member, workspace, _ = await team_with_member(service, postgres_url)
+    first = await service.add_member(owner, workspace, member)
+    assert first == await service.add_member(owner, workspace, member)
+    assert (await service.add_member(owner, workspace, owner))["role"] == "owner"
+    assert (await service.resolve(owner, workspace)).role == "owner"
+    await service.remove_member(owner, workspace, member, repository)
+    with pytest.raises(HTTPException) as error:
+        await service.resolve(member, workspace)
+    assert error.value.status_code == 404
+    added = await service.add_member(owner, workspace, member)
+    assert added["role"] == "member" and added["status"] == "active"
+    assert (await service.resolve(member, workspace)).role == "member"
+    with db.session_scope(service.config) as session:
+        assert session.execute(text(
+            "SELECT removed_at FROM doctrace.workspace_members WHERE workspace_id = :w AND user_id = :u"
+        ), {"w": workspace, "u": member}).scalar_one() is None
+        assert session.execute(text("SELECT count(*) FROM doctrace.profiles WHERE user_id = :u"),
+                               {"u": member}).scalar_one() == 0
+
+
+@pytest.mark.parametrize("membership", ["new", "active", "removed"])
+@pytest.mark.parametrize("deletion", ["soft", "hard"])
+async def test_missing_or_deleted_auth_user_never_creates_or_reactivates_membership(
+    service, postgres_url, catalog, membership, deletion,
+):
+    repository, _ = catalog
+    owner, member, workspace, _ = await team_with_member(service, postgres_url)
+    if membership == "new":
+        member = auth_user(postgres_url)
+    elif membership == "removed":
+        await service.remove_member(owner, workspace, member, repository)
+    execute(postgres_url, (
+        "UPDATE auth.users SET deleted_at = now() WHERE id = :u" if deletion == "soft"
+        else "DELETE FROM auth.users WHERE id = :u"
+    ), {"u": member})
+    # Neither a stale profile nor an old membership proves Auth-user existence.
+    execute(postgres_url, "INSERT INTO doctrace.profiles (user_id) VALUES (:u)", {"u": member})
+    with pytest.raises(HTTPException) as error:
+        await service.add_member(owner, workspace, member)
+    assert error.value.status_code == 404
+    assert error.value.detail["code"] == "member_user_not_found"
+    with db.session_scope(service.config) as session:
+        status = session.execute(text(
+            "SELECT status FROM doctrace.workspace_members WHERE workspace_id = :w AND user_id = :u"
+        ), {"w": workspace, "u": member}).scalar_one_or_none()
+    assert status == (None if membership == "new" else membership)
+
+
+async def test_member_add_authorizes_before_auth_lookup_and_fails_closed_on_lookup_failure(service, postgres_url):
+    owner, member, workspace, _ = await team_with_member(service, postgres_url)
+    execute(postgres_url, "REVOKE EXECUTE ON FUNCTION doctrace.auth_user_exists(uuid) FROM doctrace_app")
+    try:
+        for caller, target_workspace in ((member, workspace), (str(uuid4()), workspace), (owner, str(uuid4()))):
+            with pytest.raises(HTTPException) as error:
+                await service.add_member(caller, target_workspace, str(uuid4()))
+            assert error.value.status_code == 404
+            assert error.value.detail["code"] == "workspace_not_found"
+        with pytest.raises(HTTPException) as error:
+            await service.add_member(owner, workspace, str(uuid4()))
+        assert error.value.status_code == 503
+        assert error.value.detail["code"] == "workspace_unavailable"
+        await service.archive(owner, workspace)
+        with pytest.raises(HTTPException) as error:
+            await service.add_member(owner, workspace, member)
+        assert error.value.detail["code"] == "workspace_not_found"
+    finally:
+        execute(postgres_url, "GRANT EXECUTE ON FUNCTION doctrace.auth_user_exists(uuid) TO doctrace_app")

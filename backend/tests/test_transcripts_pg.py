@@ -50,15 +50,16 @@ pytestmark = pytest.mark.skipif(
 
 
 @pytest.fixture(scope="module")
-def postgres_url():
+def postgres_url(install_auth_schema):
     from testcontainers.postgres import PostgresContainer
 
     container = PostgresContainer("postgres:16-alpine", driver="psycopg")
     container.start()
     try:
         url = container.get_connection_url()
+        migration_url = install_auth_schema(url)
         config = Config(str(BACKEND / "alembic.ini"))
-        config.set_main_option("sqlalchemy.url", url)
+        config.set_main_option("sqlalchemy.url", migration_url)
         command.upgrade(config, "head")
         yield url
     finally:

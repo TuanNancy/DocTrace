@@ -6,6 +6,9 @@ New tables/columns used by runtime code must be added here with their migration.
 """
 
 RUNTIME_ROLE = "doctrace_app"
+# Hosted Supabase cannot grant custom roles USAGE on auth. Runtime can only
+# invoke this private, migration-owned boolean lookup, never read Auth rows.
+AUTH_LOOKUP_FUNCTION = "doctrace.auth_user_exists(uuid)"
 TABLE_COLUMNS = {
     "alembic_version": "version_num",
     "workspaces": "id name kind plan status created_by personal_owner_user_id created_at updated_at archived_at archived_by purge_started_at",

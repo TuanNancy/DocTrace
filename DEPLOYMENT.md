@@ -81,7 +81,7 @@ Postgres dùng schema riêng `doctrace`; không expose qua Supabase Data API. Ru
 
 1. Copy `backend/.env.migrations.example` thành `backend/.env.migrations`, điền `DIRECT_DATABASE_URL` bằng role sở hữu schema/migration. Bọc URL trong dấu nháy đơn nếu source file từ shell; percent-encode ký tự đặc biệt trong password. File này được Git ignore và chỉ inject vào service `migrate`. Có thể đổi đường dẫn bằng `MIGRATION_ENV_FILE` trong `.env.production`.
 2. Kết nối `psql` bằng migration identity qua direct/session pooler; dùng `\i deploy/postgres/bootstrap-runtime-role.sql` từ repository root, sau đó `\password doctrace_app` để đặt password riêng bằng prompt. Script idempotent, không reset password và từ chối role đã có quyền admin/role membership.
-3. Chạy `alembic upgrade head` bằng credential migration để áp dụng schema và grant cụ thể cho `doctrace_app` (kể cả khi đã ở head). Runtime chỉ có quyền DML cần thiết: không DDL, không sửa plan definitions/platform admins/migration stamp và không sửa/xóa audit. Không cấp quyền trên `auth`, `storage`, `realtime` hay mặc định quyền trên bảng tương lai.
+3. Chạy `alembic upgrade head` bằng credential migration để áp dụng schema và grant cụ thể cho `doctrace_app` (kể cả khi đã ở head). Runtime chỉ có quyền DML cần thiết và `EXECUTE` hàm tra cứu Auth riêng: không DDL, không sửa plan definitions/platform admins/migration stamp và không sửa/xóa audit. Không cấp quyền trực tiếp trên `auth`, `storage`, `realtime` hay mặc định quyền trên bảng tương lai.
 4. Đổi `DATABASE_URL` trong `backend/.env` sang role mới và bỏ `DIRECT_DATABASE_URL` khỏi file runtime. Với Supabase shared session pooler, dùng host/port từ Dashboard Connect và username `doctrace_app.PROJECT_REF` thay `postgres.PROJECT_REF`, password riêng của role; direct connection dùng username `doctrace_app`. Giữ SSL. API/worker chỉ nhận file runtime.
 5. Recreate API/worker và kiểm tra `/ready`, upload → ready → chat. Quyền `CREATE` kế thừa từ `PUBLIC` trên schema tùy biến cũng làm readiness thất bại; kiểm tra và thu hồi grant rộng đó bằng migration identity nếu database cũ có cấu hình này.
 
@@ -91,6 +91,10 @@ Alembic chỉ nhận `DIRECT_DATABASE_URL` hoặc URL test được cấp rõ r�
 docker compose --env-file .env.production -f compose.production.yml build api
 docker compose --env-file .env.production -f compose.production.yml run --rm --no-deps migrate
 ```
+
+Migration `0002_auth_member_lookup` thêm `doctrace.auth_user_exists(uuid)` để owner thêm đúng tài khoản Auth đang tồn tại. Hàm `SECURITY DEFINER` trả boolean, cố định `search_path`, chỉ đọc `id`/`deleted_at` của `auth.users` bằng quyền migration owner; `row_security=off` báo lỗi nếu owner mất quyền bypass RLS. Trên Supabase hosted, dùng migration identity `postgres` vốn có quyền đọc Auth và bypass RLS. Nếu dùng role migration tùy chỉnh, role đó phải có quyền tương đương cho đúng phép đọc này; kiểm tra trước khi chuyển credential. Backend kiểm tra owner trước khi gọi hàm, trả `404 member_user_not_found` cho tài khoản không tồn tại/đã xóa, kể cả thêm lại thành viên cũ.
+
+Supabase hosted không cho `postgres` cấp `USAGE` schema `auth` cho custom role. Vì vậy migration chỉ tạo hàm trong `doctrace`, không thay policy hay ACL của Auth, và thu hồi `EXECUTE` khỏi `PUBLIC`/`anon`/`authenticated`/`service_role`. Không thêm `doctrace_app` vào các role Data API để né lỗi quyền. `/ready` kiểm tra quyền gọi hàm, cấu hình definer, quyền Auth thừa và chạy thử lookup để phát hiện quyền underlying bị thiếu. Tham khảo [hướng dẫn Supabase](https://supabase.com/kb/troubleshooting/permission-errors-when-granting-custom-roles-access-to-the-auth-schema).
 
 Schema được tạo/xóa bằng Alembic. Không chạy `down -v` để "làm sạch" database; `down -v` chỉ xóa volume Redis/certificate. Không auto-downgrade khi rollback image: migration dùng expand/contract để image cũ vẫn đọc được schema mới trong thời gian chuyển tiếp.
 

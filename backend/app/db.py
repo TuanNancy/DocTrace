@@ -20,7 +20,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from starlette.concurrency import run_in_threadpool
 
 from app.core.config import AppConfig, get_config
-from app.db_contract import TABLE_COLUMNS, TABLE_PRIVILEGES
+from app.db_contract import AUTH_LOOKUP_FUNCTION, TABLE_COLUMNS, TABLE_PRIVILEGES
 
 logger = logging.getLogger(__name__)
 
@@ -182,6 +182,37 @@ def _ping_database(config: AppConfig) -> None:
             """), {"contract": json.dumps(contract)}).scalar_one()
             if not ready:
                 raise RuntimeError("Incomplete schema or runtime privileges")
+            auth_ready = connection.execute(text("""
+                SELECT p.prosecdef AND p.prokind = 'f' AND NOT p.proretset
+                    AND p.prorettype = 'boolean'::regtype AND p.provolatile = 's'
+                    AND p.proowner <> current_user::regrole::oid
+                    AND ARRAY['search_path=""', 'row_security=off'] <@ p.proconfig
+                    AND has_function_privilege(p.oid, 'EXECUTE')
+                    AND NOT has_function_privilege(p.oid, 'EXECUTE WITH GRANT OPTION')
+                    AND NOT EXISTS (
+                        SELECT 1 FROM aclexplode(COALESCE(p.proacl, acldefault('f', p.proowner))) a
+                        WHERE a.grantee = 0 AND a.privilege_type = 'EXECUTE'
+                    )
+                    AND NOT EXISTS (
+                        SELECT 1 FROM pg_roles r
+                        WHERE r.rolname IN ('anon', 'authenticated', 'service_role')
+                            AND has_function_privilege(r.oid, p.oid, 'EXECUTE')
+                    )
+                    AND NOT has_schema_privilege(n.oid, 'USAGE')
+                    AND NOT has_table_privilege(c.oid, 'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')
+                    AND NOT has_any_column_privilege(c.oid, 'SELECT,INSERT,UPDATE,REFERENCES')
+                FROM pg_proc p
+                JOIN pg_namespace n ON n.nspname = 'auth'
+                JOIN pg_class c ON c.relnamespace = n.oid AND c.relname = 'users'
+                WHERE p.oid = to_regprocedure(:function)
+            """), {"function": AUTH_LOOKUP_FUNCTION}).scalar_one_or_none()
+            if not auth_ready:
+                raise RuntimeError("Incomplete or excessive Auth lookup privileges")
+            # Exercise underlying Auth access as the definer, even on an empty
+            # database. No Auth identifiers or row contents leave this probe.
+            connection.execute(text(
+                "SELECT doctrace.auth_user_exists('00000000-0000-0000-0000-000000000000'::uuid)"
+            )).scalar_one()
     finally:
         engine.dispose()
 

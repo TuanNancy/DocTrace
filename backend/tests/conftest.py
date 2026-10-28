@@ -30,6 +30,32 @@ from app.services.workspaces import WorkspaceContext, WorkspaceService, get_work
 CHAT_REQUEST_ID = "00000000-0000-0000-0000-0000000000c1"
 
 
+@pytest.fixture(scope="session")
+def install_auth_schema():
+    """Install a hosted-shaped Auth boundary and return a non-superuser DDL URL.
+
+    Callers use the container admin only to seed fixtures/bootstrap roles; actual
+    migrations use an identity that cannot grant auth schema USAGE or change RLS.
+    Never consult developer config.
+    """
+    from sqlalchemy import create_engine
+    from sqlalchemy.engine import make_url
+
+    def install(url):
+        engine = create_engine(url)
+        try:
+            with engine.begin() as connection:
+                connection.exec_driver_sql((Path(__file__).parent / "fixtures/auth.sql").read_text())
+                database = connection.dialect.identifier_preparer.quote(engine.url.database)
+                connection.exec_driver_sql(f"GRANT CREATE ON DATABASE {database} TO doctrace_migrator")
+        finally:
+            engine.dispose()
+        return make_url(url).set(username="doctrace_migrator", password="local-migration-only").render_as_string(
+            hide_password=False,
+        )
+    return install
+
+
 async def _fake_supabase_user():
     return {"id": "00000000-0000-0000-0000-000000000001", "email": "test@example.com"}
 
