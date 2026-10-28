@@ -70,7 +70,7 @@ Copy `backend/.env.example` thành `backend/.env`, giữ các giá trị tuning 
 | Postgres control plane | `DATABASE_URL` (runtime, login `doctrace_app`, session pooler hỗ trợ IPv4). Lưu riêng `DIRECT_DATABASE_URL` (migration/DDL) trong `backend/.env.migrations` |
 | PDF private | `SUPABASE_S3_ENDPOINT`, `SUPABASE_S3_REGION`, `SUPABASE_S3_ACCESS_KEY_ID`, `SUPABASE_S3_SECRET_ACCESS_KEY`, `SUPABASE_STORAGE_BUCKET` theo S3 settings của cùng project |
 | Zilliz Cloud | `MILVUS_URI` là endpoint HTTPS của cluster; `MILVUS_TOKEN` là credential được cấp quyền truy cập; `MILVUS_COLLECTION=pdf_chunks_owned_v1` |
-| OpenRouter | `OPENROUTER_API_KEY`, `RAG_MODEL`, `EMBEDDING_MODEL` theo model bạn chọn |
+| OpenRouter | `OPENROUTER_API_KEY`, `RAG_MODEL`, `EMBEDDING_MODEL` theo model bạn chọn. `MODEL_REASONING` (`default`/`off`/`low`/`medium`/`high`) tắt hoặc giới hạn "thinking" của model reasoning để không ăn `RAG_MAX_TOKENS` |
 | Usage/cost | Giữ `DATABASE_URL` cho cả API và worker để ghi `doctrace.provider_calls`; `SUMMARY_MAX_CALLS=8` giới hạn lượt tóm tắt mỗi request |
 | Cache đáp án | `ANSWER_CACHE_URL` trỏ Redis cache riêng (Compose đặt `redis://cache:6379/0`); để trống để tắt. `ANSWER_CACHE_TTL_SECONDS` mặc định 259200 (3 ngày) |
 | Routing/ngân sách | `MODEL_ROUTING_ENABLED=false` mặc định; nếu bật phải đặt `CHEAP_MODEL`. `REQUEST_COST_CAP_MICROS=100000`, giá `MODEL_*_MICROS_PER_MTOK`/`CHEAP_*_MICROS_PER_MTOK` phải khớp model thật |

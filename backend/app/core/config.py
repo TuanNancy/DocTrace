@@ -47,6 +47,9 @@ class AppConfig:
     milvus_nprobe: int = 32
 
     model: str = setting("", "RAG_MODEL")
+    # Reasoning models (Qwen3, DeepSeek flash) spend the visible answer budget
+    # on hidden thinking unless the provider is told otherwise.
+    model_reasoning: str = setting("default", "MODEL_REASONING")
     temperature: float = setting(0.7, "RAG_TEMPERATURE")
     max_tokens: int = setting(2048, "RAG_MAX_TOKENS")
     embedding_model: str = ""
@@ -145,6 +148,7 @@ class AppConfig:
     def __post_init__(self):
         self.database_url = self.database_url or None
         self.log_level = self.log_level.upper()
+        self.model_reasoning = str(self.model_reasoning or "default").strip().lower()
         self.milvus_index_type = self.milvus_index_type or ("AUTOINDEX" if self.milvus_uri else "IVF_FLAT")
         self.openrouter_base_url = self.openrouter_base_url.rstrip("/")
         if self.embedding_model.startswith("text-embedding") and "/" not in self.embedding_model:
@@ -221,6 +225,8 @@ class AppConfig:
             errors.append("MILVUS_HOST and MILVUS_PORT must identify a valid local connection")
         if not self.milvus_collection:
             errors.append("MILVUS_COLLECTION must not be empty")
+        if self.model_reasoning not in ("default", "off", "low", "medium", "high"):
+            errors.append("MODEL_REASONING must be one of: default, off, low, medium, high")
         if urlparse(self.redis_url).scheme not in ("redis", "rediss") or not urlparse(self.redis_url).hostname:
             errors.append("REDIS_URL must be an absolute redis(s) URL")
         if self.database_url and (

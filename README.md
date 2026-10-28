@@ -101,6 +101,7 @@ Root `.env` được hỗ trợ; `backend/.env` ghi đè cả root và biến pr
 P5 thêm cache đáp án và ngân sách chi phí, mặc định an toàn:
 
 - `ANSWER_CACHE_URL` phải trỏ tới Redis **riêng** với `REDIS_URL` (thư viện/queue). Để trống để tắt cache. `ANSWER_CACHE_TTL_SECONDS` mặc định 3 ngày. Cache chỉ lưu câu trả lời hoàn chỉnh có citation hợp lệ; key gắn workspace/owner/tài liệu/generation/prompt/retrieval/model. Cache lỗi hoặc dữ liệu hỏng là miss, không làm hỏng chat.
+- `MODEL_REASONING` (`default`/`off`/`low`/`medium`/`high`) điều khiển "thinking" của model reasoning trên OpenRouter. Model như Qwen3/DeepSeek flash mặc định bật reasoning và có thể ăn hết `RAG_MAX_TOKENS` trước khi trả lời; đặt `off` để giữ ngân sách cho câu trả lời hiển thị. Tóm tắt tài liệu luôn tắt reasoning.
 - `MODEL_ROUTING_ENABLED=false` mặc định. Khi bật, phải đặt `CHEAP_MODEL`; request free dùng model rẻ, request pro giữ `RAG_MODEL` (kể cả câu phức tạp/tóm tắt). `COMPLEX_QUERY_WORDS` chỉnh ngưỡng nhận diện câu dài.
 - `REQUEST_COST_CAP_MICROS` (mặc định `100000`, integer micro-USD) là ngân sách worst-case trước mỗi generation; `0` tắt. Giá `MODEL_*_MICROS_PER_MTOK` và `CHEAP_*_MICROS_PER_MTOK` phải khớp model đang dùng; cập nhật khi đổi model. Vượt ngân sách trả lỗi SSE `budget_exceeded`, không tự hạ model.
 
