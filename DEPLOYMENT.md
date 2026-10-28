@@ -264,7 +264,9 @@ docker compose --env-file .env.production -f compose.production.yml run --rm --n
   api python /app/backfill_workspaces.py
 ```
 
-Kiểm tra `scanned`, `hashes_updated`, `personal_workspaces`, `skipped_invalid`; sau đó chạy lại với `--apply`. `.env.production` phải trỏ đúng Redis và `DATABASE_URL`; API/worker có thể tiếp tục chạy vì mọi ghi đều idempotent. Index per-user cũ vẫn được duy trì trong P1 để rollback image.
+Kiểm tra `scanned`, `hashes_updated`, `personal_workspaces`, `skipped_invalid`, `index_entries_added`, `index_entries_removed` và `deleted_records`; sau đó chạy lại với `--apply`. `hashes_updated=0` không có nghĩa index đã đúng: tombstone có thể vẫn cần loại khỏi index. Script giữ hash `deleted`, nhưng xóa ID đó khỏi cả bốn sorted set; các trạng thái `error`/`delete_error` vẫn chiếm quota.
+
+`.env.production` phải trỏ đúng Redis và `DATABASE_URL`. API/worker có thể tiếp tục chạy: mỗi bản ghi được đọc lại dưới `WATCH`, metadata và index được cập nhật cùng `MULTI/EXEC`; khi worker publish/xóa đồng thời, script đọc lại trạng thái mới. Sau 10 tranh chấp trên cùng bản ghi, script dừng để có thể chạy lại, thay vì ghi đè snapshot cũ. Index per-user cũ vẫn được duy trì để rollback image. Sau apply, dry run lại và kiểm tra cả số index thêm/xóa cần thiết.
 
 ## 6. Upload và SSE
 

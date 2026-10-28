@@ -1,6 +1,7 @@
 """
 Inspect owner-scoped retrieval with real embedding/vector services.
-Usage: python scripts/inspect_retrieval.py <user_id> <doc_id> "câu hỏi 1" ...
+Usage: python scripts/inspect_retrieval.py <user_id> <doc_id> "câu hỏi 1" ... --workspace-id <uuid>
+Omit --workspace-id to inspect the user's personal workspace.
 """
 import asyncio
 import argparse
@@ -8,6 +9,7 @@ import logging
 import math
 import sys
 from pathlib import Path
+from uuid import UUID
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -31,8 +33,9 @@ def build_context(chunks, max_chars=500):
     return "\n\n---\n\n".join(parts)
 
 
-async def search_chunks(query: str, doc_id: str, user_id: str, *, config, top_k: int, min_score: float):
-    document = await DocumentRepository(config).get(user_id, doc_id)
+async def search_chunks(query: str, doc_id: str, user_id: str, *, config, top_k: int,
+                        min_score: float, workspace_id: str | None = None):
+    document = await DocumentRepository(config).get(workspace_id or user_id, user_id, doc_id)
     if document["status"] != "ready" or not document.get("active_index_id"):
         raise ValueError("Document is not ready for retrieval.")
     embedder = get_embedder(config=config)
@@ -59,6 +62,7 @@ def parse_args(argv=None, *, config=None):
     parser.add_argument("user_id")
     parser.add_argument("doc_id")
     parser.add_argument("queries", nargs="+")
+    parser.add_argument("--workspace-id", type=UUID, help="team workspace UUID (default: personal)")
     parser.add_argument("--top-k", type=int, default=config.retrieval_top_k)
     parser.add_argument("--min-score", type=float, default=config.min_relevance_score)
     args = parser.parse_args(argv)
@@ -76,7 +80,8 @@ async def main():
     for q in args.queries:
         print(f"\n--- Query: {q!r} ---")
         chunks = await search_chunks(q, args.doc_id, args.user_id, config=config,
-                                     top_k=args.top_k, min_score=args.min_score)
+                                     top_k=args.top_k, min_score=args.min_score,
+                                     workspace_id=str(args.workspace_id) if args.workspace_id else None)
         for i, c in enumerate(chunks, 1):
             print(f"  [{i}] page={c.page} score={c.score:.4f} source={c.source!r}")
             print(f"      text: {c.text[:120]}...")

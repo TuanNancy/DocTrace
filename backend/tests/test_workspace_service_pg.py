@@ -1,16 +1,22 @@
 """Workspace control plane against a real Postgres; skips without Docker."""
+import asyncio
 from pathlib import Path
+from threading import Event
+from unittest.mock import Mock
 from uuid import uuid4
 
 from alembic import command
 from alembic.config import Config
 from fastapi import HTTPException
 import pytest
+import fakeredis
 from sqlalchemy import create_engine, text
 
 from app import db
 from app.core.config import AppConfig
 from app.services.workspaces import WorkspaceService
+from app.services.document_repository import DocumentRepository, workspace_user_key
+from app.services import document_repository as catalog_module
 
 BACKEND = Path(__file__).resolve().parents[1]
 
@@ -54,6 +60,13 @@ def service(postgres_url):
     db.dispose_engines()
     yield WorkspaceService(AppConfig(database_url=postgres_url))
     db.dispose_engines()
+
+
+@pytest.fixture
+def catalog(service, monkeypatch):
+    server = fakeredis.FakeServer()
+    monkeypatch.setattr(catalog_module.Redis, "from_url", lambda *args, **kwargs: fakeredis.FakeRedis(server=server))
+    return DocumentRepository(service.config), fakeredis.FakeRedis(server=server)
 
 
 def execute(postgres_url, statement, params=None):
@@ -105,7 +118,8 @@ async def test_creation_respects_plan_limit_then_adds_the_owner(service, postgre
     assert [(member["user_id"], member["role"]) for member in members] == [(user_id, "owner")]
 
 
-async def test_member_removal_requires_cleanup_and_archive_is_owner_scoped(service, postgres_url):
+async def test_member_removal_requires_cleanup_and_archive_is_owner_scoped(service, postgres_url, catalog):
+    repository, redis = catalog
     owner_id, _ = await provision_personal(service)
     execute(postgres_url, "update doctrace.workspaces set plan = 'pro' where id = :id",
             {"id": owner_id})
@@ -121,14 +135,17 @@ async def test_member_removal_requires_cleanup_and_archive_is_owner_scoped(servi
         await service.assert_owner(member_id, workspace_id)
     assert error.value.status_code == 404
     with pytest.raises(HTTPException) as error:
-        await service.remove_member(owner_id, workspace_id, member_id, document_count=2)
+        redis.zadd(workspace_user_key(workspace_id, member_id), {"first": 1, "second": 2})
+        await service.remove_member(owner_id, workspace_id, member_id, repository)
     assert error.value.status_code == 409
     assert error.value.detail["document_count"] == 2
     with pytest.raises(HTTPException) as error:
-        await service.remove_member(owner_id, workspace_id, owner_id, document_count=0)
+        await service.remove_member(owner_id, workspace_id, owner_id, repository)
     assert error.value.detail["code"] == "cannot_remove_owner"
 
-    assert (await service.remove_member(owner_id, workspace_id, member_id, document_count=0))["status"] == "removed"
+    assert (await service.resolve(member_id, workspace_id)).role == "member"
+    redis.delete(workspace_user_key(workspace_id, member_id))
+    assert (await service.remove_member(owner_id, workspace_id, member_id, repository))["status"] == "removed"
     assert [member["user_id"] for member in await service.members(owner_id, workspace_id)] == [owner_id]
 
     archived = await service.archive(owner_id, workspace_id)
@@ -150,3 +167,126 @@ async def test_member_removal_requires_cleanup_and_archive_is_owner_scoped(servi
     restored = await service.restore(admin_id, workspace_id)
     assert restored["status"] == "active"
     assert (await service.resolve(owner_id, workspace_id)).workspace_id == workspace_id
+
+
+async def team_with_member(service, postgres_url):
+    owner, _ = await provision_personal(service)
+    execute(postgres_url, "update doctrace.workspaces set plan = 'pro' where id = :id", {"id": owner})
+    workspace = (await service.create(owner, "Concurrent team"))["id"]
+    member = str(uuid4())
+    await service.add_member(owner, workspace, member)
+    document = {"doc_id": str(uuid4()), "workspace_id": workspace,
+                "owner_user_id": member, "name": "test.pdf", "size_bytes": 100, "storage_key": "fixture"}
+    return owner, member, workspace, document
+
+
+async def wait_for_lock(postgres_url):
+    """Wait for an actual competing SQL statement, rather than a timing guess."""
+    engine = create_engine(postgres_url)
+    try:
+        for _ in range(200):
+            with engine.connect() as connection:
+                waiting = connection.execute(text(
+                    "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() "
+                    "AND wait_event_type = 'Lock' AND query LIKE '%doctrace.workspace%'"
+                )).scalar_one()
+            if waiting:
+                return
+            await asyncio.sleep(0.01)
+        pytest.fail("Competing operation did not wait on the admission lock")
+    finally:
+        engine.dispose()
+
+
+@pytest.mark.parametrize("operation", ["remove", "archive"])
+async def test_upload_commit_finishes_before_member_removal_or_archive(
+    service, postgres_url, catalog, monkeypatch, operation,
+):
+    repository, _ = catalog
+    owner, member, workspace, document = await team_with_member(service, postgres_url)
+    entered, release = Event(), Event()
+    original = repository.create_sync
+
+    def commit(*args, **kwargs):
+        entered.set()
+        assert release.wait(5), "test did not release upload commit"
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(repository, "create_sync", commit)
+    upload = asyncio.create_task(service.create_document(document, repository, limit=5))
+    assert await asyncio.to_thread(entered.wait, 5)
+    mutate = asyncio.create_task(
+        service.remove_member(owner, workspace, member, repository) if operation == "remove"
+        else service.archive(owner, workspace)
+    )
+    try:
+        await wait_for_lock(postgres_url)
+    finally:
+        release.set()
+        uploaded, result = await asyncio.gather(upload, mutate, return_exceptions=True)
+    assert uploaded["doc_id"] == document["doc_id"]
+    assert await repository.count_workspace(workspace, member) == 1
+    if operation == "remove":
+        assert isinstance(result, HTTPException)
+        assert result.detail["code"] == "member_has_documents"
+        assert (await service.resolve(member, workspace)).role == "member"
+    else:
+        assert result["status"] == "archived"
+
+
+async def test_member_removal_fences_upload_that_previously_passed_auth(
+    service, postgres_url, catalog, monkeypatch,
+):
+    repository, _ = catalog
+    owner, member, workspace, document = await team_with_member(service, postgres_url)
+    await service.resolve(member, workspace)
+    entered, release = Event(), Event()
+
+    def count(*args):
+        entered.set()
+        assert release.wait(5), "test did not release member removal"
+        return 0
+
+    monkeypatch.setattr(repository, "count_workspace_sync", count)
+    commit = Mock(wraps=repository.create_sync)
+    monkeypatch.setattr(repository, "create_sync", commit)
+    remove = asyncio.create_task(service.remove_member(owner, workspace, member, repository))
+    assert await asyncio.to_thread(entered.wait, 5)
+    upload = asyncio.create_task(service.create_document(document, repository, limit=5))
+    try:
+        await wait_for_lock(postgres_url)
+    finally:
+        release.set()
+        removed, result = await asyncio.gather(remove, upload, return_exceptions=True)
+    assert removed["status"] == "removed"
+    assert isinstance(result, HTTPException) and result.status_code == 404
+    commit.assert_not_called()
+    assert await repository.internal_document(document["doc_id"]) is None
+
+
+async def test_archived_workspace_rejects_inflight_upload_before_catalog_commit(service, postgres_url, catalog):
+    repository, _ = catalog
+    owner, member, workspace, document = await team_with_member(service, postgres_url)
+    await service.resolve(member, workspace)
+    await service.archive(owner, workspace)
+    with pytest.raises(HTTPException) as error:
+        await service.create_document(document, repository, limit=5)
+    assert error.value.status_code == 404
+    assert await repository.internal_document(document["doc_id"]) is None
+
+
+async def test_removal_authorizes_before_count_and_rolls_back_on_redis_failure(
+    service, postgres_url, catalog, monkeypatch,
+):
+    repository, _ = catalog
+    owner, member, workspace, _ = await team_with_member(service, postgres_url)
+    count = Mock(side_effect=HTTPException(503, "Redis unavailable"))
+    monkeypatch.setattr(repository, "count_workspace_sync", count)
+    with pytest.raises(HTTPException) as error:
+        await service.remove_member(member, workspace, owner, repository)
+    assert error.value.status_code == 404
+    count.assert_not_called()
+    with pytest.raises(HTTPException) as error:
+        await service.remove_member(owner, workspace, member, repository)
+    assert error.value.status_code == 503
+    assert (await service.resolve(member, workspace)).role == "member"

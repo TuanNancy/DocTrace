@@ -91,16 +91,17 @@ class DocumentRepository:
     def __init__(self, config: AppConfig):
         self.config = config
 
-    async def _run(self, action, *args):
-        def call():
-            # Short-lived clients avoid leaking pools from request dependencies and
-            # never share pre-fork connections with the RQ work horse.
+    def _run_sync(self, action, *args):
+        # Also used by workspace admission while its short Postgres transaction
+        # holds membership locks. That entire operation runs in one worker thread.
+        try:
             with Redis.from_url(self.config.redis_url, socket_connect_timeout=5, socket_timeout=10) as connection:
                 return action(connection, *args)
-        try:
-            return await run_in_threadpool(call)
         except RedisError as exc:
             raise HTTPException(503, "Không thể kết nối thư viện hoặc xếp hàng. Vui lòng thử lại.") from exc
+
+    async def _run(self, action, *args):
+        return await run_in_threadpool(self._run_sync, action, *args)
 
     async def check_available(self) -> None:
         await self._run(lambda connection: connection.ping())
@@ -158,7 +159,7 @@ class DocumentRepository:
             return {"items": items[:limit], "has_more": len(items) > limit}
         return await self._run(listing)
 
-    async def create(self, document: dict, *, limit: int) -> dict:
+    def create_sync(self, document: dict, *, limit: int) -> dict:
         """Called only after PDF retention; create the catalog and first job atomically.
 
         ``limit`` is the workspace document cap. The workspace index is watched
@@ -209,7 +210,11 @@ class DocumentRepository:
                     except WatchError:
                         continue
             raise HTTPException(409, "Tài liệu đang thay đổi. Vui lòng thử lại.")
-        return await self._run(create)
+        return self._run_sync(create)
+
+    async def create(self, document: dict, *, limit: int) -> dict:
+        """Internal catalog primitive; HTTP uploads use WorkspaceService admission."""
+        return await run_in_threadpool(self.create_sync, document, limit=limit)
 
     async def queue(self, workspace_id: str, user_id: str, doc_id: str, kind: str) -> dict:
         if kind not in ("index", "delete"):
@@ -251,12 +256,15 @@ class DocumentRepository:
             raise HTTPException(409, "Tài liệu đang thay đổi. Vui lòng thử lại.")
         return await self._run(enqueue)
 
-    async def count_workspace(self, workspace_id: str, user_id: str | None = None) -> int:
+    def count_workspace_sync(self, workspace_id: str, user_id: str | None = None) -> int:
         """Number of catalogued (not necessarily ready) documents in a workspace."""
         def count(connection):
             key = workspace_user_key(workspace_id, user_id) if user_id else workspace_key(workspace_id)
             return int(connection.zcard(key))
-        return await self._run(count)
+        return self._run_sync(count)
+
+    async def count_workspace(self, workspace_id: str, user_id: str | None = None) -> int:
+        return await run_in_threadpool(self.count_workspace_sync, workspace_id, user_id)
 
     async def internal_document(self, doc_id: str) -> dict | None:
         return await self._run(read_document, doc_id)

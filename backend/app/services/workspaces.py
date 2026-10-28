@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 from uuid import UUID
 
 from fastapi import HTTPException
@@ -16,6 +17,9 @@ from starlette.concurrency import run_in_threadpool
 from app.core.config import AppConfig, get_config
 from app.core.errors import api_error
 from app.db import DatabaseNotConfigured, session_scope
+
+if TYPE_CHECKING:
+    from app.services.document_repository import DocumentRepository
 
 logger = logging.getLogger(__name__)
 
@@ -117,7 +121,8 @@ class WorkspaceService:
     async def list_for_user(self, user_id: str) -> list[dict]:
         return await self._run(self._list_for_user, user_id)
 
-    def _resolve(self, session, user_id: str, workspace_id: str) -> WorkspaceContext:
+    def _resolve(self, session, user_id: str, workspace_id: str,
+                 *, lock_member: bool = False) -> WorkspaceContext:
         workspace_id = _uuid(workspace_id, "workspace_invalid")
         user_id = _uuid(user_id)
         if workspace_id == user_id:
@@ -129,7 +134,7 @@ class WorkspaceService:
             JOIN doctrace.workspace_members m ON m.workspace_id = w.id
             WHERE w.id = :wid AND m.user_id = :uid
               AND m.status = 'active' AND w.status = 'active'
-            """
+            """ + (" FOR SHARE OF m" if lock_member else "")
         ), {"wid": workspace_id, "uid": user_id}).mappings().first()
         if not row:
             raise api_error(404, "workspace_not_found", "Không tìm thấy workspace.")
@@ -140,6 +145,30 @@ class WorkspaceService:
 
     async def resolve(self, user_id: str, workspace_id: str) -> WorkspaceContext:
         return await self._run(self._resolve, user_id, workspace_id)
+
+    def _lock_workspace(self, session, workspace_id: str) -> None:
+        """Lock order is always workspace, then membership; archive updates w.
+
+        FOR SHARE conflicts with a status UPDATE, unlike FOR KEY SHARE. Uploads
+        can still commit concurrently. Storage/provider calls stay outside these
+        locks; only the bounded Redis catalog transaction runs while held.
+        """
+        row = session.execute(text(
+            "SELECT id FROM doctrace.workspaces WHERE id = :wid AND status = 'active' FOR SHARE"
+        ), {"wid": _uuid(workspace_id, "workspace_invalid")}).first()
+        if not row:
+            raise api_error(404, "workspace_not_found", "Không tìm thấy workspace.")
+
+    def _create_document(self, session, document: dict, repository: DocumentRepository,
+                         limit: int) -> dict:
+        self._lock_workspace(session, document["workspace_id"])
+        self._resolve(session, document["owner_user_id"], document["workspace_id"], lock_member=True)
+        return repository.create_sync(document, limit=limit)
+
+    async def create_document(self, document: dict, repository: DocumentRepository,
+                              *, limit: int) -> dict:
+        """Recheck membership and hold it through catalog commit, after PDF retention."""
+        return await self._run(self._create_document, document, repository, limit)
 
     def _owned_workspace(self, session, user_id: str, workspace_id: str,
                          *, allow_archived: bool = False) -> dict:
@@ -233,6 +262,7 @@ class WorkspaceService:
         await self._run(self._assert_owner, user_id, workspace_id)
 
     def _add_member(self, session, user_id: str, workspace_id: str, member_id: str) -> dict:
+        self._lock_workspace(session, workspace_id)
         self._owned_workspace(session, user_id, workspace_id)
         workspace_id = _uuid(workspace_id, "workspace_invalid")
         member_id = _uuid(member_id, "member_invalid")
@@ -260,7 +290,8 @@ class WorkspaceService:
         return await self._run(self._add_member, user_id, workspace_id, member_id)
 
     def _remove_member(self, session, user_id: str, workspace_id: str, member_id: str,
-                       document_count: int) -> dict:
+                       repository: DocumentRepository) -> dict:
+        self._lock_workspace(session, workspace_id)
         self._owned_workspace(session, user_id, workspace_id)
         workspace_id = _uuid(workspace_id, "workspace_invalid")
         member_id = _uuid(member_id, "member_invalid")
@@ -270,12 +301,20 @@ class WorkspaceService:
             """
             SELECT role, status FROM doctrace.workspace_members
             WHERE workspace_id = :wid AND user_id = :member
+            FOR UPDATE
             """
         ), {"wid": workspace_id, "member": member_id}).mappings().first()
         if not row or row["status"] == "removed":
             raise api_error(404, "member_not_found", "Không tìm thấy thành viên.")
         if row["role"] == "owner":
             raise api_error(409, "cannot_remove_owner", "Không thể xóa owner của workspace.")
+        session.execute(text(
+            "UPDATE doctrace.workspace_members SET status = 'removing' "
+            "WHERE workspace_id = :wid AND user_id = :member"
+        ), {"wid": workspace_id, "member": member_id})
+        # Read only after taking the lock shared by upload commit. Raising below
+        # rolls 'removing' back to active, including on a Redis timeout/error.
+        document_count = repository.count_workspace_sync(workspace_id, member_id)
         if document_count > 0:
             raise api_error(
                 409, "member_has_documents",
@@ -292,8 +331,8 @@ class WorkspaceService:
         return {"user_id": member_id, "status": "removed"}
 
     async def remove_member(self, user_id: str, workspace_id: str, member_id: str,
-                            document_count: int) -> dict:
-        return await self._run(self._remove_member, user_id, workspace_id, member_id, document_count)
+                            repository: DocumentRepository) -> dict:
+        return await self._run(self._remove_member, user_id, workspace_id, member_id, repository)
 
     def _archive(self, session, user_id: str, workspace_id: str) -> dict:
         self._owned_workspace(session, user_id, workspace_id)

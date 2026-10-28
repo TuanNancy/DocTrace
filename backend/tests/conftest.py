@@ -25,7 +25,7 @@ from app.services.document_repository import DocumentRepository, get_document_re
 from app.services.quotas import QuotaService, get_quota_service
 from app.services.rate_limiter import RateLimiter, get_rate_limiter
 from app.services.transcripts import TranscriptService, get_transcript_service
-from app.services.workspaces import WorkspaceContext
+from app.services.workspaces import WorkspaceContext, WorkspaceService, get_workspace_service
 
 CHAT_REQUEST_ID = "00000000-0000-0000-0000-0000000000c1"
 
@@ -61,6 +61,17 @@ def repository():
     }
     fake.list.return_value = {"items": [], "has_more": False}
     fake.count_workspace.return_value = 0
+    return fake
+
+
+@pytest.fixture
+def workspace_service(repository):
+    fake = AsyncMock(spec=WorkspaceService)
+
+    async def create(document, repo, *, limit):
+        return await repo.create(document, limit=limit)
+
+    fake.create_document.side_effect = create
     return fake
 
 
@@ -110,7 +121,7 @@ def transcripts():
 
 
 @pytest.fixture
-def client(repository, quotas, rate_limiter, transcripts) -> TestClient:
+def client(repository, quotas, rate_limiter, transcripts, workspace_service) -> TestClient:
     """FastAPI TestClient for router tests."""
     app.dependency_overrides[require_supabase_user] = _fake_supabase_user
     app.dependency_overrides[require_workspace] = _fake_workspace
@@ -118,6 +129,7 @@ def client(repository, quotas, rate_limiter, transcripts) -> TestClient:
     app.dependency_overrides[get_rate_limiter] = lambda: rate_limiter
     app.dependency_overrides[get_quota_service] = lambda: quotas
     app.dependency_overrides[get_transcript_service] = lambda: transcripts
+    app.dependency_overrides[get_workspace_service] = lambda: workspace_service
     try:
         with TestClient(app) as test_client:
             yield test_client
@@ -128,3 +140,4 @@ def client(repository, quotas, rate_limiter, transcripts) -> TestClient:
         app.dependency_overrides.pop(get_rate_limiter, None)
         app.dependency_overrides.pop(get_quota_service, None)
         app.dependency_overrides.pop(get_transcript_service, None)
+        app.dependency_overrides.pop(get_workspace_service, None)
