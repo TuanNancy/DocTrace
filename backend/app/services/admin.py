@@ -75,6 +75,7 @@ class AdminService:
             chat = dict(session.execute(text("""
                 SELECT count(*) AS requests, count(*) FILTER (WHERE status = 'failed') AS failed,
                     count(*) FILTER (WHERE status = 'interrupted') AS interrupted,
+                    count(*) FILTER (WHERE cache_hit) AS cache_hits,
                     percentile_cont(0.5) WITHIN GROUP (ORDER BY latency_ms) AS latency_p50_ms,
                     percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms) AS latency_p95_ms,
                     percentile_cont(0.5) WITHIN GROUP (ORDER BY first_token_ms) AS first_token_p50_ms,

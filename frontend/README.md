@@ -47,7 +47,7 @@ The login route sets `Cross-Origin-Opener-Policy: same-origin-allow-popups` for 
 - `src/lib/supabase/` contains browser/server clients, public configuration and session middleware. `src/lib/` has explicit exceptions to the root Python `lib/` ignore rule.
 - `src/lib/api.ts` owns HTTP transport; `src/lib/sse.ts` validates and decodes the chat event contract, including required citation IDs and explicit completion.
 - `ChatWindow` and `UploadZone` receive sessions from the workspace provider. Their hooks own requests and cancellation; components only render the shared state and dispatch user actions.
-- `/admin` is platform-admin only. `AdminLink` and the page check `/api/admin/access`; reports are metadata/cost/queue data, and lifecycle actions expose plan changes, archive/restore, audited retry and exact-ID purge confirmation. Losing admin access clears rendered reports on refresh. There is no member transcript or PDF access from this UI.
+- `/admin` is platform-admin only. `AdminLink` and the page check `/api/admin/access`; reports are metadata/cost/queue data and cache-hit counts, and lifecycle actions expose plan changes, archive/restore, audited retry and exact-ID purge confirmation. Losing admin access clears rendered reports on refresh. There is no member transcript or PDF access from this UI.
 
 ## Verification
 

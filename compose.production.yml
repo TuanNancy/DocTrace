@@ -17,6 +17,26 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  cache:
+    image: redis:7.4.8-alpine
+    restart: unless-stopped
+    # Exact answers are disposable. Never persist or block writes when memory
+    # is full; catalog/queue remain on the separate `redis` service.
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "64mb", "--maxmemory-policy", "allkeys-lru"]
+    expose:
+      - "6379"
+    mem_limit: 96m
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
   migrate:
     image: ${API_IMAGE:-doctrace-api:local}
     build:
@@ -48,9 +68,14 @@ services:
       - ${BACKEND_ENV_FILE:-./backend/.env}
     environment:
       REDIS_URL: redis://redis:6379/0
+      ANSWER_CACHE_URL: redis://cache:6379/0
     depends_on:
       redis:
         condition: service_healthy
+      cache:
+        # The cache is disposable and fail-open; API must not be blocked from
+        # starting or restarting when it is unhealthy.
+        condition: service_started
       migrate:
         condition: service_completed_successfully
     expose:

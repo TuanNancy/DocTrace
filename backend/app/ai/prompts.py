@@ -3,6 +3,10 @@ System prompts for the RAG pipeline.
 Only contains prompts actually used by the application.
 """
 
+# Changing either system prompt requires a new version so exact-answer caches
+# cannot mix policies. The string is deliberately human-readable in Redis keys.
+PROMPT_VERSION = "rag-prompts-2026-10-29"
+
 SYSTEM_PROMPT_VI = """Bạn là trợ lý trả lời câu hỏi dựa trên nội dung tài liệu PDF được cung cấp.
 
 Hãy trả lời bằng Markdown rõ ràng và chỉ dựa vào ngữ cảnh tài liệu bên dưới.

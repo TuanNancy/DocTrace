@@ -56,6 +56,19 @@ class AppConfig:
     context_max_chars: int = 12000
     summary_max_calls: int = setting(8, "SUMMARY_MAX_CALLS")
     min_relevance_score: float = 0.32
+    # Optional exact-answer cache. It must not share the catalog/queue Redis.
+    answer_cache_url: Optional[str] = setting(None, "ANSWER_CACHE_URL")
+    answer_cache_ttl_seconds: int = setting(259200, "ANSWER_CACHE_TTL_SECONDS")
+    # Off by default: routing only changes models after the eval baseline exists.
+    model_routing_enabled: bool = setting(False, "MODEL_ROUTING_ENABLED")
+    cheap_model: Optional[str] = setting(None, "CHEAP_MODEL")
+    complex_query_words: int = setting(30, "COMPLEX_QUERY_WORDS")
+    # Worst-case generation budget per chat request. Zero disables the cap.
+    request_cost_cap_micros: int = setting(100000, "REQUEST_COST_CAP_MICROS")
+    model_input_micros_per_mtok: int = setting(150000, "MODEL_INPUT_MICROS_PER_MTOK")
+    model_output_micros_per_mtok: int = setting(600000, "MODEL_OUTPUT_MICROS_PER_MTOK")
+    cheap_input_micros_per_mtok: int = setting(150000, "CHEAP_INPUT_MICROS_PER_MTOK")
+    cheap_output_micros_per_mtok: int = setting(600000, "CHEAP_OUTPUT_MICROS_PER_MTOK")
 
     openrouter_api_key: Optional[str] = None
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
@@ -99,6 +112,7 @@ class AppConfig:
             "SUPABASE_PUBLISHABLE_KEY": (
                 "NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY", "NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY",
             ),
+            "ANSWER_CACHE_URL": ("CACHE_REDIS_URL",),
         }
         values = {}
         for item in fields(cls):
@@ -171,6 +185,33 @@ class AppConfig:
             errors.append("MIN_RELEVANCE_SCORE must be finite")
         if not math.isfinite(self.temperature) or self.temperature < 0:
             errors.append("RAG_TEMPERATURE must be non-negative and finite")
+        if self.answer_cache_url and (
+            urlparse(self.answer_cache_url).scheme not in ("redis", "rediss")
+            or not urlparse(self.answer_cache_url).hostname
+        ):
+            errors.append("ANSWER_CACHE_URL must be an absolute redis(s) URL")
+        if type(self.answer_cache_ttl_seconds) is not int or self.answer_cache_ttl_seconds <= 0:
+            errors.append("ANSWER_CACHE_TTL_SECONDS must be a positive integer")
+        if not isinstance(self.model_routing_enabled, bool):
+            errors.append("MODEL_ROUTING_ENABLED must be a boolean")
+        if self.model_routing_enabled and not self.cheap_model:
+            errors.append("CHEAP_MODEL is required when MODEL_ROUTING_ENABLED is true")
+        if type(self.complex_query_words) is not int or self.complex_query_words <= 0:
+            errors.append("COMPLEX_QUERY_WORDS must be a positive integer")
+        if type(self.request_cost_cap_micros) is not int or self.request_cost_cap_micros < 0:
+            errors.append("REQUEST_COST_CAP_MICROS must be a non-negative integer")
+        for attr in ("model_input_micros_per_mtok", "model_output_micros_per_mtok",
+                     "cheap_input_micros_per_mtok", "cheap_output_micros_per_mtok"):
+            value = getattr(self, attr)
+            if type(value) is not int or value < 0:
+                errors.append(f"{attr.upper()} must be a non-negative integer")
+        if self.request_cost_cap_micros and (
+            self.model_input_micros_per_mtok <= 0 or self.model_output_micros_per_mtok <= 0
+            or (self.model_routing_enabled and (
+                self.cheap_input_micros_per_mtok <= 0 or self.cheap_output_micros_per_mtok <= 0
+            ))
+        ):
+            errors.append("model prices must be positive when REQUEST_COST_CAP_MICROS is enabled")
         if self.milvus_uri:
             if urlparse(self.milvus_uri).scheme not in ("http", "https") or not urlparse(self.milvus_uri).hostname:
                 errors.append("MILVUS_URI must be an absolute HTTP(S) URL")

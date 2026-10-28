@@ -321,15 +321,19 @@ class QuotaService:
                                error_code: str | None = None) -> bool:
         return await self._run(self._mark_chat, chat_request_id, status, error_code)
 
-    def _record_timing(self, session, chat_request_id: str, latency_ms: int, first_token_ms: int | None) -> None:
+    def _record_timing(self, session, chat_request_id: str, latency_ms: int, first_token_ms: int | None,
+                       cache_hit: bool) -> None:
         session.execute(text("""
             UPDATE doctrace.chat_requests
-            SET latency_ms = COALESCE(latency_ms, :latency), first_token_ms = COALESCE(first_token_ms, :first)
+            SET latency_ms = COALESCE(latency_ms, :latency),
+                first_token_ms = COALESCE(first_token_ms, :first),
+                cache_hit = cache_hit OR :hit
             WHERE id = CAST(:id AS uuid)
-        """), {"id": chat_request_id, "latency": latency_ms, "first": first_token_ms})
+        """), {"id": chat_request_id, "latency": latency_ms, "first": first_token_ms, "hit": cache_hit})
 
-    async def record_timing(self, chat_request_id: str, latency_ms: int, first_token_ms: int | None) -> None:
-        await self._run(self._record_timing, chat_request_id, latency_ms, first_token_ms)
+    async def record_timing(self, chat_request_id: str, latency_ms: int, first_token_ms: int | None,
+                            *, cache_hit: bool = False) -> None:
+        await self._run(self._record_timing, chat_request_id, latency_ms, first_token_ms, cache_hit)
 
     def _usage(self, session, workspace_id: str, plan: str, user_id: str, role: str) -> dict:
         workspace_id = _uuid(workspace_id, "workspace_invalid", "Workspace không hợp lệ.")

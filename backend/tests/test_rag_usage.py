@@ -167,6 +167,30 @@ async def test_summary_cap_rejects_before_any_paid_call():
     assert provider.calls == []
 
 
+async def test_single_document_summary_uses_one_stronger_model_for_all_calls():
+    usage = collector()
+    chunks = [
+        RetrievedChunk("c1", "doc", "x" * 700 + " END-1", 1, "long.pdf", None),
+        RetrievedChunk("c2", "doc", "y" * 700 + " END-2", 2, "long.pdf", None),
+    ]
+    provider = FakeProvider()
+    provider.model = "routed-model"
+    pipeline = RAGPipeline(
+        chat_provider=provider, vector_store=store(chunks),
+        config=config(model="configured-model"), usage=usage,
+    )
+
+    retrieved = await pipeline.retrieve_chunks("Summarize this PDF", "doc", user_id="user")
+    _ = [part async for part in pipeline.stream_answer(
+        "Summarize this PDF", "doc", user_id="user",
+        retrieved_chunks_override=retrieved,
+    )]
+
+    assert {call.model for call in usage.calls if call.kind in ("summary", "answer")} == {
+        "routed-model"
+    }
+
+
 async def test_disabled_usage_starts_no_calls_and_passes_no_usage_kwarg():
     usage = collector(enabled=False)
     chunks = [RetrievedChunk("c1", "doc", "Twelve days.", 2, "policy.pdf", 0.9)]

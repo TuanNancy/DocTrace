@@ -21,7 +21,7 @@ const overview: AdminOverview = {
   since: workspace.created_at, documents: 1, workspaces: [{ status: "archived", count: 1 }],
   costs: [{ cost_status: "reported", calls: 2, known_micros: 250000 }, { cost_status: "unknown", calls: 3, known_micros: 0 }],
   by: { day: [], workspace: [], kind: [], model: [] },
-  chat: { requests: 2, failed: 0, interrupted: 1, latency_p50_ms: 100, latency_p95_ms: 200, first_token_p50_ms: 50, first_token_p95_ms: 75 },
+  chat: { requests: 2, failed: 0, interrupted: 1, cache_hits: 1, latency_p50_ms: 100, latency_p95_ms: 200, first_token_p50_ms: 50, first_token_p95_ms: 75 },
 };
 const empty = { items: [], next_offset: null };
 const api = vi.mocked(adminRequest);

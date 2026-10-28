@@ -4,7 +4,7 @@ export interface AdminOverview {
   since: string; documents: number; workspaces: { status: string; count: number }[];
   costs: { cost_status: string; calls: number; known_micros: number }[];
   by: Record<"day" | "model" | "workspace" | "kind", CostGroup[]>;
-  chat: { requests: number; failed: number; interrupted: number; latency_p50_ms: number | null;
+  chat: { requests: number; failed: number; interrupted: number; cache_hits: number; latency_p50_ms: number | null;
     latency_p95_ms: number | null; first_token_p50_ms: number | null; first_token_p95_ms: number | null };
 }
 export interface AdminWorkspace {
