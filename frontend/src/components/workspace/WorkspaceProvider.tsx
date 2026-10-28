@@ -52,7 +52,7 @@ function useWorkspaceState() {
   const workspaceIdRef = useRef<string | null>(workspaceId);
   workspaceIdRef.current = workspaceId;
   const userId = user?.id;
-  const chat = useChatSession({ docId, workspaceId, mock, accessToken });
+  const chat = useChatSession({ docId, workspaceId, userId, mock, accessToken });
   const activeDocument = documents.find((document) => document.doc_id === docId) ?? null;
   const activeWorkspace = workspaces.find((workspace) => workspace.id === workspaceId) ?? null;
 

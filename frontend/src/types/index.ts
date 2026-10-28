@@ -95,7 +95,8 @@ export interface Transcript {
 export interface UsageMetric {
   used: number;
   limit: number;
-  remaining: number;
+  /** Shared remaining quota is private to workspace owners. */
+  remaining: number | null;
   metric: string;
 }
 
@@ -109,10 +110,12 @@ export interface UsageUser {
 /** GET /api/usage: plan limits, monthly counters and owner-scoped costs. */
 export interface UsageSummary {
   workspace_id: string;
+  scope: "workspace" | "self";
   plan: "free" | "pro";
   period_start: string;
   reset_at: string;
   chat: UsageMetric;
   documents: UsageMetric;
   by_user: UsageUser[];
+  costs: { known_micros: number; unknown_calls: number };
 }

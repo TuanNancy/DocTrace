@@ -25,6 +25,7 @@ def main():
         **os.environ,
         "API_DOMAIN": "api.example.test", "ACME_EMAIL": "ci@example.test", "TLS_MODE": "http",
         "BACKEND_ENV_FILE": str(ROOT / "deploy/tests/api.env"), "API_IMAGE": args.api_image,
+        "MIGRATION_ENV_FILE": str(ROOT / "deploy/tests/migrations.env"),
         "NGINX_BIND_ADDRESS": "127.0.0.1", "NGINX_HTTP_PORT": "0", "NGINX_HTTPS_PORT": "0",
     }
     base = [
@@ -42,9 +43,9 @@ def main():
     def port(number):
         return int(dc("port", "nginx", str(number)).stdout.strip().rsplit(":", 1)[1])
 
-    def request(number, path, context=None, method="GET", headers=None, body=None):
-        connection = (http.client.HTTPSConnection("127.0.0.1", number, context=context, timeout=5)
-                      if context else http.client.HTTPConnection("127.0.0.1", number, timeout=5))
+    def request(number, path, context=None, method="GET", headers=None, body=None, timeout=5):
+        connection = (http.client.HTTPSConnection("127.0.0.1", number, context=context, timeout=timeout)
+                      if context else http.client.HTTPConnection("127.0.0.1", number, timeout=timeout))
         try:
             connection.request(method, path, body=body, headers=headers or {})
             response = connection.getresponse()
@@ -78,6 +79,9 @@ def main():
         assert request(http_port, "/.well-known/acme-challenge/probe")[2] == b"challenge-value"
         assert request(http_port, "/.well-known/acme-challenge/missing")[0] == 404
         assert request(http_port, "/health")[0] == 503
+        assert request(http_port, "/.well-known/acme-challenge/private-path?token=private-query")[0] == 404
+        bootstrap_logs = dc("logs", "--no-log-prefix", "nginx").stdout
+        assert "private-path" not in bootstrap_logs and "private-query" not in bootstrap_logs
         print("PASS: bootstrap serves ACME challenges but not the API")
 
         context = ssl.create_default_context(cadata=certificate())
@@ -99,6 +103,13 @@ def main():
         assert status == 200 and probe["authorization"] == "Bearer proxy-test-token"
         assert probe["scheme"] == "https" and probe["forwarded_for"] != "203.0.113.123"
         assert probe["host"] == "api.example.test"
+        status, headers, body = request(https_port, "/__probe?token=private-query", context, headers={
+            "X-Request-ID": "proxy-correlation", "Authorization": "Bearer private-header",
+            "Cookie": "session=private-cookie", "Referer": "https://private-referrer.test/",
+        })
+        assert status == 200 and headers["X-Request-ID"] == "proxy-correlation"
+        assert json.loads(body)["request_id"] == "proxy-correlation"
+        assert request(https_port, "/private-path?token=private-query", context)[0] == 404
         preflight = request(https_port, "/api/chat", context, method="OPTIONS", headers={
             "Origin": "http://localhost:3000", "Access-Control-Request-Method": "POST",
             "Access-Control-Request-Headers": "authorization,content-type,x-workspace-id",
@@ -157,6 +168,21 @@ def main():
         eventually(lambda: request(https_port, "/health", context)[0] == 200)
         assert dc("ps", "-q", "nginx").stdout.strip() == nginx_id
         print("PASS: API recreation recovers without restarting Nginx")
+
+        # Nginx's default error log leaks the request on upstream/size errors.
+        dc("stop", "api")
+        # A cached upstream address may time out; an already invalidated DNS
+        # entry may fail immediately. Both must keep the request out of logs.
+        upstream_status = request(https_port, "/private-upstream-path?token=private-query", context, timeout=45)[0]
+        assert upstream_status in (502, 504)
+        logs = dc("logs", "--no-log-prefix", "nginx").stdout
+        for canary in ("private-path", "private-upstream-path", "private-query", "private-header", "private-cookie", "private-referrer"):
+            assert canary not in logs, f"Proxy leaked {canary}"
+        records = [json.loads(line) for line in logs.splitlines() if line.startswith('{"timestamp"')]
+        assert any(row["request_id"] == "proxy-correlation" for row in records)
+        assert any(row["status"] == 413 for row in records)
+        assert any(row["status"] == upstream_status for row in records)
+        print("PASS: proxy correlation and privacy-safe access/error logging")
     except BaseException:
         logs = dc("logs", "--tail=60", "api", "nginx", check=False)
         print(logs.stdout, logs.stderr)

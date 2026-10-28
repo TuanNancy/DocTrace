@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 
 import fakeredis
+import pytest
+from redis.client import Pipeline
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "scripts/backfill_workspaces.py"
 spec = importlib.util.spec_from_file_location("backfill_workspaces", MODULE_PATH)
@@ -91,3 +93,71 @@ def test_records_without_an_owner_or_doc_id_are_skipped():
     assert stats["scanned"] == 1
     assert stats["skipped_invalid"] == 1
     assert stats["hashes_updated"] == 0
+
+
+def indexes():
+    return (workspace_user_key(OWNER, OWNER), workspace_key(OWNER), global_key(), legacy_user_key(OWNER))
+
+
+@pytest.mark.parametrize("status", ["ready", "error", "delete_error", "deleting", "deleted"])
+def test_backfill_repairs_counts_without_resurrecting_deleted_documents(monkeypatch, status):
+    connection = fakeredis.FakeRedis()
+    seed(connection)
+    record = json.loads(connection.hget(document_key(LEGACY_DOC), "data"))
+    record.update(workspace_id=OWNER, owner_user_id=OWNER, status=status)
+    connection.hset(document_key(LEGACY_DOC), "data", json.dumps(record))
+    for key in indexes():
+        connection.zadd(key, {LEGACY_DOC: 1})
+    monkeypatch.setattr(backfill, "provision_personal_workspaces", no_database)
+
+    dry = backfill.run(connection, AppConfig(), apply=False)
+    assert dry["index_entries_removed"] == (4 if status == "deleted" else 0)
+    assert all(connection.zscore(key, LEGACY_DOC) is not None for key in indexes())
+    backfill.run(connection, AppConfig(), apply=True)
+    again = backfill.run(connection, AppConfig(), apply=True)
+    assert again["hashes_updated"] == 0
+    assert again["index_entries_added"] == again["index_entries_removed"] == 0
+    assert all((connection.zscore(key, LEGACY_DOC) is None) == (status == "deleted") for key in indexes())
+    assert json.loads(connection.hget(document_key(LEGACY_DOC), "data"))["status"] == status
+
+
+@pytest.mark.parametrize("outcome", ["ready", "deleted", "missing"])
+def test_backfill_retries_against_current_worker_state(monkeypatch, outcome):
+    connection = fakeredis.FakeRedis()
+    seed(connection)
+    key = document_key(LEGACY_DOC)
+    original = Pipeline.execute
+    raced = False
+
+    def execute(pipe, *args, **kwargs):
+        nonlocal raced
+        if not raced and any(command[0][0] == "HSET" and command[0][1] == key
+                             for command in pipe.command_stack):
+            raced = True
+            current = json.loads(connection.hget(key, "data"))
+            current.update(status=outcome, active_index_id="new-generation", job_id="new-job",
+                           attempt_id="new-generation", generations=["old-generation", "new-generation"])
+            if outcome == "missing":
+                connection.delete(key)
+            else:
+                connection.hset(key, "data", json.dumps(current))
+            if outcome == "deleted":
+                for index in indexes():
+                    connection.zrem(index, LEGACY_DOC)
+        return original(pipe, *args, **kwargs)
+
+    monkeypatch.setattr(Pipeline, "execute", execute)
+    monkeypatch.setattr(backfill, "provision_personal_workspaces", no_database)
+    stats = backfill.run(connection, AppConfig(), apply=True)
+    assert raced
+    if outcome == "missing":
+        assert not connection.exists(key)
+        assert stats["skipped_missing"] == 1
+    else:
+        current = json.loads(connection.hget(key, "data"))
+        assert current["status"] == outcome
+        assert current["job_id"] == "new-job"
+        assert current["active_index_id"] == "new-generation"
+        assert current["generations"] == ["old-generation", "new-generation"]
+        assert all((connection.zscore(index, LEGACY_DOC) is None) == (outcome == "deleted")
+                   for index in indexes())

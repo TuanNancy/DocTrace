@@ -100,7 +100,7 @@ it("restores the latest ready conversation and new chat deletes that transcript"
   );
 
   await act(async () => { await workspace.current.chat.newChat(); });
-  expect(deleteConversation).toHaveBeenCalledWith("conversation-b", "token", "workspace-a");
+  expect(deleteConversation).toHaveBeenCalledWith("conversation-b", "token", "workspace-a", expect.any(AbortSignal));
   expect(workspace.current.chat.messages).toEqual([]);
   expect(workspace.current.docId).toBe("b");
   // A deleted transcript must not be restored again for this workspace.

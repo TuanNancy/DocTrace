@@ -192,7 +192,7 @@ main() {
     done
     [[ "$ready" == 1 ]] || die "RQ worker did not register on the configured queue"
     curl --fail --silent --show-error --retry 5 --retry-all-errors --retry-delay 3 \
-        --connect-timeout 5 --max-time 15 "https://$domain/health"
+        --connect-timeout 5 --max-time 15 "https://$domain/ready"
     echo
 
     if [[ "$target $image" != "$current_sha $current_image" ]]; then

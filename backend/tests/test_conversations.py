@@ -1,8 +1,6 @@
 """Owner-scoped transcript routes and citation staleness."""
 from uuid import uuid4
 
-from fastapi import HTTPException
-
 from app.core.workspace import require_workspace
 from app.main import app
 from app.services.workspaces import WorkspaceContext
@@ -46,8 +44,8 @@ def test_list_scopes_to_workspace_user_document_and_limit(client, transcripts):
 
 def test_get_marks_sources_stale_after_reindex(client, transcripts, repository):
     transcripts.get.return_value = conversation()
-    repository.get.side_effect = None
-    repository.get.return_value = {"status": "ready", "active_index_id": str(uuid4())}
+    repository.transcript_documents.side_effect = None
+    repository.transcript_documents.return_value = {DOC: {"status": "ready", "active_index_id": str(uuid4())}}
 
     response = client.get(f"/api/conversations/{CONVERSATION}")
 
@@ -56,13 +54,13 @@ def test_get_marks_sources_stale_after_reindex(client, transcripts, repository):
     assert body["messages"][1]["stale"] is True
     assert body["messages"][1]["sources"][0]["stale"] is True
     transcripts.get.assert_awaited_once_with(WORKSPACE, OWNER, CONVERSATION)
-    repository.get.assert_awaited_once_with(WORKSPACE, OWNER, DOC)
+    repository.transcript_documents.assert_awaited_once_with(WORKSPACE, OWNER, [DOC])
 
 
 def test_get_keeps_current_generation_sources_usable(client, transcripts, repository):
     transcripts.get.return_value = conversation()
-    repository.get.side_effect = None
-    repository.get.return_value = {"status": "ready", "active_index_id": DOC}
+    repository.transcript_documents.side_effect = None
+    repository.transcript_documents.return_value = {DOC: {"status": "ready", "active_index_id": DOC}}
 
     body = client.get(f"/api/conversations/{CONVERSATION}").json()
 
@@ -70,18 +68,26 @@ def test_get_keeps_current_generation_sources_usable(client, transcripts, reposi
     assert body["messages"][1]["sources"][0]["stale"] is False
 
 
-def test_missing_or_deleted_document_marks_every_citation_stale(
+def test_missing_or_deleting_document_hides_transcript_even_before_sql_retention(
     client, transcripts, repository,
 ):
     transcripts.get.return_value = conversation()
-    repository.get.side_effect = HTTPException(404, "Not found")
+    repository.transcript_documents.side_effect = None
+    repository.transcript_documents.return_value = {}
 
     response = client.get(f"/api/conversations/{CONVERSATION}")
 
+    assert response.status_code == 404
+    assert "messages" not in response.json()
+
+
+def test_list_omits_deleting_documents_even_before_sql_retention(client, transcripts, repository):
+    transcripts.list.return_value = {"items": [{"id": CONVERSATION, "doc_id": DOC}]}
+    repository.transcript_documents.side_effect = None
+    repository.transcript_documents.return_value = {}
+    response = client.get("/api/conversations")
     assert response.status_code == 200
-    body = response.json()
-    assert body["messages"][1]["stale"] is True
-    assert body["messages"][1]["sources"][0]["stale"] is True
+    assert response.json() == {"items": []}
 
 
 def test_get_does_not_reveal_another_users_conversation(client, transcripts):

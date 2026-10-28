@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 import math
 from datetime import date, datetime, timezone
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 from uuid import UUID
 
 from fastapi import HTTPException
@@ -21,7 +21,11 @@ from starlette.concurrency import run_in_threadpool
 from app.core.config import AppConfig, get_config
 from app.core.errors import api_error
 from app.db import DatabaseNotConfigured, session_scope
+from app.services.document_locks import lock_document
 from app.services.transcripts import ensure_conversation, insert_message
+
+if TYPE_CHECKING:
+    from app.services.document_repository import DocumentRepository
 
 logger = logging.getLogger(__name__)
 
@@ -82,11 +86,11 @@ def document_quota_error(limit: int, used: int) -> HTTPException:
 def duplicate_error(row: dict) -> HTTPException:
     """Reject a repeated client request id without reserving another question."""
     status = row.get("status")
-    extra = {"chat_request_id": row.get("chat_request_id")}
+    extra = {"chat_request_id": row.get("chat_request_id"), "conversation_id": row.get("conversation_id")}
     if status == "completed":
         return api_error(
             409, "request_completed", "Yêu cầu này đã hoàn tất.",
-            conversation_id=row.get("conversation_id"), **extra,
+            **extra,
         )
     if status in ("admitted", "streaming"):
         return api_error(
@@ -100,8 +104,11 @@ def duplicate_error(row: dict) -> HTTPException:
 
 
 class QuotaService:
-    def __init__(self, config: AppConfig):
+    def __init__(self, config: AppConfig, repository: DocumentRepository | None = None):
+        from app.services.document_repository import DocumentRepository
+
         self.config = config
+        self.repository = repository if repository is not None else DocumentRepository(config)
 
     async def _run(self, action, *args):
         def call():
@@ -115,7 +122,7 @@ class QuotaService:
         except DatabaseNotConfigured as exc:
             raise api_error(503, "quota_unavailable", "Dịch vụ quota chưa được cấu hình.") from exc
         except Exception as exc:
-            logger.exception("Quota operation failed")
+            logger.exception("quota_operation_failed")
             raise api_error(503, "quota_unavailable", "Không thể kiểm tra quota. Vui lòng thử lại.") from exc
 
     @staticmethod
@@ -155,6 +162,19 @@ class QuotaService:
         existing = self._existing(session, workspace_id, user_id, request_id)
         if existing:
             raise duplicate_error(existing)
+
+        from app.services.workspaces import WorkspaceService
+
+        # A header resolved earlier is not an admission fence. Archive/purge and
+        # plan changes wait for this transaction, including its Redis recheck.
+        plan = WorkspaceService(self.config)._lock_workspace(session, workspace_id)
+        lock_document(session, workspace_id, user_id, doc_id)
+        document = self.repository.get_sync(workspace_id, user_id, doc_id)
+        if (document["status"] != "ready" or not document.get("active_index_id")
+                or document.get("delete_requested_at")
+                or (index_id is not None and document["active_index_id"] != index_id)):
+            raise api_error(409, "document_not_ready", "Tài liệu chưa sẵn sàng để hỏi đáp.")
+        index_id = document["active_index_id"]
 
         inserted = session.execute(text(
             """
@@ -301,11 +321,23 @@ class QuotaService:
                                error_code: str | None = None) -> bool:
         return await self._run(self._mark_chat, chat_request_id, status, error_code)
 
+    def _record_timing(self, session, chat_request_id: str, latency_ms: int, first_token_ms: int | None) -> None:
+        session.execute(text("""
+            UPDATE doctrace.chat_requests
+            SET latency_ms = COALESCE(latency_ms, :latency), first_token_ms = COALESCE(first_token_ms, :first)
+            WHERE id = CAST(:id AS uuid)
+        """), {"id": chat_request_id, "latency": latency_ms, "first": first_token_ms})
+
+    async def record_timing(self, chat_request_id: str, latency_ms: int, first_token_ms: int | None) -> None:
+        await self._run(self._record_timing, chat_request_id, latency_ms, first_token_ms)
+
     def _usage(self, session, workspace_id: str, plan: str, user_id: str, role: str) -> dict:
         workspace_id = _uuid(workspace_id, "workspace_invalid", "Workspace không hợp lệ.")
         user_id = _uuid(user_id, "invalid_user", "Người dùng không hợp lệ.")
-        period = period_start()
-        start = period_utc()
+        now = utcnow()
+        period = period_start(now)
+        start, end = period_utc(now), reset_at(now)
+        owner = role == "owner"
         chat_limit = self._limit(session, plan, CHAT_METRIC)
         document_limit = self._limit(session, plan, DOCUMENT_METRIC)
         chat_used = session.execute(text(
@@ -316,18 +348,18 @@ class QuotaService:
             """
         ), {
             "workspace_id": workspace_id, "period_start": period, "metric": CHAT_METRIC,
-        }).scalar_one_or_none()
+        }).scalar_one_or_none() if owner else None
 
-        scope = "" if role == "owner" else " AND user_id = CAST(:user_id AS uuid)"
-        params = {"workspace_id": workspace_id, "start": start}
-        if role != "owner":
+        scope = "" if owner else " AND user_id = CAST(:user_id AS uuid)"
+        params = {"workspace_id": workspace_id, "start": start, "end": end}
+        if not owner:
             params["user_id"] = user_id
         chats = session.execute(text(
             f"""
             SELECT user_id::text AS user_id, count(*) AS chat_questions
             FROM doctrace.chat_requests
             WHERE workspace_id = CAST(:workspace_id AS uuid)
-              AND created_at >= :start{scope}
+              AND created_at >= :start AND created_at < :end{scope}
             GROUP BY user_id
             """
         ), params).mappings().all()
@@ -338,7 +370,7 @@ class QuotaService:
                    count(*) FILTER (WHERE cost_micros IS NULL) AS cost_unknown_calls
             FROM doctrace.provider_calls
             WHERE workspace_id = CAST(:workspace_id AS uuid)
-              AND created_at >= :start AND user_id IS NOT NULL{scope}
+              AND created_at >= :start AND created_at < :end{scope}
             GROUP BY user_id
             """
         ), params).mappings().all()
@@ -352,6 +384,10 @@ class QuotaService:
                 "cost_unknown_calls": 0,
             }
         for row in costs:
+            # Workspace costs include unattributed calls, but those do not form
+            # a fictional member. A member's SQL scope excludes them entirely.
+            if row["user_id"] is None:
+                continue
             entry = by_user.setdefault(row["user_id"], {
                 "user_id": row["user_id"], "chat_questions": 0,
                 "cost_micros": 0, "cost_unknown_calls": 0,
@@ -359,25 +395,30 @@ class QuotaService:
             entry["cost_micros"] = int(row["cost_micros"] or 0)
             entry["cost_unknown_calls"] = int(row["cost_unknown_calls"] or 0)
 
-        used = int(chat_used or 0)
+        used = int(chat_used or 0) if owner else sum(row["chat_questions"] for row in by_user.values())
         return {
             "workspace_id": workspace_id,
+            "scope": "workspace" if owner else "self",
             "plan": plan,
             "period_start": period.isoformat(),
-            "reset_at": reset_iso(),
+            "reset_at": reset_iso(now),
             "chat": {
                 "used": used,
                 "limit": chat_limit,
-                "remaining": max(0, chat_limit - used),
+                "remaining": max(0, chat_limit - used) if owner else None,
                 "metric": CHAT_METRIC,
             },
             "documents": {
                 "used": 0,
                 "limit": document_limit,
-                "remaining": max(0, document_limit),
+                "remaining": max(0, document_limit) if owner else None,
                 "metric": DOCUMENT_METRIC,
             },
             "by_user": sorted(by_user.values(), key=lambda item: item["user_id"]),
+            "costs": {
+                "known_micros": sum(int(row["cost_micros"]) for row in costs),
+                "unknown_calls": sum(int(row["cost_unknown_calls"]) for row in costs),
+            },
         }
 
     async def usage(self, workspace_id: str, plan: str, user_id: str, role: str) -> dict:

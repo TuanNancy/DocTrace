@@ -103,8 +103,7 @@ def test_member_management_is_owner_metadata_only(client, service):
     service.add_member.assert_awaited_once_with(USER, WORKSPACE, MEMBER)
 
 
-def test_removing_a_member_passes_the_document_count_to_the_service(client, service, repository):
-    repository.count_workspace = AsyncMock(return_value=3)
+def test_removing_a_member_delegates_locked_counting_to_the_service(client, service, repository):
     service.remove_member.side_effect = api_error(
         409, "member_has_documents", "Thành viên còn tài liệu chưa xóa trong workspace.",
         document_count=3,
@@ -116,27 +115,23 @@ def test_removing_a_member_passes_the_document_count_to_the_service(client, serv
         "message": "Thành viên còn tài liệu chưa xóa trong workspace.",
         "document_count": 3,
     }
-    service.assert_owner.assert_awaited_once_with(USER, WORKSPACE)
-    repository.count_workspace.assert_awaited_once_with(WORKSPACE, MEMBER)
-    service.remove_member.assert_awaited_once_with(USER, WORKSPACE, MEMBER, 3)
+    repository.count_workspace.assert_not_awaited()
+    service.remove_member.assert_awaited_once_with(USER, WORKSPACE, MEMBER, repository)
 
 
-def test_removing_a_clean_member_checks_owner_first(client, service, repository):
-    repository.count_workspace = AsyncMock(return_value=0)
+def test_removing_a_clean_member_uses_the_guarded_service(client, service, repository):
     service.remove_member.return_value = {"user_id": MEMBER, "status": "removed"}
     response = client.delete(f"/api/workspaces/{WORKSPACE}/members/{MEMBER}")
     assert response.status_code == 200
-    service.assert_owner.assert_awaited_once_with(USER, WORKSPACE)
-    service.remove_member.assert_awaited_once_with(USER, WORKSPACE, MEMBER, 0)
+    service.remove_member.assert_awaited_once_with(USER, WORKSPACE, MEMBER, repository)
 
 
 def test_non_owner_cannot_probe_workspace_document_counts(client, service, repository):
     repository.count_workspace = AsyncMock()
-    service.assert_owner.side_effect = api_error(404, "workspace_not_found", "Không tìm thấy workspace.")
+    service.remove_member.side_effect = api_error(404, "workspace_not_found", "Không tìm thấy workspace.")
     response = client.delete(f"/api/workspaces/{WORKSPACE}/members/{MEMBER}")
     assert response.status_code == 404
     repository.count_workspace.assert_not_awaited()
-    service.remove_member.assert_not_awaited()
 
 
 def test_archive_and_restore_use_the_service(client, service):

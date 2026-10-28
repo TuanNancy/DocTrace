@@ -37,15 +37,15 @@ class RAGPipeline:
         if self.chat_provider is None:
             from app.providers.factory import create_chat_provider
             self.chat_provider = create_chat_provider(config=self.config)
-            logger.info("Created OpenRouter chat provider")
+            logger.info("rag_provider_created")
 
         if self.vector_store is None:
             from app.storage.factory import create_vector_store
             self.vector_store = create_vector_store(config=self.config)
-            logger.info("Created Milvus vector store")
+            logger.info("rag_store_created")
 
         await self.vector_store.connect()
-        logger.info("RAG pipeline initialized successfully")
+        logger.info("rag_initialized")
 
     async def shutdown(self) -> None:
         # StreamingResponse cancels its task group when the browser disconnects.
@@ -56,7 +56,7 @@ class RAGPipeline:
             finally:
                 if self.chat_provider:
                     await self.chat_provider.close()
-        logger.info("RAG pipeline shutdown complete")
+        logger.info("rag_shutdown")
 
     async def retrieve_chunks(
         self,
@@ -91,7 +91,7 @@ class RAGPipeline:
             user_id=user_id,
         )
 
-        logger.info("Retrieved %s chunks", len(retrieved_chunks))
+        logger.info("rag_retrieved", extra={"chunks_count": len(retrieved_chunks)})
         return retrieved_chunks
 
     def select_context_chunks(self, chunks: List[RetrievedChunk]) -> List[RetrievedChunk]:
@@ -229,8 +229,8 @@ class RAGPipeline:
             ):
                 yield text_delta
 
-        except Exception as e:
-            logger.exception(f"Error in streaming query: {e}")
+        except Exception:
+            logger.exception("rag_stream_failed")
             raise
 
 

@@ -16,7 +16,7 @@ from app.services.quotas import (
     QuotaService, document_quota_error, get_quota_service,
 )
 from app.services.document_repository import DocumentRepository, get_document_repository, public_document
-from app.services.workspaces import WorkspaceContext
+from app.services.workspaces import WorkspaceContext, WorkspaceService, get_workspace_service
 from app.services.supabase_pdf_storage import (
     build_pdf_object_key, upload_pdf_to_supabase_storage, is_pdf_storage_configured, delete_pdf,
 )
@@ -34,6 +34,7 @@ async def upload_pdf(
     repository: DocumentRepository = Depends(get_document_repository),
     limiter: RateLimiter = Depends(get_rate_limiter),
     quotas: QuotaService = Depends(get_quota_service),
+    workspaces: WorkspaceService = Depends(get_workspace_service),
 ) -> Dict[str, Any]:
     """
     Retain a PDF, then atomically create its Redis catalog record and RQ job.
@@ -96,29 +97,28 @@ async def upload_pdf(
     try:
         await run_in_threadpool(upload_pdf_to_supabase_storage, file_content, key)
     except Exception:
-        logger.exception("PDF retention failed")
+        logger.exception("pdf_retention_failed", extra={"doc_id": doc_id})
         try:
             # No job has been created yet, even if S3 committed before losing its reply.
             await run_in_threadpool(delete_pdf, key)
         except Exception:
-            logger.exception("Could not remove incomplete upload doc=%s", doc_id)
+            logger.exception("pdf_cleanup_failed", extra={"doc_id": doc_id})
         raise HTTPException(503, "Không thể lưu PDF. Vui lòng tải lại tài liệu.") from None
     try:
-        document = await repository.create({
+        document = await workspaces.create_document({
             "doc_id": doc_id, "user_id": uid, "owner_user_id": uid,
             "workspace_id": workspace.workspace_id, "name": filename,
             "size_bytes": total_size, "storage_key": key,
-        }, limit=limit)
+        }, repository, limit=limit)
     except Exception as exc:
-        if isinstance(exc, HTTPException) and exc.status_code == 429:
-            # The atomic re-check rejected this upload before committing the
-            # catalog/job, so the already-retained PDF must be removed.
+        if isinstance(exc, HTTPException) and exc.status_code in (404, 429):
+            # Membership/archive or quota rejected admission before Redis commit.
             try:
                 await run_in_threadpool(delete_pdf, key)
             except Exception:
-                logger.exception("Could not remove quota-rejected PDF doc=%s", doc_id)
+                logger.exception("pdf_cleanup_failed", extra={"doc_id": doc_id})
             raise
-        logger.exception("Could not confirm document enqueue doc=%s", doc_id)
+        logger.exception("enqueue_confirmation_failed", extra={"doc_id": doc_id})
         try:
             # A lost EXEC reply can still mean the catalog and job were committed.
             document = await repository.get(workspace.workspace_id, uid, doc_id)
@@ -127,10 +127,10 @@ async def upload_pdf(
                 try:
                     await run_in_threadpool(delete_pdf, key)
                 except Exception:
-                    logger.exception("Could not remove unqueued PDF doc=%s", doc_id)
+                    logger.exception("pdf_cleanup_failed", extra={"doc_id": doc_id})
             # When Redis is unavailable, retain the PDF: the worker may already own it.
         except Exception:
-            logger.exception("Could not reconcile enqueue doc=%s", doc_id)
+            logger.exception("enqueue_reconcile_failed", extra={"doc_id": doc_id})
         else:
             return public_document(document)
         raise HTTPException(503, "Không thể lưu hoặc xếp hàng tài liệu. Vui lòng kiểm tra thư viện và thử lại.") from None

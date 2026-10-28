@@ -1,0 +1,11 @@
+[Unit]
+Description=Purge expired DocTrace transcripts
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/DocTrace
+ExecStart=/usr/bin/docker compose --env-file .env.production -f compose.production.yml exec -T worker python -m app.purge_transcripts
+TimeoutStartSec=10min

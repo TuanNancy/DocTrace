@@ -15,6 +15,7 @@ from rq.job import Job, JobStatus
 from rq.serializers import JSONSerializer
 
 from app.core.config import AppConfig
+from app.core.observability import request_id_context
 from app.services import document_repository as module
 from app.services.job_queue import DocumentQueue
 
@@ -77,6 +78,30 @@ async def test_create_commits_catalog_and_one_json_job_without_ttl(library):
     assert "job_id" not in listed["items"][0]
 
 
+async def test_job_correlation_commits_with_catalog_and_changes_only_on_new_admission(library):
+    repository, connection, _, _ = library
+    token = request_id_context.set("upload-request")
+    try:
+        record = await create(repository, upload())
+    finally:
+        request_id_context.reset(token)
+    assert record["request_id"] == "upload-request"
+    assert (await repository.internal_document(record["doc_id"]))["request_id"] == "upload-request"
+    attempt = await repository.begin(record["doc_id"], record["job_id"], 1)
+    await repository.finish(attempt, error="generic failure")
+    job(connection, record, JobStatus.FAILED)
+    token = request_id_context.set("retry-request")
+    try:
+        retried = await repository.queue(WORKSPACE, OWNER, record["doc_id"], "index")
+    finally:
+        request_id_context.reset(token)
+    assert retried["request_id"] == "retry-request"
+    assert job(connection, retried).args == [record["doc_id"]]
+    automatic_attempt = await repository.begin(record["doc_id"], retried["job_id"], 2)
+    assert automatic_attempt["document"]["request_id"] == "retry-request"
+    assert "request_id" not in module.public_document(retried)
+
+
 async def test_owner_scope_applies_to_reads_listing_and_mutations(library):
     repository, _, _, _ = library
     document = await create(repository, upload())
@@ -118,6 +143,25 @@ async def test_workspace_document_counts_are_split_by_user(library):
     assert await repository.count_workspace(WORKSPACE, OWNER) == 2
     assert await repository.count_workspace(WORKSPACE, "other") == 1
     assert await repository.count_workspace(OTHER_WORKSPACE) == 1
+
+
+@pytest.mark.parametrize("status,visible", [
+    ("ready", True), ("queued", True), ("processing", True), ("error", True),
+    ("deleting", False), ("delete_error", False), ("deleted", False),
+])
+async def test_transcript_visibility_checks_catalog_lifecycle_and_owner(library, status, visible):
+    repository, connection, _, _ = library
+    document = await create(repository, upload())
+    doc_id = document["doc_id"]
+    document["status"] = status
+    connection.hset(module.document_key(doc_id), "data", json.dumps(document))
+    result = await repository.transcript_documents(WORKSPACE, OWNER, [doc_id, str(uuid4())])
+    assert (doc_id in result) is visible
+    assert await repository.transcript_documents(OTHER_WORKSPACE, OWNER, [doc_id]) == {}
+    assert await repository.transcript_documents(WORKSPACE, "other", [doc_id]) == {}
+    document["delete_requested_at"] = module.now()
+    connection.hset(module.document_key(doc_id), "data", json.dumps(document))
+    assert await repository.transcript_documents(WORKSPACE, OWNER, [doc_id]) == {}
 
 
 async def test_delete_removes_every_index_but_keeps_tombstone(library):

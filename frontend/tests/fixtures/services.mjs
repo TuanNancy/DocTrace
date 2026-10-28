@@ -1,6 +1,9 @@
 // Loopback-only Auth/API fixture. Never used by application code or production.
 import { createServer } from "node:http";
 import { createHash, randomUUID } from "node:crypto";
+import { adminFixture } from "./admin.mjs";
+
+const admin = adminFixture();
 
 const user = {
   id: "11111111-1111-4111-8111-111111111111",
@@ -25,7 +28,8 @@ const teamWorkspace = {
 const workspaces = [personalWorkspace, teamWorkspace];
 let uploads = 0;
 let cancelledStreams = 0;
-let chatQuestions = 0;
+const questionsByWorkspace = new Map();
+const chatRequests = new Map();
 const documents = new Map();
 const conversations = new Map();
 const chunkId = "22222222-2222-4222-8222-222222222222";
@@ -110,7 +114,7 @@ function json(response, status, body) {
 createServer(async (request, response) => {
   response.setHeader("Access-Control-Allow-Origin", "http://localhost:4310");
   response.setHeader("Access-Control-Allow-Headers", "authorization, apikey, content-type, x-client-info, x-supabase-api-version, x-workspace-id");
-  response.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
+  response.setHeader("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS");
   response.setHeader("Access-Control-Expose-Headers", "Retry-After, X-Conversation-Id");
   if (request.method === "OPTIONS") {
     response.writeHead(204).end();
@@ -120,7 +124,8 @@ createServer(async (request, response) => {
   if (url.pathname === "/health") return json(response, 200, { status: "ok" });
   if (url.pathname === "/test/status") return json(response, 200, { uploads, cancelledStreams });
   if (url.pathname === "/test/reset") {
-    documents.clear(); conversations.clear(); uploads = 0; cancelledStreams = 0; chatQuestions = 0;
+    documents.clear(); conversations.clear(); questionsByWorkspace.clear(); chatRequests.clear(); uploads = 0; cancelledStreams = 0;
+    admin.reset();
     return json(response, 200, {});
   }
   if (url.pathname === "/fixture.pdf" && url.searchParams.get("signature") === "fixture") {
@@ -131,6 +136,10 @@ createServer(async (request, response) => {
   const parts = [];
   for await (const part of request) parts.push(part);
   const body = Buffer.concat(parts).toString();
+  if (url.pathname === "/test/admin") {
+    admin.setAllowed(JSON.parse(body).allowed);
+    return json(response, 200, {});
+  }
   if (url.pathname === "/auth/v1/signup") {
     const credentials = JSON.parse(body);
     if (credentials.email !== user.email || credentials.password !== "fixture-password" || credentials.data?.full_name !== "Test Student") {
@@ -163,6 +172,7 @@ createServer(async (request, response) => {
   }
   if (url.pathname === "/auth/v1/user") return json(response, 200, user);
   if (url.pathname === "/auth/v1/logout") return response.writeHead(204).end();
+  if (url.pathname.startsWith("/api/admin/")) return json(response, ...admin.handle(url, request.method, body));
   if (url.pathname === "/api/workspaces") return json(response, 200, { items: workspaces });
   if (url.pathname === "/api/upload") {
     const scope = workspaceFor(request);
@@ -259,14 +269,17 @@ createServer(async (request, response) => {
     const scope = workspaceFor(request);
     if (scope.error) return json(response, ...scope.error);
     const now = new Date();
+    const owner = workspaces.find((workspace) => workspace.id === scope.workspaceId).role === "owner";
+    const chatQuestions = questionsByWorkspace.get(scope.workspaceId) ?? 0;
     const documentCount = [...documents.values()]
       .filter((document) => document.workspace_id === scope.workspaceId).length;
     return json(response, 200, {
-      workspace_id: scope.workspaceId, plan: "free",
+      workspace_id: scope.workspaceId, scope: owner ? "workspace" : "self", plan: "free",
       period_start: new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString(),
       reset_at: new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1)).toISOString(),
-      chat: { used: chatQuestions, limit: 10, remaining: Math.max(0, 10 - chatQuestions), metric: "chat_questions_month" },
-      documents: { used: documentCount, limit: 5, remaining: Math.max(0, 5 - documentCount), metric: "documents" },
+      chat: { used: chatQuestions, limit: 10, remaining: owner ? Math.max(0, 10 - chatQuestions) : null, metric: "chat_questions_month" },
+      documents: { used: documentCount, limit: 5, remaining: owner ? Math.max(0, 5 - documentCount) : null, metric: "documents" },
+      costs: { known_micros: chatQuestions * 250000, unknown_calls: 0 },
       by_user: chatQuestions ? [{
         user_id: user.id, chat_questions: chatQuestions,
         cost_micros: chatQuestions * 250000, cost_unknown_calls: 0,
@@ -285,6 +298,14 @@ createServer(async (request, response) => {
     const document = documents.get(chat.doc_id);
     if (!document || document.workspace_id !== scope.workspaceId || document.status !== "ready") {
       return json(response, 409, { detail: "Tài liệu chưa sẵn sàng." });
+    }
+    const requestKey = `${scope.workspaceId}:${chat.request_id}`;
+    const previous = chatRequests.get(requestKey);
+    if (previous) {
+      const code = previous.status === "completed" ? "request_completed"
+        : previous.status === "streaming" ? "request_in_progress" : "request_failed";
+      return json(response, 409, { detail: { code, message: "Yêu cầu đã được tiếp nhận.",
+        conversation_id: previous.conversation_id, retryable: code === "request_failed" } });
     }
 
     const now = new Date().toISOString();
@@ -309,8 +330,10 @@ createServer(async (request, response) => {
       index_id: document.doc_id, status: "streaming", created_at: now, updated_at: now,
     };
     conversation.messages.push(userMessage, assistantMessage);
+    const admission = { conversation_id: conversation.id, status: "streaming" };
+    chatRequests.set(requestKey, admission);
     conversation.updated_at = now;
-    chatQuestions += 1;
+    questionsByWorkspace.set(scope.workspaceId, (questionsByWorkspace.get(scope.workspaceId) ?? 0) + 1);
 
     response.writeHead(200, {
       "Content-Type": "text/event-stream", "Cache-Control": "no-cache",
@@ -327,6 +350,7 @@ createServer(async (request, response) => {
       event("token", second);
       assistantMessage.content += second;
       assistantMessage.status = "complete";
+      admission.status = "completed";
       assistantMessage.updated_at = new Date().toISOString();
       conversation.updated_at = assistantMessage.updated_at;
       event("done", "[DONE]");
@@ -338,6 +362,7 @@ createServer(async (request, response) => {
       if (finished) return;
       cancelledStreams += 1;
       assistantMessage.status = "interrupted";
+      admission.status = "interrupted";
       assistantMessage.updated_at = new Date().toISOString();
       conversation.updated_at = assistantMessage.updated_at;
     });

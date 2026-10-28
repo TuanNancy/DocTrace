@@ -70,6 +70,7 @@ jobs:
     timeout-minutes: 15
     env:
       BACKEND_ENV_FILE: ./deploy/tests/api.env
+      MIGRATION_ENV_FILE: ./deploy/tests/migrations.env
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6

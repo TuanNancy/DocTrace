@@ -20,6 +20,7 @@ from pathlib import Path
 from uuid import UUID
 
 from redis import Redis
+from redis.exceptions import WatchError
 from sqlalchemy import text
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
@@ -66,7 +67,7 @@ def iter_documents(connection: Redis, batch_size: int = 500):
         if not isinstance(record, dict):
             logger.warning("Skipping non-object catalog record %s", key)
             continue
-        record.setdefault("doc_id", key.rsplit(":", 1)[-1])
+        record["doc_id"] = key.rsplit(":", 1)[-1]
         yield record
 
 
@@ -95,7 +96,62 @@ def score_for(record: dict) -> float:
             value = value.replace(tzinfo=timezone.utc)
         return value.timestamp()
     except (KeyError, TypeError, ValueError):
-        return datetime.now(timezone.utc).timestamp()
+        return 0  # Stable ordering for legacy records without a usable timestamp.
+
+
+def repair_document(connection: Redis, doc_id: str, *, apply: bool) -> Counter:
+    """Repair one current record, never the snapshot read by SCAN.
+
+    Workers change the hash and its indexes in one transaction. Watching that
+    hash fences both metadata normalization and index repair against a concurrent
+    publication/deletion. Tombstones are retained but removed from all indexes.
+    """
+    key = document_key(doc_id)
+    for _ in range(10):
+        with connection.pipeline() as pipe:
+            try:
+                pipe.watch(key)
+                raw = pipe.hget(key, "data")
+                if not raw:
+                    return Counter(skipped_missing=1)
+                try:
+                    record = json.loads(raw)
+                except (TypeError, ValueError):
+                    return Counter(skipped_invalid=1)
+                if not isinstance(record, dict):
+                    return Counter(skipped_invalid=1)
+                normalized, changed = normalize_record({**record, "doc_id": doc_id})
+                if normalized is None:
+                    return Counter(skipped_invalid=1)
+                changed = changed or record.get("doc_id") != doc_id
+                workspace_id, owner = normalized["workspace_id"], normalized["owner_user_id"]
+                indexes = (
+                    workspace_user_key(workspace_id, owner), workspace_key(workspace_id),
+                    global_key(), legacy_user_key(owner),
+                )
+                deleted = normalized.get("status") == "deleted"
+                present = sum(pipe.zscore(index, doc_id) is not None for index in indexes)
+                stats = Counter({
+                    "hashes_updated" if changed else "hashes_unchanged": 1,
+                    "index_entries_planned": len(indexes),
+                    "index_entries_added": 0 if deleted else len(indexes) - present,
+                    "index_entries_removed": present if deleted else 0,
+                    "deleted_records": int(deleted),
+                })
+                if apply:
+                    pipe.multi()
+                    if changed:
+                        pipe.hset(key, "data", json.dumps(normalized))
+                    for index in indexes:
+                        if deleted:
+                            pipe.zrem(index, doc_id)
+                        else:
+                            pipe.zadd(index, {doc_id: score_for(normalized)})
+                    pipe.execute()
+                return stats
+            except WatchError:
+                continue
+    raise RuntimeError(f"Catalog record {doc_id} kept changing; rerun the backfill")
 
 
 def provision_personal_workspaces(config: AppConfig, owners: list[str], *, apply: bool) -> int:
@@ -131,7 +187,6 @@ def run(connection: Redis, config: AppConfig, *, apply: bool, batch_size: int = 
         stats["scanned"] += 1
         normalized, _ = normalize_record(record)
         if normalized is None:
-            stats["skipped_invalid"] += 1
             continue
         if normalized["workspace_id"] == normalized["owner_user_id"]:
             personal_owners.add(normalized["owner_user_id"])
@@ -141,32 +196,12 @@ def run(connection: Redis, config: AppConfig, *, apply: bool, batch_size: int = 
     )
 
     for record in iter_documents(connection, batch_size):
-        normalized, changed = normalize_record(record)
-        if normalized is None:
-            continue
-        doc_id = normalized["doc_id"]
-        workspace_id = normalized["workspace_id"]
-        owner = normalized["owner_user_id"]
-        indexes = (
-            workspace_user_key(workspace_id, owner),
-            workspace_key(workspace_id),
-            global_key(),
-            legacy_user_key(owner),
-        )
-        if apply:
-            with connection.pipeline(transaction=False) as pipe:
-                if changed:
-                    pipe.hset(document_key(doc_id), "data", json.dumps(normalized))
-                score = score_for(normalized)
-                for index in indexes:
-                    pipe.zadd(index, {doc_id: score})
-                pipe.execute()
-        stats["hashes_updated" if changed else "hashes_unchanged"] += 1
-        stats["index_entries_planned"] += len(indexes)
+        stats.update(repair_document(connection, record["doc_id"], apply=apply))
 
     return {key: stats[key] for key in (
         "scanned", "personal_workspaces", "hashes_updated", "hashes_unchanged",
-        "index_entries_planned", "skipped_invalid",
+        "index_entries_planned", "index_entries_added", "index_entries_removed",
+        "deleted_records", "skipped_invalid", "skipped_missing",
     )}
 
 

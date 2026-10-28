@@ -1,12 +1,27 @@
 // @vitest-environment node
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  deleteConversation, getConversation, getUsage, listConversations, listWorkspaces,
+  ApiError, deleteConversation, getConversation, getUsage, listConversations, listWorkspaces,
   streamChat, uploadPDF,
 } from "@/lib/api";
 
 describe("API transport", () => {
   beforeEach(() => vi.stubEnv("NEXT_PUBLIC_API_URL", "https://api.example.test/"));
+
+  it.each(["request_completed", "request_in_progress", "request_failed"])("preserves recovery metadata for %s", async (code) => {
+    const detail = { code, message: "Recover request", conversation_id: "conversation-a", chat_request_id: "request-row", retryable: true };
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ detail }, { status: 409 })));
+    const error = await streamChat("Question", "doc", "token", "workspace-a", "request-id").catch((cause: unknown) => cause);
+    expect(error).toBeInstanceOf(ApiError);
+    expect(error).toMatchObject({ status: 409, code, detail });
+  });
+
+  it("keeps quota details and Retry-After alongside the user-facing message", async () => {
+    const detail = { code: "quota_exceeded", message: "Quota exhausted", metric: "chat_questions_month", reset_at: "2026-11-01T00:00:00Z", limit: 10, used: 10 };
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ detail }, { status: 429, headers: { "Retry-After": "30" } })));
+    await expect(streamChat("Question", "doc", "token", "workspace-a", "request-id"))
+      .rejects.toMatchObject({ code: "quota_exceeded", detail, retryAfter: 30 });
+  });
 
   it("uploads multipart PDF with Bearer auth, workspace header and a cancellation signal", async () => {
     const fetchMock = vi.fn().mockResolvedValue(Response.json({ doc_id: "a", chunks_count: 3 }));
@@ -94,6 +109,7 @@ describe("API transport", () => {
       chat: { used: 2, limit: 10, remaining: 8, metric: "chat_questions_month" },
       documents: { used: 1, limit: 5, remaining: 4, metric: "documents" },
       by_user: [],
+      scope: "workspace", costs: { known_micros: 0, unknown_calls: 0 },
     };
     const fetchMock = vi.fn().mockResolvedValue(Response.json(usage));
     vi.stubGlobal("fetch", fetchMock);

@@ -1,5 +1,6 @@
 """Postgres URL handling and readiness probes without a live database."""
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
@@ -39,8 +40,10 @@ def test_connect_arguments_bound_statements_and_pooler_compatibility():
     assert replace(config, database_pool_size=4) != config
 
 
-async def test_database_probe_is_disabled_or_bounded(monkeypatch):
-    assert (await db.check_database(AppConfig()))["status"] == "disabled"
+async def test_database_probe_fails_closed_without_config_or_on_failure(monkeypatch):
+    assert (await db.check_database(AppConfig())) == {
+        "status": "error", "latency_ms": None, "error_code": "database_not_configured",
+    }
 
     def fail(config):
         raise RuntimeError("private host detail")
@@ -50,3 +53,22 @@ async def test_database_probe_is_disabled_or_bounded(monkeypatch):
     assert result["status"] == "error"
     assert result["error_code"] == "database_unavailable"
     assert "private" not in str(result)
+
+
+def test_runtime_engine_never_formats_sql_parameters():
+    db.dispose_engines()
+    try:
+        engine = db.get_engine(AppConfig(database_url="postgresql://u:p@db.test/app"))
+        assert engine.hide_parameters is True
+    finally:
+        db.dispose_engines()
+
+
+def test_migrations_do_not_fall_back_to_runtime_credentials(monkeypatch):
+    from alembic import command
+    from alembic.config import Config
+    monkeypatch.delenv("DIRECT_DATABASE_URL", raising=False)
+    monkeypatch.setenv("DATABASE_URL", "postgresql://runtime:private@db.test/app")
+    config = Config(str(Path(__file__).resolve().parents[1] / "alembic.ini"))
+    with pytest.raises(RuntimeError, match="DIRECT_DATABASE_URL is required"):
+        command.upgrade(config, "head")

@@ -1,9 +1,11 @@
 # First issuance only: serve HTTP-01 challenges without exposing the API over HTTP.
+include /opt/doctrace/privacy.conf;
+
 server {
     listen 80;
     server_name ${API_DOMAIN};
-    access_log /dev/stdout;
-    error_log /dev/stderr warn;
+    access_log /dev/stdout doctrace_safe;
+    add_header X-Request-ID $doctrace_request_id always;
 
     location = /nginx-health {
         access_log off;

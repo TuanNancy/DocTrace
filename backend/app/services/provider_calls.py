@@ -105,11 +105,11 @@ class UsageCollector:
         try:
             await self._reconcile_missing()
         except Exception:
-            logger.warning("Provider usage reconciliation failed", exc_info=True)
+            logger.warning("provider_reconciliation_failed", exc_info=True)
         try:
             await run_in_threadpool(self._store)
         except Exception:
-            logger.warning("Provider usage persistence failed", exc_info=True)
+            logger.warning("provider_persistence_failed", exc_info=True)
 
     async def _reconcile_missing(self) -> None:
         missing = [call for call in self.calls
@@ -131,8 +131,7 @@ class UsageCollector:
         for call, result in zip(missing, results):
             if isinstance(result, BaseException):
                 logger.warning(
-                    "Provider cost reconciliation errored generation=%s",
-                    call.generation_id, exc_info=result,
+                    "provider_reconciliation_failed", exc_info=result,
                 )
             elif result:
                 call.apply_generation(result)

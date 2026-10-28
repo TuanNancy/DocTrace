@@ -4,7 +4,13 @@ import type {
 } from "@/types";
 
 export class ApiError extends Error {
-  constructor(message: string, readonly status: number, readonly code: string | null = null) {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly code: string | null = null,
+    readonly detail: Readonly<Record<string, unknown>> = {},
+    readonly retryAfter: number | null = null,
+  ) {
     super(message);
     this.name = "ApiError";
   }
@@ -83,6 +89,10 @@ async function checkResponse(response: Response) {
     // A proxy may return HTML. Retain its status rather than displaying HTML.
   }
   const { message, code } = errorDetail(body);
+  const rawDetail = body && typeof body === "object" ? (body as Record<string, unknown>).detail : null;
+  const detail = rawDetail && typeof rawDetail === "object" && !Array.isArray(rawDetail)
+    ? rawDetail as Record<string, unknown> : {};
+  const wait = retryAfterSeconds(response.headers.get("Retry-After"));
   if (response.status === 429) {
     if (code === "quota_exceeded") {
       // Monthly quota is not a burst limit: show when the plan resets rather
@@ -91,16 +101,15 @@ async function checkResponse(response: Response) {
       const reason = message ?? "Đã hết hạn mức sử dụng của gói hiện tại.";
       throw new ApiError(
         reset ? `${reason} Hạn mức sẽ được đặt lại vào ${reset}.` : reason,
-        response.status, code,
+        response.status, code, detail, wait,
       );
     }
-    const wait = retryAfterSeconds(response.headers.get("Retry-After"));
     throw new ApiError(
       `Bạn gửi yêu cầu quá nhanh. Vui lòng thử lại sau${wait === null ? "" : ` ${wait} giây`}.`,
-      response.status, code,
+      response.status, code, detail, wait,
     );
   }
-  throw new ApiError(message ?? `Yêu cầu thất bại (HTTP ${response.status}).`, response.status, code);
+  throw new ApiError(message ?? `Yêu cầu thất bại (HTTP ${response.status}).`, response.status, code, detail, wait);
 }
 
 export async function listWorkspaces(accessToken: string, signal?: AbortSignal): Promise<Workspace[]> {
@@ -110,6 +119,19 @@ export async function listWorkspaces(accessToken: string, signal?: AbortSignal):
   await checkResponse(response);
   const body = await response.json() as { items?: Workspace[] };
   return Array.isArray(body.items) ? body.items : [];
+}
+
+/** Platform routes use Auth only; workspace ownership never grants admin access. */
+export async function adminRequest<T>(accessToken: string, path: string, options: {
+  signal?: AbortSignal; method?: "GET" | "POST" | "PATCH"; body?: unknown;
+} = {}): Promise<T> {
+  const response = await fetch(apiUrl(`/api/admin${path}`), {
+    method: options.method ?? "GET", signal: options.signal, cache: "no-store",
+    headers: { ...authorization(accessToken), ...(options.body === undefined ? {} : { "Content-Type": "application/json" }) },
+    body: options.body === undefined ? undefined : JSON.stringify(options.body),
+  });
+  await checkResponse(response);
+  return response.json();
 }
 
 export async function uploadPDF(
@@ -228,10 +250,11 @@ export const deleteConversation = async (
   id: string,
   accessToken: string,
   workspaceId: string,
+  signal?: AbortSignal,
 ) => {
   await workspaceRequest<undefined>(
     `/api/conversations/${encodeURIComponent(id)}`, accessToken, workspaceId,
-    undefined, "DELETE",
+    signal, "DELETE",
   );
 };
 

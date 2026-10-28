@@ -5,6 +5,8 @@ from uuid import UUID
 import pytest
 from fastapi import HTTPException
 
+from app.core.errors import api_error
+
 PDF = b"%PDF-1.4\nfixture"
 OWNER = "00000000-0000-0000-0000-000000000001"
 WORKSPACE = "00000000-0000-0000-0000-0000000000ab"
@@ -97,3 +99,19 @@ def test_failed_enqueue_only_removes_pdf_when_noncommit_is_confirmed(client, rep
         response = client.post("/api/upload", files={"file": ("sample.pdf", PDF, "application/pdf")})
     assert response.status_code == 503
     assert delete.called is deleted
+
+
+def test_membership_revoked_during_storage_rejects_commit_and_removes_pdf(
+    client, repository, workspace_service, storage,
+):
+    workspace_service.create_document.side_effect = api_error(
+        404, "workspace_not_found", "Không tìm thấy workspace.",
+    )
+    with patch("app.routers.upload.delete_pdf") as delete:
+        response = client.post("/api/upload", files={"file": ("sample.pdf", PDF, "application/pdf")})
+    assert response.status_code == 404
+    assert response.json()["detail"]["code"] == "workspace_not_found"
+    storage.assert_called_once()
+    delete.assert_called_once_with(storage.call_args.args[1])
+    repository.create.assert_not_awaited()
+    repository.get.assert_not_awaited()

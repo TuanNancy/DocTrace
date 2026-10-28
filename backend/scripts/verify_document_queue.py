@@ -1,10 +1,11 @@
-"""Isolated Redis catalog + Linux RQ integration; no PostgreSQL or cloud credentials.
+"""Isolated Postgres/Redis catalog + Linux RQ integration; no cloud credentials.
 
 python scripts/verify_document_queue.py [--api-image doctrace-api:verify]
 Builds a disposable image if omitted. PDF/AI/S3/Milvus are replaced by fixtures.
 """
 import argparse
 import asyncio
+import json
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import subprocess
@@ -20,11 +21,19 @@ from rq.job import Job
 from rq.registry import StartedJobRegistry
 from rq.scheduler import RQScheduler
 from rq.serializers import JSONSerializer
+from alembic import command as migrations
+from alembic.config import Config as AlembicConfig
+from sqlalchemy import create_engine, text
+from sqlalchemy.exc import OperationalError
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app.core.config import AppConfig
+from app import db
+from app.core.observability import bind_log_context
 from app.services.document_repository import DocumentRepository, document_key, workspace_user_key
 from app.services.job_queue import DocumentQueue
+from app.services.admin import AdminService
+from app.services.workspaces import WorkspaceService
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -39,6 +48,23 @@ def eventually(check, timeout=90):
     raise AssertionError("Timed out waiting for queue state")
 
 
+def retry_operational(action, timeout=90):
+    """Retry SQL bootstrap until the final Postgres server accepts connections.
+
+    `pg_isready` can succeed against the entrypoint's temporary init server,
+    which is then shut down before the real server starts. The bootstrap is
+    idempotent, so retrying the whole transaction is safe.
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            return action()
+        except OperationalError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(0.2)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--api-image")
@@ -47,6 +73,7 @@ def main():
     image = args.api_image or f"{prefix}:verify"
     containers = []
     connection = None
+    database = None
 
     def docker(*command, check=True):
         result = subprocess.run(["docker", *command], text=True, capture_output=True, timeout=600)
@@ -69,9 +96,10 @@ def main():
 
     def document(name="normal.pdf"):
         doc_id = str(uuid.uuid4())
-        return run(repository.create({"doc_id": doc_id, "user_id": owner, "owner_user_id": owner,
-                                      "workspace_id": workspace, "name": name, "size_bytes": 20,
-                                      "storage_key": f"{owner}/{doc_id}/{name}"}, limit=1000))
+        with bind_log_context(request_id="upload-" + doc_id):
+            return run(repository.create({"doc_id": doc_id, "user_id": owner, "owner_user_id": owner,
+                                          "workspace_id": workspace, "name": name, "size_bytes": 20,
+                                          "storage_key": f"{owner}/{doc_id}/{name}"}, limit=1000))
 
     def current(record):
         return run(repository.internal_document(record["doc_id"]))
@@ -101,6 +129,30 @@ def main():
             print("Building isolated worker image...", flush=True)
             docker("build", "-t", image, str(ROOT))
         docker("network", "create", prefix)
+        postgres_name = launch("postgres", "--network-alias", "postgres", "-p", "127.0.0.1::5432",
+                               "-e", "POSTGRES_PASSWORD=fixture-only", "postgres:16-alpine")
+        port = docker("port", postgres_name, "5432").rsplit(":", 1)[1]
+        migration_url = f"postgresql+psycopg://postgres:fixture-only@127.0.0.1:{port}/postgres"
+        database = create_engine(migration_url)
+
+        def bootstrap():
+            with database.begin() as sql:
+                sql.exec_driver_sql("CREATE SCHEMA IF NOT EXISTS auth")
+                sql.exec_driver_sql(
+                    "CREATE TABLE IF NOT EXISTS auth.users (id uuid PRIMARY KEY, deleted_at timestamptz)"
+                )
+                sql.exec_driver_sql((ROOT.parent / "deploy/postgres/bootstrap-runtime-role.sql").read_text())
+                sql.exec_driver_sql("ALTER ROLE doctrace_app PASSWORD 'fixture-runtime'")
+
+        retry_operational(bootstrap)
+        migration = AlembicConfig(str(ROOT / "alembic.ini"))
+        migration.set_main_option("sqlalchemy.url", migration_url)
+        migrations.upgrade(migration, "head")
+        config.database_url = f"postgresql+psycopg://doctrace_app:fixture-runtime@127.0.0.1:{port}/postgres"
+        worker_database_url = "postgresql+psycopg://doctrace_app:fixture-runtime@postgres:5432/postgres"
+        run(WorkspaceService(config).list_for_user(owner))
+        with database.begin() as sql:
+            sql.execute(text("INSERT INTO doctrace.platform_admins (user_id) VALUES (:id)"), {"id": owner})
         redis_name = launch("redis", "--network-alias", "redis", "-p", "127.0.0.1::6379", "redis:7.4.8-alpine",
                             "redis-server", "--appendonly", "yes", "--appendfsync", "everysec", "--maxmemory-policy", "noeviction")
 
@@ -139,8 +191,10 @@ def main():
 
         def worker(suffix):
             return launch(suffix, "-v", f"{ROOT / 'tests' / 'fixtures'}:/checks:ro", "-e", "PYTHONPATH=/app",
-                          "-e", "REDIS_URL=redis://redis:6379/0", "-e", f"RQ_QUEUE_NAME={config.rq_queue_name}",
-                          "-e", "DOCUMENT_INDEX_TIMEOUT_SECONDS=5", image, "python", "/checks/queue_worker.py")
+                           "-e", "REDIS_URL=redis://redis:6379/0", "-e", f"RQ_QUEUE_NAME={config.rq_queue_name}",
+                          "-e", f"DATABASE_URL={worker_database_url}",
+                          "-e", "DOCUMENT_INDEX_TIMEOUT_SECONDS=5", "-e", "LOG_JSON=true",
+                          image, "python", "/checks/queue_worker.py")
 
         workers = [worker("worker-one"), worker("worker-two")]
         eventually(lambda: state(queued, "ready"))
@@ -166,6 +220,21 @@ def main():
         eventually(lambda: state(timed_out, "ready"))
         assert current(timed_out)["attempt_number"] == 2
         print("PASS: real Linux workers, scheduled retry, timeout, invalid PDF, lost publication reply, result expiry", flush=True)
+
+        failed = document("private-failure.pdf")
+        eventually(lambda: state(failed, "error"))
+        eventually(lambda: queue.status(failed["job_id"]) == "failed")
+        failure = Job.fetch(failed["job_id"], connection=connection, serializer=JSONSerializer).latest_result()
+        assert failure.exc_string == "Document job failed; consult structured logs by job_id."
+        logs = "\n".join(docker("logs", name) for name in workers)
+        assert "private-failure.pdf" not in logs and "private-prompt-canary" not in logs
+        records = [json.loads(line) for line in logs.splitlines() if line.startswith('{"timestamp"')]
+        attempts = [row for row in records if row.get("doc_id") == failed["doc_id"]
+                    and row["message"] == "document_job_failed"]
+        assert {row["attempt"] for row in attempts} == {1, 2, 3}
+        assert all(row["request_id"] == failed["request_id"] and row["job_id"] == failed["job_id"]
+                   and row["workspace_id"] == workspace and row["user_id"] == owner for row in attempts)
+        print("PASS: originating request correlation across retries and private RQ failure/log sinks", flush=True)
 
         slow = document("slow.pdf")
         eventually(lambda: started(slow))
@@ -239,6 +308,34 @@ def main():
         eventually(lambda: state(abandoned, "ready"))
         assert current(abandoned)["attempt_number"] == 2
         print("PASS: killed horse/container/scheduler, missing job keys, pre-task failure and manual retry", flush=True)
+
+        def persisted(query, **params):
+            with database.connect() as sql:
+                return sql.execute(text(query), params).scalar()
+
+        eventually(lambda: persisted("SELECT count(*) FROM doctrace.document_failures WHERE doc_id = :id", id=invalid["doc_id"]) == 1)
+        assert persisted("SELECT error_code FROM doctrace.document_failures WHERE doc_id = :id", id=invalid["doc_id"]) == "invalid_pdf"
+        assert persisted("SELECT count(*) FROM doctrace.document_failures WHERE doc_id = :id", id=failed["doc_id"]) == 1
+        assert persisted("SELECT count(*) FROM doctrace.provider_calls WHERE workspace_id = :id AND cost_micros = 10", id=owner) >= 6
+        # No incoming jobs wake an idle worker for this new purge. Maintenance
+        # must enqueue cleanup itself, recover across restart, then finalize SQL.
+        workspace = str(uuid.uuid4())
+        with database.begin() as sql:
+            sql.execute(text("INSERT INTO doctrace.workspaces (id, name, kind, created_by) VALUES (:id, 'Purge fixture', 'team', :owner)"),
+                        {"id": workspace, "owner": owner})
+        purged = document()
+        eventually(lambda: state(purged, "ready"))
+        eventually(lambda: finished(purged))
+        admin = AdminService(config, repository)
+        run(admin.archive(owner, workspace))
+        assert run(admin.start_purge(owner, workspace))["total"] == 1
+        docker("restart", *workers)
+        eventually(lambda: persisted("SELECT status FROM doctrace.workspace_purges WHERE workspace_id = :id", id=workspace) == "completed", timeout=120)
+        assert not connection.exists(document_key(purged["doc_id"]))
+        assert connection.exists(f"deleted:{purged['doc_id']}")
+        assert persisted("SELECT count(*) FROM doctrace.workspaces WHERE id = :id", id=workspace) == 0
+        assert persisted("SELECT count(*) FROM doctrace.audit_events WHERE workspace_id = :id AND action = 'workspace.purge_completed'", id=workspace) == 1
+        print("PASS: fork-safe Postgres pools, durable terminal failures and idle/restarted worker purge", flush=True)
         print("All Redis/RQ integration checks passed.", flush=True)
     except Exception:
         for name in containers:
@@ -246,6 +343,9 @@ def main():
                 print(docker("logs", "--tail", "50", name, check=False), flush=True)
         raise
     finally:
+        db.dispose_engines()
+        if database:
+            database.dispose()
         if connection:
             connection.close()
         for name in reversed(containers):

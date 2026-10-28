@@ -28,7 +28,7 @@ async def check_redis(config: Optional[AppConfig] = None) -> dict:
     try:
         await run_in_threadpool(_ping_redis, config)
     except Exception:
-        logger.warning("Redis readiness probe failed", exc_info=True)
+        logger.warning("redis_probe_failed", exc_info=True)
         return {
             "status": "error",
             "latency_ms": round((perf_counter() - started) * 1000),
@@ -38,11 +38,11 @@ async def check_redis(config: Optional[AppConfig] = None) -> dict:
 
 
 async def readiness(config: Optional[AppConfig] = None) -> tuple[str, dict]:
-    """Return (status, checks). A configured but unreachable dependency fails."""
+    """Every required dependency must affirm readiness, including Postgres."""
     config = config or get_config()
     redis_check, database_check = await asyncio.gather(
         check_redis(config), check_database(config),
     )
     checks = {"redis": redis_check, "database": database_check}
-    degraded = any(check.get("status") == "error" for check in checks.values())
+    degraded = any(check.get("status") != "ok" for check in checks.values())
     return ("degraded" if degraded else "ok"), checks

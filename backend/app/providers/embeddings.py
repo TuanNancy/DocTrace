@@ -53,10 +53,9 @@ class OpenRouterEmbedder:
             )
             return len(r.data[0].embedding)
         except Exception as e:
-            logger.exception("Embedding dimension probe failed for model=%s: %s", self._model, e)
+            logger.exception("embedding_probe_failed", extra={"model": self._model})
             raise RuntimeError(
-                f"Embedding API failed (check OPENROUTER_API_KEY and EMBEDDING_MODEL). "
-                f"Model={self._model!r}. Original error: {e}"
+                "Embedding API failed (check OPENROUTER_API_KEY and EMBEDDING_MODEL)."
             ) from e
 
     def embed_documents(

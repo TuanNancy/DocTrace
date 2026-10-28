@@ -25,9 +25,35 @@ from app.services.document_repository import DocumentRepository, get_document_re
 from app.services.quotas import QuotaService, get_quota_service
 from app.services.rate_limiter import RateLimiter, get_rate_limiter
 from app.services.transcripts import TranscriptService, get_transcript_service
-from app.services.workspaces import WorkspaceContext
+from app.services.workspaces import WorkspaceContext, WorkspaceService, get_workspace_service
 
 CHAT_REQUEST_ID = "00000000-0000-0000-0000-0000000000c1"
+
+
+@pytest.fixture(scope="session")
+def install_auth_schema():
+    """Install a hosted-shaped Auth boundary and return a non-superuser DDL URL.
+
+    Callers use the container admin only to seed fixtures/bootstrap roles; actual
+    migrations use an identity that cannot grant auth schema USAGE or change RLS.
+    Never consult developer config.
+    """
+    from sqlalchemy import create_engine
+    from sqlalchemy.engine import make_url
+
+    def install(url):
+        engine = create_engine(url)
+        try:
+            with engine.begin() as connection:
+                connection.exec_driver_sql((Path(__file__).parent / "fixtures/auth.sql").read_text())
+                database = connection.dialect.identifier_preparer.quote(engine.url.database)
+                connection.exec_driver_sql(f"GRANT CREATE ON DATABASE {database} TO doctrace_migrator")
+        finally:
+            engine.dispose()
+        return make_url(url).set(username="doctrace_migrator", password="local-migration-only").render_as_string(
+            hide_password=False,
+        )
+    return install
 
 
 async def _fake_supabase_user():
@@ -51,6 +77,10 @@ def repository():
         "name": "sample.pdf", "status": "ready",
         "active_index_id": doc_id, "storage_key": f"{uid}/{doc_id}/sample.pdf",
     }
+    fake.get_sync.side_effect = fake.get.side_effect
+    fake.transcript_documents.side_effect = lambda workspace_id, uid, doc_ids: {
+        doc_id: fake.get_sync(workspace_id, uid, doc_id) for doc_id in doc_ids
+    }
     fake.create.side_effect = lambda document, *, limit: {
         **document, "status": "queued", "chunks_count": 0, "warnings": [], "error": None,
     }
@@ -61,6 +91,21 @@ def repository():
     }
     fake.list.return_value = {"items": [], "has_more": False}
     fake.count_workspace.return_value = 0
+    return fake
+
+
+@pytest.fixture
+def workspace_service(repository):
+    fake = AsyncMock(spec=WorkspaceService)
+
+    async def create(document, repo, *, limit):
+        return await repo.create(document, limit=limit)
+
+    fake.create_document.side_effect = create
+    async def retry(workspace_id, user_id, doc_id, repo):
+        return await repo.queue(workspace_id, user_id, doc_id, "index")
+
+    fake.retry_document.side_effect = retry
     return fake
 
 
@@ -82,12 +127,14 @@ def quotas():
     fake.mark_chat_status.return_value = True
     fake.usage.return_value = {
         "workspace_id": "00000000-0000-0000-0000-0000000000ab",
+        "scope": "workspace",
         "plan": "free",
         "period_start": "2026-10-01",
         "reset_at": "2026-11-01T00:00:00Z",
         "chat": {"used": 1, "limit": 10, "remaining": 9, "metric": "chat_questions_month"},
         "documents": {"used": 0, "limit": 5, "remaining": 5, "metric": "documents"},
         "by_user": [],
+        "costs": {"known_micros": 0, "unknown_calls": 0},
     }
     return fake
 
@@ -106,11 +153,16 @@ def transcripts():
     fake.mark_streaming.return_value = True
     fake.finalize_message.return_value = True
     fake.hide_for_document.return_value = 0
+
+    async def queue_deletion(workspace_id, user_id, doc_id, repository):
+        return await repository.queue(workspace_id, user_id, doc_id, "delete")
+
+    fake.queue_document_deletion.side_effect = queue_deletion
     return fake
 
 
 @pytest.fixture
-def client(repository, quotas, rate_limiter, transcripts) -> TestClient:
+def client(repository, quotas, rate_limiter, transcripts, workspace_service) -> TestClient:
     """FastAPI TestClient for router tests."""
     app.dependency_overrides[require_supabase_user] = _fake_supabase_user
     app.dependency_overrides[require_workspace] = _fake_workspace
@@ -118,6 +170,7 @@ def client(repository, quotas, rate_limiter, transcripts) -> TestClient:
     app.dependency_overrides[get_rate_limiter] = lambda: rate_limiter
     app.dependency_overrides[get_quota_service] = lambda: quotas
     app.dependency_overrides[get_transcript_service] = lambda: transcripts
+    app.dependency_overrides[get_workspace_service] = lambda: workspace_service
     try:
         with TestClient(app) as test_client:
             yield test_client
@@ -128,3 +181,4 @@ def client(repository, quotas, rate_limiter, transcripts) -> TestClient:
         app.dependency_overrides.pop(get_rate_limiter, None)
         app.dependency_overrides.pop(get_quota_service, None)
         app.dependency_overrides.pop(get_transcript_service, None)
+        app.dependency_overrides.pop(get_workspace_service, None)

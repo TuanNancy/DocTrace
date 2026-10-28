@@ -52,7 +52,7 @@ def test_delete_queues_cleanup_under_verified_owner(client, repository, transcri
     response = client.delete(f"/api/documents/{DOC}")
     assert response.status_code == 202
     assert response.json()["status"] == "deleting"
-    transcripts.hide_for_document.assert_awaited_once_with(WORKSPACE, OWNER, DOC)
+    transcripts.queue_document_deletion.assert_awaited_once_with(WORKSPACE, OWNER, DOC, repository)
     repository.queue.assert_awaited_once_with(WORKSPACE, OWNER, DOC, "delete")
 
 
@@ -74,6 +74,7 @@ def test_chat_rejects_unready_documents_before_rag(client, repository):
     assert client.post("/api/chat", json={"query": "hello", "doc_id": DOC}).status_code == 409
 
 
-def test_delete_conflict_is_returned_to_client(client, repository):
+def test_delete_conflict_is_returned_to_client(client, repository, transcripts):
     repository.queue.side_effect = HTTPException(409, "Wait for current job")
     assert client.delete(f"/api/documents/{DOC}").status_code == 409
+    transcripts.hide_for_document.assert_not_awaited()

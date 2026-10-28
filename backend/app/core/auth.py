@@ -49,7 +49,7 @@ async def require_supabase_user(
     except httpx.HTTPError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"Supabase auth service unavailable: {exc}",
+            detail="Supabase auth service unavailable.",
         ) from exc
 
     if response.status_code != status.HTTP_200_OK:

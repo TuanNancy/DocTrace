@@ -1,5 +1,5 @@
 import type { Page } from "@playwright/test";
-import { expect, test } from "./fixtures";
+import { expect, expectLibrary, test } from "./fixtures";
 
 async function login(page: Page) {
   await page.goto("/documents");
@@ -25,9 +25,7 @@ test("rate-limited uploads, indexing retries and chat show the wait time", async
   });
   await login(page);
   await page.getByRole("navigation", { name: "Điều hướng chính" }).getByRole("link", { name: /Thư viện/ }).click();
-  // Both routes have a "Chọn file" input. Wait for the destination so the
-  // upload cannot start on the outgoing chat page during client navigation.
-  await expect(page).toHaveURL(/\/documents$/);
+  await expectLibrary(page);
   const uploadUrl = "http://127.0.0.1:4311/api/upload";
   await page.route(uploadUrl, (route) => route.request().method() === "OPTIONS" ? route.continue() : route.fulfill(deny(12)));
   await page.getByLabel("Chọn file", { exact: true }).setInputFiles(file());
@@ -62,9 +60,9 @@ test("library lifecycle, streaming, citations and transcript restore across navi
   await page.setViewportSize({ width: 1440, height: 960 });
   await login(page);
   await page.getByRole("link", { name: "Thư viện", exact: false }).first().click();
-  await expect(page).toHaveURL(/\/documents$/);
+  await expectLibrary(page);
   await page.getByLabel("Chọn file", { exact: true }).setInputFiles(file());
-  await expect(page.getByText("Tải lên thành công")).toBeVisible();
+  await expect(page.getByText("Tải lên thành công")).toBeVisible({ timeout: 15000 });
   const row = page.getByTestId("document-row").filter({ hasText: "a.pdf" });
   await expect(row.getByText("Sẵn sàng", { exact: true })).toBeVisible({ timeout: 15000 });
   await row.getByRole("button", { name: "Hỏi đáp", exact: true }).click();
@@ -124,22 +122,80 @@ test("library lifecycle, streaming, citations and transcript restore across navi
 
 test("usage page shows plan counters and owner-scoped costs", async ({ page }) => {
   await login(page);
+  await page.getByRole("navigation", { name: "Điều hướng chính" }).getByRole("link", { name: /Thư viện/ }).click();
+  await expectLibrary(page);
+  await page.getByLabel("Chọn file", { exact: true }).setInputFiles(file());
+  const row = page.getByTestId("document-row");
+  await expect(row.getByText("Sẵn sàng", { exact: true })).toBeVisible({ timeout: 15000 });
+  await row.getByRole("button", { name: "Hỏi đáp", exact: true }).click();
+  await page.getByLabel("Câu hỏi của bạn").fill("Câu hỏi có chi phí kiểm thử");
+  await page.getByRole("button", { name: "Gửi", exact: true }).click();
+  await expect(page.getByRole("table")).toBeVisible();
+  await expect(page.getByLabel("Câu hỏi của bạn")).toBeEnabled();
+  const usageResponse = page.waitForResponse((response) => response.url().endsWith("/api/usage") && response.status() === 200);
   await page.getByRole("navigation", { name: "Điều hướng chính" })
     .getByRole("link", { name: /Mức sử dụng/ }).click();
+  const payload = await (await usageResponse).json();
+  expect(payload.scope).toBe("workspace");
+  expect(payload.chat.used).toBe(1);
+  expect(payload.costs).toEqual({ known_micros: 250000, unknown_calls: 0 });
   await expect(page).toHaveURL(/\/usage$/);
   await expect(page.getByText("Gói Free")).toBeVisible();
-  await expect(page.getByRole("progressbar", { name: "Câu hỏi trong tháng" })).toBeVisible();
-  await expect(page.getByRole("progressbar", { name: "Tài liệu trong workspace" })).toBeVisible();
-  await expect(page.getByText("Chưa có dữ liệu sử dụng trong tháng này.")).toBeVisible();
+  await expect(page.getByRole("progressbar", { name: "Câu hỏi trong tháng" })).toHaveAttribute("aria-valuenow", "1");
+  await expect(page.getByRole("progressbar", { name: "Tài liệu trong workspace" })).toHaveAttribute("aria-valuenow", "1");
+  await expect(page.getByRole("region", { name: "Tổng chi phí đã biết" }).getByText("0.25 USD")).toBeVisible();
+  await expect(page.getByRole("table").getByText("0.25 USD")).toBeVisible();
   await expect(page.getByText(/Chủ workspace chỉ thấy số liệu tổng hợp/)).toBeVisible();
   await page.screenshot({ path: "test-results/usage-desktop.png", fullPage: true });
+
+  await page.getByLabel("Chọn không gian làm việc").selectOption("33333333-3333-4333-8333-333333333333");
+  await expect(page.getByText("Chi phí đã biết của bạn")).toBeVisible();
+  await expect(page.getByText("0.25 USD")).not.toBeVisible();
+  await expect(page.getByRole("progressbar")).toHaveCount(0);
+  await expect(page.getByText(/Hạn mức chung của workspace: 10/)).toBeVisible();
+  await expect(page.getByText("Chưa có dữ liệu sử dụng trong tháng này.")).toBeVisible();
+  await page.setViewportSize({ width: 375, height: 812 });
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await page.screenshot({ path: "test-results/usage-member-mobile.png", fullPage: true });
+});
+
+test("recovers a lost chat response without charging a second question", async ({ page }) => {
+  await login(page);
+  await page.getByRole("navigation", { name: "Điều hướng chính" }).getByRole("link", { name: /Thư viện/ }).click();
+  await expectLibrary(page);
+  await page.getByLabel("Chọn file", { exact: true }).setInputFiles(file());
+  const row = page.getByTestId("document-row");
+  await expect(row.getByText("Sẵn sàng", { exact: true })).toBeVisible({ timeout: 15000 });
+  await row.getByRole("button", { name: "Hỏi đáp", exact: true }).click();
+  const requests: string[] = [];
+  await page.route("http://127.0.0.1:4311/api/chat", async (route) => {
+    if (route.request().method() === "OPTIONS") { await route.continue(); return; }
+    requests.push(route.request().postDataJSON().request_id);
+    if (requests.length === 1) {
+      await route.fetch(); // The server completed, but the browser lost the reply.
+      await route.abort("failed");
+    } else await route.continue();
+  });
+  await page.getByLabel("Câu hỏi của bạn").fill("Khôi phục câu trả lời");
+  await page.getByRole("button", { name: "Gửi", exact: true }).click();
+  const chatError = page.getByRole("main").getByRole("alert");
+  await expect(chatError).toBeVisible();
+  expect(requests).toHaveLength(1);
+  await page.getByRole("button", { name: "Kiểm tra / thử lại" }).click();
+  await expect(page.getByRole("table")).toBeVisible();
+  await expect(page.getByText("Khôi phục câu trả lời", { exact: true })).toHaveCount(1);
+  expect(requests).toHaveLength(2);
+  expect(requests[1]).toBe(requests[0]);
+  await expect(chatError).not.toBeVisible();
+  await page.getByRole("navigation", { name: "Điều hướng chính" }).getByRole("link", { name: /Mức sử dụng/ }).click();
+  await expect(page.getByRole("progressbar", { name: "Câu hỏi trong tháng" })).toHaveAttribute("aria-valuenow", "1");
 });
 
 test("failed documents can be filtered, retried and selected", async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 960 });
   await login(page);
   await page.getByRole("navigation", { name: "Điều hướng chính" }).getByRole("link", { name: /Thư viện/ }).click();
-  await expect(page).toHaveURL(/\/documents$/);
+  await expectLibrary(page);
   await page.getByLabel("Chọn file", { exact: true }).setInputFiles(file("error.pdf"));
   const row = page.getByTestId("document-row");
   await expect(row.getByText("Lỗi xử lý", { exact: true })).toBeVisible({ timeout: 15000 });
@@ -157,7 +213,7 @@ test("failed documents can be filtered, retried and selected", async ({ page }) 
 test("deletion waits for indexing to finish", async ({ page }) => {
   await login(page);
   await page.getByRole("navigation", { name: "Điều hướng chính" }).getByRole("link", { name: /Thư viện/ }).click();
-  await expect(page).toHaveURL(/\/documents$/);
+  await expectLibrary(page);
   await page.getByLabel("Chọn file", { exact: true }).setInputFiles(file("slow.pdf"));
   const row = page.getByTestId("document-row");
   const remove = row.getByRole("button", { name: "Xóa slow.pdf", exact: true });
@@ -172,7 +228,7 @@ test("mobile navigation and citation drawers remain usable without horizontal ov
   await login(page);
   await page.getByRole("button", { name: "Mở điều hướng" }).click();
   await page.getByRole("dialog").getByRole("link", { name: /Thư viện/ }).click();
-  await expect(page).toHaveURL(/\/documents$/);
+  await expectLibrary(page);
   await page.getByLabel("Chọn file", { exact: true }).setInputFiles(file("mobile.pdf"));
   const row = page.getByTestId("document-row");
   await expect(row.getByText("Sẵn sàng", { exact: true })).toBeVisible({ timeout: 15000 });

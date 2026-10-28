@@ -75,11 +75,7 @@ async def index_pdf_bytes(
         # Use the actual response dimension, rather than a configured or probed default.
         vector_dim = len(vectors[0])
         if embedder.dimension != vector_dim:
-            logger.warning(
-                "Embedder.dimension=%s differs from actual vector length=%s; using vector length for Milvus.",
-                embedder.dimension,
-                vector_dim,
-            )
+            logger.warning("embedding_dimension_changed")
 
         vector_store = await create_connected_vector_store(config=config)
         try:

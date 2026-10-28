@@ -18,6 +18,7 @@ if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
 from app.db import SCHEMA, normalize_database_url  # noqa: E402
+from migrations.permissions import grant_runtime_access  # noqa: E402
 
 config = context.config
 logger = logging.getLogger("alembic.env")
@@ -25,11 +26,10 @@ logger = logging.getLogger("alembic.env")
 
 def database_url() -> str:
     configured = (config.get_main_option("sqlalchemy.url") or "").strip()
-    url = configured or os.environ.get("DIRECT_DATABASE_URL", "").strip() \
-        or os.environ.get("DATABASE_URL", "").strip()
+    url = configured or os.environ.get("DIRECT_DATABASE_URL", "").strip()
     if not url:
         raise RuntimeError(
-            "DIRECT_DATABASE_URL or DATABASE_URL is required to run migrations."
+            "DIRECT_DATABASE_URL is required to run migrations; runtime DATABASE_URL is never used."
         )
     return normalize_database_url(url)
 
@@ -57,7 +57,7 @@ def run_migrations_offline() -> None:
 
 def run_migrations_online() -> None:
     engine = create_engine(
-        database_url(), poolclass=pool.NullPool, connect_args=connect_args(),
+        database_url(), poolclass=pool.NullPool, connect_args=connect_args(), hide_parameters=True,
     )
     try:
         with engine.connect() as connection:
@@ -75,6 +75,9 @@ def run_migrations_online() -> None:
                     text("SELECT pg_advisory_xact_lock(hashtext('doctrace:migrations'))")
                 )
                 context.run_migrations()
+                # Downgrade is for isolated testing only; it may remove tables.
+                if context.get_context().get_current_revision() is not None:
+                    grant_runtime_access(connection)
     finally:
         engine.dispose()
 

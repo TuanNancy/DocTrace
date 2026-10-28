@@ -38,8 +38,8 @@ def load_pdf_pages(
                 for number, page in enumerate(reader.pages, 1)
             ]
     except Exception as e:
-        logger.exception("PDF load failed for %s: %s", file_path, e)
-        raise ValueError(f"PDF file is corrupt or unreadable: {e!s}") from e
+        logger.exception("pdf_load_failed")
+        raise ValueError("PDF file is corrupt or unreadable") from e
 
     if not docs:
         raise ValueError("PDF produced no pages (empty or unreadable).")
@@ -51,12 +51,7 @@ def load_pdf_pages(
             "Many pages have little or no extractable text. This PDF may be scanned; "
             "consider using OCR for better results."
         )
-        logger.warning(
-            "Possible scanned PDF: %s of %s pages below %s chars",
-            low_text_pages,
-            len(docs),
-            config.min_chars_per_page,
-        )
+        logger.warning("pdf_scanned")
 
     return docs, warnings
 
@@ -86,10 +81,5 @@ def chunk_documents(
             "page": d.metadata["page"],
             "source": d.metadata["source"],
         })
-    logger.info(
-        "Chunking produced %s chunks (chunk_size=%s, chunk_overlap=%s)",
-        len(chunks),
-        resolved_chunk_size,
-        resolved_chunk_overlap,
-    )
+    logger.info("pdf_chunked", extra={"chunks_count": len(chunks)})
     return chunks

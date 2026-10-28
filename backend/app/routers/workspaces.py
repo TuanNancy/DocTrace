@@ -66,12 +66,9 @@ async def remove_member(
     service: WorkspaceService = Depends(get_workspace_service),
     repository: DocumentRepository = Depends(get_document_repository),
 ):
-    # Removing a member never deletes documents: block until they clean up.
-    # Authorize before reading Redis so non-owners cannot probe workspace counts.
-    await service.assert_owner(_user_id(user), str(workspace_id))
-    document_count = await repository.count_workspace(str(workspace_id), str(member_id))
+    # Service authorizes, locks membership, then counts under the upload fence.
     return await service.remove_member(
-        _user_id(user), str(workspace_id), str(member_id), document_count,
+        _user_id(user), str(workspace_id), str(member_id), repository,
     )
 
 
