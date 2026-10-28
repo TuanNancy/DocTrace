@@ -31,6 +31,7 @@ def dependencies(monkeypatch, attempt):
     monkeypatch.setattr(tasks, "download_pdf", MagicMock(return_value=b"%PDF-fixture"))
     monkeypatch.setattr(tasks, "remove_generations", remove)
     monkeypatch.setattr(tasks, "delete_pdf", delete)
+    monkeypatch.setattr(tasks, "TranscriptService", MagicMock(return_value=AsyncMock()))
     return repository, index, remove, delete
 
 
@@ -168,3 +169,19 @@ async def test_delete_job_never_creates_usage_rows(attempt, dependencies, monkey
     store.assert_not_called()
     remove.assert_awaited_once()
     delete.assert_called_once()
+
+
+async def test_delete_waits_for_transcript_recovery_before_external_cleanup(attempt, dependencies):
+    repository, _, remove, delete = dependencies
+    attempt["kind"] = "delete"
+    attempt["document"].update(workspace_id="workspace", delete_requested_at="2026-10-28T00:00:00Z")
+    transcripts = tasks.TranscriptService.return_value
+    transcripts.hide_for_document.side_effect = ConnectionError("Postgres unavailable")
+    with pytest.raises(ConnectionError):
+        await tasks.process_document(repository, "doc", "job", 1, 2)
+    transcripts.hide_for_document.assert_awaited_once_with(
+        "workspace", "owner", "doc", deleted_at="2026-10-28T00:00:00Z",
+    )
+    remove.assert_not_awaited()
+    delete.assert_not_called()
+    assert repository.finish.call_args.kwargs["retryable"] is True

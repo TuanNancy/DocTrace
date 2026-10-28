@@ -35,7 +35,7 @@ function Navigation() {
         {workspace.activeWorkspace.role === "owner" ? "Chủ sở hữu" : "Thành viên"} · {workspace.activeWorkspace.plan === "pro" ? "Pro" : "Free"}
       </p>}
     </div>
-    <button className="primary-button mb-7 w-full" onClick={() => { workspace.newChat(); router.push("/chat"); }}>
+    <button className="primary-button mb-7 w-full" disabled={workspace.chat.resetting} onClick={() => { workspace.newChat(); router.push("/chat"); }}>
       <Plus size={18} /> Chat mới
     </button>
     <p className="mb-3 px-3 text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-400">Điều hướng</p>

@@ -51,6 +51,10 @@ def repository():
         "name": "sample.pdf", "status": "ready",
         "active_index_id": doc_id, "storage_key": f"{uid}/{doc_id}/sample.pdf",
     }
+    fake.get_sync.side_effect = fake.get.side_effect
+    fake.transcript_documents.side_effect = lambda workspace_id, uid, doc_ids: {
+        doc_id: fake.get_sync(workspace_id, uid, doc_id) for doc_id in doc_ids
+    }
     fake.create.side_effect = lambda document, *, limit: {
         **document, "status": "queued", "chunks_count": 0, "warnings": [], "error": None,
     }
@@ -117,6 +121,11 @@ def transcripts():
     fake.mark_streaming.return_value = True
     fake.finalize_message.return_value = True
     fake.hide_for_document.return_value = 0
+
+    async def queue_deletion(workspace_id, user_id, doc_id, repository):
+        return await repository.queue(workspace_id, user_id, doc_id, "delete")
+
+    fake.queue_document_deletion.side_effect = queue_deletion
     return fake
 
 

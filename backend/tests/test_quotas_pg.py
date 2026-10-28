@@ -55,9 +55,9 @@ def postgres_url():
 
 
 @pytest.fixture
-def service(postgres_url):
+def service(postgres_url, repository):
     db.dispose_engines()
-    yield QuotaService(AppConfig(database_url=postgres_url))
+    yield QuotaService(AppConfig(database_url=postgres_url), repository=repository)
     db.dispose_engines()
 
 

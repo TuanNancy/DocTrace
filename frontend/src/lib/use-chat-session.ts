@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  deleteConversation, getConversation, listConversations, streamChat,
+  ApiError, deleteConversation, getConversation, listConversations, streamChat,
 } from "@/lib/api";
 import { streamChatSSEParser } from "@/lib/sse";
 import type { ChatMessage, ChatSource, TranscriptMessage } from "@/types";
@@ -24,10 +24,12 @@ export function useChatSession({ docId, workspaceId, mock = false, accessToken }
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [transcriptLoading, setTranscriptLoading] = useState(false);
+  const [resetting, setResetting] = useState(false);
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const activeRequest = useRef<AbortController | null>(null);
   const transcriptRequest = useRef<AbortController | null>(null);
+  const resetRequest = useRef<AbortController | null>(null);
   const restoreEpoch = useRef(0);
 
   const stop = useCallback(() => {
@@ -43,9 +45,12 @@ export function useChatSession({ docId, workspaceId, mock = false, accessToken }
     activeRequest.current = null;
     transcriptRequest.current?.abort();
     transcriptRequest.current = null;
+    resetRequest.current?.abort();
+    resetRequest.current = null;
     restoreEpoch.current += 1;
     setLoading(false);
     setTranscriptLoading(false);
+    setResetting(false);
     setMessages([]);
     setConversationId(null);
     setInput("");
@@ -90,11 +95,12 @@ export function useChatSession({ docId, workspaceId, mock = false, accessToken }
   useEffect(() => () => {
     activeRequest.current?.abort();
     transcriptRequest.current?.abort();
+    resetRequest.current?.abort();
   }, []);
 
   const submit = useCallback(async (question?: string) => {
     const query = (question ?? input).trim();
-    if (!query || activeRequest.current || transcriptLoading) return;
+    if (!query || activeRequest.current || transcriptLoading || resetRequest.current) return;
     if (!workspaceId && !mock) { setError("Vui lòng chọn không gian làm việc."); return; }
     if (!docId && !mock) { setError("Vui lòng chọn một PDF sẵn sàng trong thư viện."); return; }
     if (!mock && !accessToken) { setError("Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại."); return; }
@@ -127,18 +133,21 @@ export function useChatSession({ docId, workspaceId, mock = false, accessToken }
         }
       } else {
         const response = await streamChat(query, docId!, accessToken!, workspaceId!, id, controller.signal);
+        if (activeRequest.current !== controller || controller.signal.aborted) {
+          await response.body?.cancel();
+          return;
+        }
         const activeConversation = response.headers.get("X-Conversation-Id");
         if (activeConversation) setConversationId(activeConversation);
-        if (controller.signal.aborted) { await response.body?.cancel(); return; }
         for await (const event of streamChatSSEParser(response.body!)) {
-          if (controller.signal.aborted) break;
+          if (activeRequest.current !== controller || controller.signal.aborted) break;
           if (event.type === "sources") update({ sources: event.data });
           if (event.type === "token") update({}, event.data);
           if (event.type === "error") { setError(event.data.message); interrupted = true; }
         }
       }
     } catch (cause) {
-      if (!controller.signal.aborted) {
+      if (activeRequest.current === controller && !controller.signal.aborted) {
         interrupted = true;
         setError(cause instanceof Error ? cause.message : "Không thể gửi câu hỏi.");
       }
@@ -152,23 +161,51 @@ export function useChatSession({ docId, workspaceId, mock = false, accessToken }
   }, [input, docId, workspaceId, mock, accessToken, transcriptLoading]);
 
   const newChat = useCallback(async () => {
+    if (resetRequest.current) return;
     let target = conversationId;
     const currentDoc = docId;
-    clearMessages();
-    if (mock || !accessToken || !workspaceId || (!target && !currentDoc)) return;
+    if (mock || !accessToken || !workspaceId || (!target && !currentDoc)) {
+      clearMessages();
+      return;
+    }
+    stop();
+    transcriptRequest.current?.abort();
+    transcriptRequest.current = null;
+    restoreEpoch.current += 1;
+    setTranscriptLoading(false);
+    const controller = new AbortController();
+    resetRequest.current = controller;
+    const current = () => resetRequest.current === controller && !controller.signal.aborted;
+    setResetting(true);
+    setError(null);
     try {
       // The transcript may still be loading (or the page may have been
       // reloaded and the user clicked immediately). Resolve the latest saved
       // conversation for this document before deleting so it cannot reappear.
       if (!target) {
-        const items = await listConversations(accessToken, workspaceId, currentDoc!);
+        const items = await listConversations(accessToken, workspaceId, currentDoc!, controller.signal);
+        if (!current()) return;
         target = items[0]?.id ?? null;
       }
-      if (target) await deleteConversation(target, accessToken, workspaceId);
+      if (target) {
+        setConversationId(target);
+        try {
+          await deleteConversation(target, accessToken, workspaceId, controller.signal);
+        } catch (cause) {
+          // Another tab may already have deleted it; the desired state is met.
+          if (!(cause instanceof ApiError && cause.status === 404)) throw cause;
+        }
+      }
+      if (current()) clearMessages();
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Không thể xóa hội thoại.");
+      if (current()) setError(cause instanceof Error ? cause.message : "Không thể xóa hội thoại.");
+    } finally {
+      if (current()) {
+        resetRequest.current = null;
+        setResetting(false);
+      }
     }
-  }, [conversationId, docId, mock, accessToken, workspaceId, clearMessages]);
+  }, [conversationId, docId, mock, accessToken, workspaceId, clearMessages, stop]);
 
   const exportTranscript = useCallback(() => {
     const text = messages.map((message) => `${message.role === "user" ? "Bạn" : "DocTrace"}\n${message.content}\n${
@@ -183,7 +220,7 @@ export function useChatSession({ docId, workspaceId, mock = false, accessToken }
   }, [messages]);
 
   return {
-    messages, input, setInput, loading, transcriptLoading, conversationId,
+    messages, input, setInput, loading, transcriptLoading, resetting, conversationId,
     error, submit, stop, clearMessages, newChat, exportTranscript,
   };
 }

@@ -141,8 +141,38 @@ class DocumentRepository:
                     continue
         raise HTTPException(409, "Tài liệu đang thay đổi. Vui lòng thử lại.")
 
+    def get_sync(self, workspace_id: str, user_id: str, doc_id: str) -> dict:
+        return self._run_sync(self._get, workspace_id, user_id, doc_id)
+
     async def get(self, workspace_id: str, user_id: str, doc_id: str) -> dict:
-        return await self._run(self._get, workspace_id, user_id, doc_id)
+        return await run_in_threadpool(self.get_sync, workspace_id, user_id, doc_id)
+
+    async def transcript_documents(self, workspace_id: str, user_id: str, doc_ids: list[str]) -> dict:
+        """Batch-read visibility from the authoritative catalog, failing closed.
+
+        A committed Redis delete hides content even if the following Postgres
+        update failed. Missing records also hide transcripts. Reindexing only
+        makes sources stale and does not hide conversation content.
+        """
+        def read(connection):
+            with connection.pipeline(transaction=False) as pipe:
+                for doc_id in doc_ids:
+                    pipe.hget(document_key(doc_id), "data")
+                records = pipe.execute()
+            visible = {}
+            for doc_id, raw in zip(doc_ids, records):
+                document = normalize_document(json.loads(raw)) if raw else None
+                try:
+                    document = owned(document, workspace_id, user_id)
+                except HTTPException as exc:
+                    if exc.status_code != 404:
+                        raise
+                    continue
+                if (document["status"] not in ("deleting", "delete_error")
+                        and not document.get("delete_requested_at")):
+                    visible[doc_id] = document
+            return visible
+        return await self._run(read) if doc_ids else {}
 
     async def list(self, workspace_id: str, user_id: str, limit: int, offset: int) -> dict:
         def listing(connection):
@@ -216,7 +246,7 @@ class DocumentRepository:
         """Internal catalog primitive; HTTP uploads use WorkspaceService admission."""
         return await run_in_threadpool(self.create_sync, document, limit=limit)
 
-    async def queue(self, workspace_id: str, user_id: str, doc_id: str, kind: str) -> dict:
+    def queue_sync(self, workspace_id: str, user_id: str, doc_id: str, kind: str) -> dict:
         if kind not in ("index", "delete"):
             raise ValueError("Unknown document task")
 
@@ -240,6 +270,8 @@ class DocumentRepository:
                         document.update(job_id=job_id, job_kind=kind, attempt_number=0, attempt_id=None,
                                         status="queued" if kind == "index" else "deleting", error=None,
                                         active_index_id=None, updated_at=now())
+                        if kind == "delete":
+                            document.setdefault("delete_requested_at", document["updated_at"])
                         pipe.multi()
                         write_document(pipe, document)
                         queue.enqueue(doc_id, job_id, kind, pipe)
@@ -254,7 +286,11 @@ class DocumentRepository:
                             return current
                         raise
             raise HTTPException(409, "Tài liệu đang thay đổi. Vui lòng thử lại.")
-        return await self._run(enqueue)
+        return self._run_sync(enqueue)
+
+    async def queue(self, workspace_id: str, user_id: str, doc_id: str, kind: str) -> dict:
+        """Catalog primitive; HTTP deletion uses TranscriptService's lifecycle fence."""
+        return await run_in_threadpool(self.queue_sync, workspace_id, user_id, doc_id, kind)
 
     def count_workspace_sync(self, workspace_id: str, user_id: str | None = None) -> int:
         """Number of catalogued (not necessarily ready) documents in a workspace."""

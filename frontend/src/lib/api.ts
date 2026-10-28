@@ -228,10 +228,11 @@ export const deleteConversation = async (
   id: string,
   accessToken: string,
   workspaceId: string,
+  signal?: AbortSignal,
 ) => {
   await workspaceRequest<undefined>(
     `/api/conversations/${encodeURIComponent(id)}`, accessToken, workspaceId,
-    undefined, "DELETE",
+    signal, "DELETE",
   );
 };
 

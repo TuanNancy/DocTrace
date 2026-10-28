@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 from uuid import UUID
 
 from fastapi import HTTPException
@@ -23,6 +23,10 @@ from starlette.concurrency import run_in_threadpool
 from app.core.config import AppConfig, get_config
 from app.core.errors import api_error
 from app.db import DatabaseNotConfigured, session_scope
+from app.services.document_locks import lock_document
+
+if TYPE_CHECKING:
+    from app.services.document_repository import DocumentRepository
 
 logger = logging.getLogger(__name__)
 
@@ -244,6 +248,13 @@ class TranscriptService:
         # For the demo a user deleting a conversation removes the content
         # immediately; messages cascade. Hidden document transcripts use the
         # separate document retention path below.
+        doc_id = session.execute(text(
+            "SELECT doc_id::text FROM doctrace.conversations WHERE id = CAST(:id AS uuid) "
+            "AND workspace_id = CAST(:wid AS uuid) AND user_id = CAST(:uid AS uuid)"
+        ), {"id": conversation_id, "wid": workspace_id, "uid": user_id}).scalar_one_or_none()
+        if not doc_id:
+            return False
+        lock_document(session, workspace_id, user_id, doc_id)
         result = session.execute(text(
             """
             DELETE FROM doctrace.conversations
@@ -285,6 +296,16 @@ class TranscriptService:
         assistant_message_id = _uuid(
             assistant_message_id, "message_invalid", "Tin nhắn không hợp lệ.",
         )
+        scope = session.execute(text(
+            "SELECT c.workspace_id::text, c.user_id::text, c.doc_id::text "
+            "FROM doctrace.conversations c JOIN doctrace.messages m ON m.conversation_id = c.id "
+            "WHERE m.id = CAST(:id AS uuid)"
+        ), {"id": assistant_message_id}).first()
+        if not scope:
+            return False
+        # Take the document fence before message/conversation row locks, matching
+        # admission and cascading deletion so finalization cannot deadlock them.
+        lock_document(session, *scope)
         result = session.execute(text(
             """
             UPDATE doctrace.messages
@@ -293,6 +314,11 @@ class TranscriptService:
                 status = :status, updated_at = now()
             WHERE id = CAST(:id AS uuid)
               AND status IN ('pending', 'streaming')
+              AND EXISTS (
+                  SELECT 1 FROM doctrace.conversations c
+                  WHERE c.id = doctrace.messages.conversation_id
+                    AND c.document_deleted_at IS NULL AND c.purge_after IS NULL
+              )
             """
         ), {
             "id": assistant_message_id, "status": status, "content": content,
@@ -316,12 +342,13 @@ class TranscriptService:
         )
 
     def _hide_for_document(self, session, workspace_id: str, user_id: str, doc_id: str,
-                           mode: str, retention_days: int) -> int:
+                           mode: str, retention_days: int, deleted_at: str | None = None) -> int:
         workspace_id = _uuid(workspace_id, "workspace_invalid", "Workspace không hợp lệ.")
         user_id = _uuid(user_id, "invalid_user", "Người dùng không hợp lệ.")
         doc_id = _uuid(doc_id, "document_invalid", "Tài liệu không hợp lệ.")
         if mode not in TRANSCRIPT_DELETE_MODES:
             raise ValueError("Unknown transcript delete mode")
+        lock_document(session, workspace_id, user_id, doc_id)
         if mode == "cascade":
             result = session.execute(text(
                 """
@@ -339,8 +366,9 @@ class TranscriptService:
             result = session.execute(text(
                 """
                 UPDATE doctrace.conversations
-                SET document_deleted_at = now(),
-                    purge_after = now() + make_interval(days => :retention_days),
+                SET document_deleted_at = COALESCE(CAST(:deleted_at AS timestamptz), now()),
+                    purge_after = COALESCE(CAST(:deleted_at AS timestamptz), now())
+                                  + make_interval(days => :retention_days),
                     updated_at = now()
                 WHERE workspace_id = CAST(:workspace_id AS uuid)
                   AND user_id = CAST(:user_id AS uuid)
@@ -350,14 +378,35 @@ class TranscriptService:
                 """
             ), {
                 "workspace_id": workspace_id, "user_id": user_id, "doc_id": doc_id,
-                "retention_days": retention_days,
+                "retention_days": retention_days, "deleted_at": deleted_at,
             })
         return int(result.rowcount or 0)
 
-    async def hide_for_document(self, workspace_id: str, user_id: str, doc_id: str) -> int:
+    async def hide_for_document(self, workspace_id: str, user_id: str, doc_id: str,
+                                *, deleted_at: str | None = None) -> int:
         return await self._run(
             self._hide_for_document, workspace_id, user_id, doc_id,
+            self.config.transcript_delete_mode, self.config.transcript_retention_days, deleted_at,
+        )
+
+    def _queue_document_deletion(self, session, workspace_id: str, user_id: str,
+                                  doc_id: str, repository: DocumentRepository) -> dict:
+        lock_document(session, workspace_id, user_id, doc_id)
+        # Redis validates ownership/live jobs and commits deletion intent first.
+        # A rejection leaves content untouched; a lost SQL commit is recovered by
+        # the worker before cleanup. Reads also check Redis, closing that window.
+        document = repository.queue_sync(workspace_id, user_id, doc_id, "delete")
+        self._hide_for_document(
+            session, workspace_id, user_id, doc_id,
             self.config.transcript_delete_mode, self.config.transcript_retention_days,
+            document.get("delete_requested_at"),
+        )
+        return document
+
+    async def queue_document_deletion(self, workspace_id: str, user_id: str,
+                                      doc_id: str, repository: DocumentRepository) -> dict:
+        return await self._run(
+            self._queue_document_deletion, workspace_id, user_id, doc_id, repository,
         )
 
     def _purge_expired(self, session) -> int:

@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { beforeEach, expect, it, vi } from "vitest";
 import { ChatWindow } from "@/components/ChatWindow";
 import { useChatSession } from "@/lib/use-chat-session";
-import { deleteConversation, getConversation, listConversations, streamChat } from "@/lib/api";
+import { ApiError, deleteConversation, getConversation, listConversations, streamChat } from "@/lib/api";
 import type { Transcript } from "@/types";
 
 vi.mock("@/lib/api", async (importOriginal) => ({
@@ -37,6 +37,8 @@ function ChatHarness(props: Parameters<typeof useChatSession>[0]) {
   return <>
     <button onClick={session.clearMessages}>Clear chat</button>
     <button onClick={() => void session.newChat()}>New chat</button>
+    <button onClick={() => void session.submit("Direct question")}>Submit directly</button>
+    <span data-testid="conversation-id">{session.conversationId}</span>
     <ChatWindow docId={props.docId} mock={props.mock} session={session} onSelectSource={() => undefined} />
   </>;
 }
@@ -102,7 +104,7 @@ it("restores the latest transcript, disables stale citations and deletes it for 
 
   fireEvent.click(screen.getByRole("button", { name: "New chat" }));
   await waitFor(() => expect(deleteMock).toHaveBeenCalledWith(
-    "conversation-a", "token", "workspace-a",
+    "conversation-a", "token", "workspace-a", expect.any(AbortSignal),
   ));
   expect(screen.queryByText(/Câu trả lời cũ/)).not.toBeInTheDocument();
 });
@@ -134,9 +136,85 @@ it("deletes the latest saved transcript when new chat is clicked during restore"
 
   fireEvent.click(screen.getByRole("button", { name: "New chat" }));
   await waitFor(() => expect(deleteMock).toHaveBeenCalledWith(
-    "conversation-a", "token", "workspace-a",
+    "conversation-a", "token", "workspace-a", expect.any(AbortSignal),
   ));
-  expect(listMock).toHaveBeenLastCalledWith("token", "workspace-a", "a");
+  expect(listMock).toHaveBeenLastCalledWith("token", "workspace-a", "a", expect.any(AbortSignal));
+});
+
+it("blocks submissions and duplicate resets until deletion succeeds", async () => {
+  listMock.mockResolvedValue([{ ...savedTranscript, message_count: 2 }]);
+  getMock.mockResolvedValue(savedTranscript);
+  let finish!: () => void;
+  deleteMock.mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+  render(<ChatHarness docId="a" workspaceId="workspace-a" accessToken="token" />);
+  await screen.findByText(/Câu trả lời cũ/);
+  fireEvent.change(input(), { target: { value: "Draft" } });
+  fireEvent.click(screen.getByRole("button", { name: "New chat" }));
+
+  expect(input()).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Gửi" })).toBeDisabled();
+  expect(screen.getByRole("status")).toHaveTextContent("Đang xóa hội thoại cũ");
+  fireEvent.click(screen.getByRole("button", { name: "Submit directly" }));
+  fireEvent.click(screen.getByRole("button", { name: "New chat" }));
+  expect(deleteMock).toHaveBeenCalledOnce();
+  expect(streamMock).not.toHaveBeenCalled();
+  await act(async () => finish());
+  expect(input()).toBeEnabled();
+  expect(input()).toHaveValue("");
+  expect(screen.queryByText(/Câu trả lời cũ/)).not.toBeInTheDocument();
+});
+
+it("keeps the transcript and draft when reset fails and allows a retry", async () => {
+  listMock.mockResolvedValue([{ ...savedTranscript, message_count: 2 }]);
+  getMock.mockResolvedValue(savedTranscript);
+  deleteMock.mockRejectedValueOnce(new Error("Delete unavailable"));
+  render(<ChatHarness docId="a" workspaceId="workspace-a" accessToken="token" />);
+  await screen.findByText(/Câu trả lời cũ/);
+  fireEvent.change(input(), { target: { value: "Keep my draft" } });
+  fireEvent.click(screen.getByRole("button", { name: "New chat" }));
+  expect(await screen.findByRole("alert")).toHaveTextContent("Delete unavailable");
+  expect(screen.getByText(/Câu trả lời cũ/)).toBeInTheDocument();
+  expect(input()).toHaveValue("Keep my draft");
+  expect(input()).toBeEnabled();
+  deleteMock.mockRejectedValueOnce(new ApiError("Already deleted", 404));
+  fireEvent.click(screen.getByRole("button", { name: "New chat" }));
+  await waitFor(() => expect(screen.queryByText(/Câu trả lời cũ/)).not.toBeInTheDocument());
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+});
+
+it("ignores a reset lookup after switching workspace before it resolves", async () => {
+  let finish!: (items: Awaited<ReturnType<typeof listConversations>>) => void;
+  listMock.mockResolvedValueOnce([]).mockReturnValueOnce(new Promise((resolve) => { finish = resolve; }));
+  const { rerender } = render(<ChatHarness docId="a" workspaceId="workspace-a" accessToken="token" />);
+  await waitFor(() => expect(input()).toBeEnabled());
+  fireEvent.click(screen.getByRole("button", { name: "New chat" }));
+  const signal = listMock.mock.calls[1][3];
+  expect(input()).toBeDisabled();
+  rerender(<ChatHarness docId="b" workspaceId="workspace-b" accessToken="token" />);
+  await waitFor(() => expect(input()).toBeEnabled());
+  expect(signal?.aborted).toBe(true);
+  await act(async () => finish([{ ...savedTranscript, message_count: 2 }]));
+  expect(deleteMock).not.toHaveBeenCalled();
+  expect(screen.getByTestId("conversation-id")).toBeEmptyDOMElement();
+});
+
+it.each(["success", "failure"])("ignores a late reset %s after a new selection", async (outcome) => {
+  listMock.mockResolvedValueOnce([{ ...savedTranscript, message_count: 2 }]);
+  getMock.mockResolvedValueOnce(savedTranscript);
+  let finish!: () => void;
+  let fail!: (reason: Error) => void;
+  deleteMock.mockReturnValueOnce(new Promise((resolve, reject) => { finish = resolve; fail = reject; }));
+  const { rerender } = render(<ChatHarness docId="a" workspaceId="workspace-a" accessToken="token" />);
+  await screen.findByText(/Câu trả lời cũ/);
+  fireEvent.click(screen.getByRole("button", { name: "New chat" }));
+  const signal = deleteMock.mock.calls[0][3];
+  rerender(<ChatHarness docId="b" workspaceId="workspace-b" accessToken="token" />);
+  await waitFor(() => expect(input()).toBeEnabled());
+  fireEvent.change(input(), { target: { value: "Draft B" } });
+  expect(signal?.aborted).toBe(true);
+  await act(async () => { if (outcome === "success") finish(); else fail(new Error("Old error")); });
+  expect(input()).toHaveValue("Draft B");
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 });
 
 it("clears messages and draft when the selected document changes", async () => {
@@ -167,8 +245,11 @@ it("clearing aborts the pending request and late results cannot unlock a newer r
   expect(input()).toBeEnabled();
   await send("New question");
   await waitFor(() => expect(streamMock).toHaveBeenCalledTimes(2));
-  await act(async () => resolveOld(response()));
+  await act(async () => resolveOld(new Response(response().body, {
+    headers: { "X-Conversation-Id": "old-conversation" },
+  })));
   expect(screen.queryByText("Answer A")).not.toBeInTheDocument();
+  expect(screen.getByTestId("conversation-id")).toBeEmptyDOMElement();
   expect(input()).toBeDisabled();
 });
 

@@ -89,13 +89,20 @@ P2b dùng lại `plan_limits`, `usage_counters` và `chat_requests` đã có tro
 
 P3 cũng dùng lại `conversations`/`messages` trong migration `0001`, không cần migration mới. Admission ghi conversation + câu hỏi + placeholder assistant cùng transaction quota; stream cập nhật nội dung/nguồn/trạng thái cuối. Transcript chỉ đọc được bởi chính user trong workspace; owner không thấy hội thoại của thành viên. Xóa tài liệu ẩn transcript ngay; mặc định purge sau `TRANSCRIPT_RETENTION_DAYS=30` ngày, hoặc xóa ngay với `TRANSCRIPT_DELETE_MODE=cascade`.
 
-Chạy purge hằng ngày bằng cron/systemd timer trên VPS (ví dụ 03:00 UTC):
+Xóa tài liệu và admission chat dùng cùng transaction advisory lock theo workspace/user/document. Chỉ khi Redis chấp nhận xóa mới áp dụng retention; `404`/`409` do sai owner hoặc job còn chạy không làm mất transcript. Nếu Redis đã commit nhưng Postgres lỗi, API có thể trả `503`; list/get transcript vẫn ẩn theo trạng thái Redis. Worker hoàn tất retention trước khi dọn PDF/vector và retry nếu Postgres chưa phục hồi. `delete_requested_at` giữ mốc retention ban đầu qua các lần retry. Cần triển khai API và worker cùng phiên bản.
 
-```cron
-0 3 * * * cd /opt/DocTrace && docker compose --env-file .env.production -f compose.production.yml exec -T worker python -m app.purge_transcripts >> /var/log/doctrace-purge.log 2>&1
+Unit purge được lưu trong repository, chạy hằng ngày lúc **03:00 UTC**, chạy bù sau downtime bằng `Persistent=true`. Từ `/opt/DocTrace`, cài hoặc cập nhật:
+
+```bash
+sudo install -m 644 deploy/systemd/doctrace-transcript-purge.service deploy/systemd/doctrace-transcript-purge.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now doctrace-transcript-purge.timer
+sudo systemctl start doctrace-transcript-purge.service
+sudo systemctl list-timers doctrace-transcript-purge.timer
+sudo journalctl -u doctrace-transcript-purge.service -n 30 --no-pager
 ```
 
-Có thể chạy tay cùng lệnh `exec worker python -m app.purge_transcripts`; lệnh chỉ xóa conversation có `purge_after < now()`, không đụng `provider_calls`, Redis, PDF hay Milvus.
+Có thể chạy tay `docker compose --env-file .env.production -f compose.production.yml exec -T worker python -m app.purge_transcripts`; lệnh chỉ xóa conversation có `purge_after < now()`, không đụng `provider_calls`, Redis, PDF hay Milvus. Timer cần worker đang chạy; lỗi được ghi vào journal để kiểm tra và chạy lại. Tránh cài thêm cron trùng lịch. Nếu checkout khác `/opt/DocTrace`, sửa `WorkingDirectory` trong service trước khi cài.
 
 Đặt đúng origin frontend Vercel (không có path):
 

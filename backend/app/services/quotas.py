@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 import math
 from datetime import date, datetime, timezone
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 from uuid import UUID
 
 from fastapi import HTTPException
@@ -21,7 +21,11 @@ from starlette.concurrency import run_in_threadpool
 from app.core.config import AppConfig, get_config
 from app.core.errors import api_error
 from app.db import DatabaseNotConfigured, session_scope
+from app.services.document_locks import lock_document
 from app.services.transcripts import ensure_conversation, insert_message
+
+if TYPE_CHECKING:
+    from app.services.document_repository import DocumentRepository
 
 logger = logging.getLogger(__name__)
 
@@ -100,8 +104,11 @@ def duplicate_error(row: dict) -> HTTPException:
 
 
 class QuotaService:
-    def __init__(self, config: AppConfig):
+    def __init__(self, config: AppConfig, repository: DocumentRepository | None = None):
+        from app.services.document_repository import DocumentRepository
+
         self.config = config
+        self.repository = repository if repository is not None else DocumentRepository(config)
 
     async def _run(self, action, *args):
         def call():
@@ -155,6 +162,14 @@ class QuotaService:
         existing = self._existing(session, workspace_id, user_id, request_id)
         if existing:
             raise duplicate_error(existing)
+
+        lock_document(session, workspace_id, user_id, doc_id)
+        document = self.repository.get_sync(workspace_id, user_id, doc_id)
+        if (document["status"] != "ready" or not document.get("active_index_id")
+                or document.get("delete_requested_at")
+                or (index_id is not None and document["active_index_id"] != index_id)):
+            raise api_error(409, "document_not_ready", "Tài liệu chưa sẵn sàng để hỏi đáp.")
+        index_id = document["active_index_id"]
 
         inserted = session.execute(text(
             """

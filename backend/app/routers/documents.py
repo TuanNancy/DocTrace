@@ -32,15 +32,19 @@ async def get_document(doc_id: UUID, workspace: WorkspaceContext = Depends(requi
 @router.post("/{doc_id}/retry", status_code=202)
 async def retry_document(doc_id: UUID, workspace: WorkspaceContext = Depends(require_workspace),
                          repository: DocumentRepository = Depends(get_document_repository),
-                         limiter: RateLimiter = Depends(get_rate_limiter)):
+                         limiter: RateLimiter = Depends(get_rate_limiter),
+                         transcripts: TranscriptService = Depends(get_transcript_service)):
     document = await repository.get(workspace.workspace_id, workspace.user_id, str(doc_id))
     if document["status"] not in ("error", "delete_error"):
         raise HTTPException(409, "Chỉ có thể thử lại tài liệu bị lỗi.")
     if document["status"] == "error":
         await limiter.check(workspace.user_id, action="index-retry")
+    else:
+        return public_document(await transcripts.queue_document_deletion(
+            workspace.workspace_id, workspace.user_id, str(doc_id), repository,
+        ))
     return public_document(await repository.queue(
-        workspace.workspace_id, workspace.user_id, str(doc_id),
-        "delete" if document["status"] == "delete_error" else "index",
+        workspace.workspace_id, workspace.user_id, str(doc_id), "index",
     ))
 
 
@@ -48,15 +52,8 @@ async def retry_document(doc_id: UUID, workspace: WorkspaceContext = Depends(req
 async def delete_document(doc_id: UUID, workspace: WorkspaceContext = Depends(require_workspace),
                           repository: DocumentRepository = Depends(get_document_repository),
                           transcripts: TranscriptService = Depends(get_transcript_service)):
-    # Hide before accepting the delete so there is no window in which an
-    # accepted deletion leaves a readable transcript. If queueing then fails,
-    # the transcript stays hidden and the user can retry deletion, matching
-    # the retention contract.
-    await transcripts.hide_for_document(
-        workspace.workspace_id, workspace.user_id, str(doc_id),
-    )
-    return public_document(await repository.queue(
-        workspace.workspace_id, workspace.user_id, str(doc_id), "delete",
+    return public_document(await transcripts.queue_document_deletion(
+        workspace.workspace_id, workspace.user_id, str(doc_id), repository,
     ))
 
 

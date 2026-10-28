@@ -120,6 +120,25 @@ async def test_workspace_document_counts_are_split_by_user(library):
     assert await repository.count_workspace(OTHER_WORKSPACE) == 1
 
 
+@pytest.mark.parametrize("status,visible", [
+    ("ready", True), ("queued", True), ("processing", True), ("error", True),
+    ("deleting", False), ("delete_error", False), ("deleted", False),
+])
+async def test_transcript_visibility_checks_catalog_lifecycle_and_owner(library, status, visible):
+    repository, connection, _, _ = library
+    document = await create(repository, upload())
+    doc_id = document["doc_id"]
+    document["status"] = status
+    connection.hset(module.document_key(doc_id), "data", json.dumps(document))
+    result = await repository.transcript_documents(WORKSPACE, OWNER, [doc_id, str(uuid4())])
+    assert (doc_id in result) is visible
+    assert await repository.transcript_documents(OTHER_WORKSPACE, OWNER, [doc_id]) == {}
+    assert await repository.transcript_documents(WORKSPACE, "other", [doc_id]) == {}
+    document["delete_requested_at"] = module.now()
+    connection.hset(module.document_key(doc_id), "data", json.dumps(document))
+    assert await repository.transcript_documents(WORKSPACE, OWNER, [doc_id]) == {}
+
+
 async def test_delete_removes_every_index_but_keeps_tombstone(library):
     repository, connection, _, _ = library
     document = await create(repository, upload())

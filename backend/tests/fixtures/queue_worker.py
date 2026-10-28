@@ -4,6 +4,7 @@ Only mounted by verify_document_queue.py; never copied into the production image
 """
 import asyncio
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 from redis import Redis
 
@@ -74,6 +75,7 @@ documents.download_pdf = download
 documents.index_pdf_bytes = index
 documents.remove_generations = remove
 documents.delete_pdf = delete
+documents.TranscriptService = lambda config: SimpleNamespace(hide_for_document=AsyncMock(return_value=0))
 DocumentRepository.finish = finish
 
 if __name__ == "__main__":

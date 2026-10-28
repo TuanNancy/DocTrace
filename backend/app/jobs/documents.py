@@ -11,6 +11,7 @@ from app.services.job_queue import MAX_RETRIES
 from app.services.provider_calls import UsageAttribution, UsageCollector
 from app.services.pdf_indexing import InvalidPDFError, index_pdf_bytes
 from app.services.supabase_pdf_storage import download_pdf, delete_pdf
+from app.services.transcripts import TranscriptService
 from app.storage.factory import create_connected_vector_store
 
 logger = logging.getLogger(__name__)
@@ -44,6 +45,10 @@ async def process_document(repository: DocumentRepository, doc_id: str, job_id: 
     try:
         try:
             if attempt["kind"] == "delete":
+                await TranscriptService(repository.config).hide_for_document(
+                    document.get("workspace_id") or uid, uid, doc_id,
+                    deleted_at=document.get("delete_requested_at"),
+                )
                 await remove_generations(uid, document["generations"])
                 await run_in_threadpool(delete_pdf, document["storage_key"])
                 await repository.finish(attempt)

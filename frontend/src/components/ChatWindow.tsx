@@ -58,7 +58,7 @@ export function ChatWindow({ docId, mock = false, session: chat, onSelectSource 
         {!hasDoc && <Link href="/documents" className="secondary-button mt-5 text-xs"><FileText size={15} /> Chọn tài liệu từ thư viện</Link>}
         <div className="mt-7 flex flex-wrap justify-center gap-2">
           {["Tóm tắt tài liệu", "Các điểm quan trọng là gì?", "Liệt kê các mốc thời gian"].map((question) =>
-            <button key={question} className="suggestion-chip" disabled={!hasDoc} onClick={() => { chat.setInput(question); inputRef.current?.focus(); }}>{question}</button>)}
+            <button key={question} className="suggestion-chip" disabled={!hasDoc || chat.resetting} onClick={() => { chat.setInput(question); inputRef.current?.focus(); }}>{question}</button>)}
         </div>
       </div> : <ol className="mx-auto max-w-3xl space-y-7 py-7" aria-label="Tin nhắn hội thoại">
         {chat.messages.map((message) => {
@@ -79,18 +79,19 @@ export function ChatWindow({ docId, mock = false, session: chat, onSelectSource 
       </ol>}
     </div>
     <div className="shrink-0 px-3 pb-3 pt-2 sm:px-6 sm:pb-4">
+      {chat.resetting && <p role="status" className="mb-3 text-xs text-slate-500">Đang xóa hội thoại cũ…</p>}
       {chat.error && <div role="alert" className="mb-3 rounded-xl bg-red-50 p-3 text-xs text-red-700">{chat.error}</div>}
       <form onSubmit={(event) => { event.preventDefault(); stickToBottom.current = true; void chat.submit(); }} className="composer">
         <textarea ref={inputRef} value={chat.input} onChange={(event) => chat.setInput(event.target.value)} rows={1} maxLength={8000}
           onKeyDown={(event) => {
             if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
               event.preventDefault();
-              if (!chat.loading && !chat.transcriptLoading) event.currentTarget.form?.requestSubmit();
+              if (!chat.loading && !chat.transcriptLoading && !chat.resetting) event.currentTarget.form?.requestSubmit();
             }
-          }} aria-label="Câu hỏi của bạn" placeholder={chat.transcriptLoading ? "Đang tải hội thoại…" : hasDoc ? "Nhập câu hỏi của bạn…" : "Chọn một PDF để bắt đầu…"}
-          disabled={chat.loading || chat.transcriptLoading || !hasDoc} className="max-h-[150px] min-h-11 flex-1 resize-none bg-transparent px-2 py-3 text-sm leading-5 text-slate-800 outline-none placeholder:text-slate-400 disabled:opacity-60" />
+          }} aria-label="Câu hỏi của bạn" placeholder={chat.resetting ? "Đang xóa hội thoại cũ…" : chat.transcriptLoading ? "Đang tải hội thoại…" : hasDoc ? "Nhập câu hỏi của bạn…" : "Chọn một PDF để bắt đầu…"}
+          disabled={chat.loading || chat.transcriptLoading || chat.resetting || !hasDoc} className="max-h-[150px] min-h-11 flex-1 resize-none bg-transparent px-2 py-3 text-sm leading-5 text-slate-800 outline-none placeholder:text-slate-400 disabled:opacity-60" />
         {chat.loading ? <button type="button" onClick={chat.stop} className="send-button" aria-label="Dừng trả lời"><Square size={16} fill="currentColor" /></button>
-          : <button type="submit" className="send-button" disabled={!hasDoc || chat.transcriptLoading || !chat.input.trim()} aria-label="Gửi"><ArrowUp size={19} /></button>}
+          : <button type="submit" className="send-button" disabled={!hasDoc || chat.transcriptLoading || chat.resetting || !chat.input.trim()} aria-label="Gửi"><ArrowUp size={19} /></button>}
       </form>
       <p className="mt-2.5 text-center text-[10px] leading-4 text-slate-400">Câu trả lời dựa trên tài liệu của bạn · Bấm vào trích dẫn để xem nguồn</p>
     </div>

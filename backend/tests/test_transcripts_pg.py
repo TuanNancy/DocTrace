@@ -4,17 +4,27 @@ The P0 schema already contains conversations/messages; P3 adds no migration.
 These tests exercise the admission transaction, owner scoping, stale citation
 snapshots and both document-deletion retention modes.
 """
+import asyncio
+from datetime import datetime
 from pathlib import Path
+from threading import Event
+from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 from alembic import command
 from alembic.config import Config
 from fastapi import HTTPException
 import pytest
+import fakeredis
+from rq.job import Job, JobStatus
+from rq.serializers import JSONSerializer
 from sqlalchemy import create_engine, text
 
 from app import db
 from app.core.config import AppConfig
+from app.jobs import documents as tasks
+from app.services import document_repository as catalog_module
+from app.services.document_repository import DocumentRepository
 from app.services.quotas import QuotaService
 from app.services.transcripts import TranscriptService, purge_expired_transcripts, stale_sources
 
@@ -56,9 +66,9 @@ def postgres_url():
 
 
 @pytest.fixture
-def quotas(postgres_url):
+def quotas(postgres_url, repository):
     db.dispose_engines()
-    yield QuotaService(AppConfig(database_url=postgres_url))
+    yield QuotaService(AppConfig(database_url=postgres_url), repository=repository)
     db.dispose_engines()
 
 
@@ -67,6 +77,14 @@ def transcripts(postgres_url):
     db.dispose_engines()
     yield TranscriptService(AppConfig(database_url=postgres_url))
     db.dispose_engines()
+
+
+@pytest.fixture
+def catalog(postgres_url, monkeypatch):
+    server = fakeredis.FakeServer()
+    monkeypatch.setattr(catalog_module.Redis, "from_url", lambda *a, **kw: fakeredis.FakeRedis(server=server))
+    config = AppConfig(database_url=postgres_url)
+    return DocumentRepository(config), fakeredis.FakeRedis(server=server)
 
 
 def execute(postgres_url, statement, params=None):
@@ -260,6 +278,9 @@ async def test_retain_mode_hides_then_purges_without_deleting_cost_rows(
     ) is True
     # Retain mode keeps the content until the purge boundary.
     assert counts(postgres_url, workspace_id) == (1, 2)
+    assert await transcripts.finalize_message(
+        admission["assistant_message_id"], "complete", "Late content", [],
+    ) is False
 
     # A retry must not extend the retention window.
     assert await transcripts.hide_for_document(workspace_id, user_id, doc_id) == 0
@@ -310,3 +331,139 @@ def test_stale_snapshot_compares_the_generation_not_the_chunk_id():
     assert marked["messages"][1]["sources"][0]["stale"] is False
     marked = stale_sources(conversation, None)
     assert marked["messages"][1]["sources"][0]["stale"] is True
+
+
+async def ready_document(catalog, postgres_url):
+    repository, redis = catalog
+    workspace, user, doc_id = create_workspace(postgres_url), str(uuid4()), str(uuid4())
+    document = await repository.create({
+        "workspace_id": workspace, "owner_user_id": user, "doc_id": doc_id,
+        "name": "fixture.pdf", "size_bytes": 12, "storage_key": "fixture.pdf",
+    }, limit=5)
+    attempt = await repository.begin(doc_id, document["job_id"], 1)
+    await repository.finish(attempt, chunks_count=1)
+    Job.fetch(document["job_id"], connection=redis, serializer=JSONSerializer).set_status(JobStatus.FINISHED)
+    return workspace, user, doc_id
+
+
+async def wait_for_document_lock(postgres_url):
+    engine = create_engine(postgres_url)
+    try:
+        for _ in range(200):
+            with engine.connect() as connection:
+                waiting = connection.execute(text(
+                    "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() "
+                    "AND wait_event_type = 'Lock' AND query LIKE '%pg_advisory_xact_lock%'"
+                )).scalar_one()
+            if waiting:
+                return
+            await asyncio.sleep(0.01)
+        pytest.fail("Competing operation never waited on the document fence")
+    finally:
+        engine.dispose()
+
+
+@pytest.mark.parametrize("mode", ["retain_30d", "cascade"])
+@pytest.mark.parametrize("reason", ["busy", "foreign", "wrong_workspace"])
+async def test_rejected_deletion_preserves_transcript(catalog, postgres_url, mode, reason):
+    repository, redis = catalog
+    workspace, user, doc_id = await ready_document(catalog, postgres_url)
+    quotas = QuotaService(repository.config, repository)
+    admission = await quotas.admit_chat(workspace, user, str(uuid4()), doc_id, "free")
+    transcripts = TranscriptService(AppConfig(database_url=postgres_url, transcript_delete_mode=mode))
+    document = await repository.get(workspace, user, doc_id)
+    if reason == "busy":
+        Job.fetch(document["job_id"], connection=redis, serializer=JSONSerializer).set_status(JobStatus.STARTED)
+    with pytest.raises(HTTPException) as caught:
+        await transcripts.queue_document_deletion(
+            str(uuid4()) if reason == "wrong_workspace" else workspace,
+            str(uuid4()) if reason == "foreign" else user, doc_id, repository,
+        )
+    assert caught.value.status_code == (409 if reason == "busy" else 404)
+    saved = await transcripts.get(workspace, user, admission["conversation_id"])
+    assert len(saved["messages"]) == 2
+    assert not (await repository.internal_document(doc_id)).get("delete_requested_at")
+
+
+@pytest.mark.parametrize("mode", ["retain_30d", "cascade"])
+@pytest.mark.parametrize("first", ["chat", "delete"])
+async def test_chat_and_delete_share_a_document_fence(catalog, postgres_url, monkeypatch, mode, first):
+    repository, _ = catalog
+    workspace, user, doc_id = await ready_document(catalog, postgres_url)
+    quotas = QuotaService(repository.config, repository)
+    await quotas.admit_chat(workspace, user, str(uuid4()), doc_id, "free", query="Saved")
+    transcripts = TranscriptService(AppConfig(database_url=postgres_url, transcript_delete_mode=mode))
+    entered, release = Event(), Event()
+    method = "get_sync" if first == "chat" else "queue_sync"
+    original = getattr(repository, method)
+
+    def blocked(*args, **kwargs):
+        entered.set()
+        assert release.wait(5)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(repository, method, blocked)
+    actions = {
+        "chat": lambda: quotas.admit_chat(workspace, user, str(uuid4()), doc_id, "free", query="Race"),
+        "delete": lambda: transcripts.queue_document_deletion(workspace, user, doc_id, repository),
+    }
+    leading = asyncio.create_task(actions[first]())
+    assert await asyncio.to_thread(entered.wait, 5)
+    trailing = asyncio.create_task(actions["delete" if first == "chat" else "chat"]())
+    try:
+        await wait_for_document_lock(postgres_url)
+    finally:
+        release.set()
+        results = await asyncio.gather(leading, trailing, return_exceptions=True)
+    if first == "delete":
+        assert results[0]["status"] == "deleting"
+        assert isinstance(results[1], HTTPException) and results[1].status_code == 409
+    else:
+        assert results[0]["conversation_id"]
+        assert results[1]["status"] == "deleting"
+    assert (await transcripts.list(workspace, user))["items"] == []
+    assert await repository.transcript_documents(workspace, user, [doc_id]) == {}
+    assert scalar(postgres_url, "select used from doctrace.usage_counters where workspace_id = :w",
+                  {"w": workspace}) == (2 if first == "chat" else 1)
+    assert counts(postgres_url, workspace) == ((0, 0) if mode == "cascade" else (1, 4 if first == "chat" else 2))
+
+
+@pytest.mark.parametrize("mode", ["retain_30d", "cascade"])
+async def test_worker_recovers_sql_rollback_after_redis_delete_commit(catalog, postgres_url, monkeypatch, mode):
+    repository, _ = catalog
+    workspace, user, doc_id = await ready_document(catalog, postgres_url)
+    quotas = QuotaService(repository.config, repository)
+    await quotas.admit_chat(workspace, user, str(uuid4()), doc_id, "free", query="Private content")
+    repository.config = AppConfig(database_url=postgres_url, transcript_delete_mode=mode)
+    transcripts = TranscriptService(repository.config)
+    original = transcripts._queue_document_deletion
+
+    def lost_commit(*args):
+        original(*args)
+        raise RuntimeError("SQL transaction rolled back after Redis committed")
+
+    monkeypatch.setattr(transcripts, "_queue_document_deletion", lost_commit)
+    with pytest.raises(HTTPException) as caught:
+        await transcripts.queue_document_deletion(workspace, user, doc_id, repository)
+    assert caught.value.status_code == 503
+    assert counts(postgres_url, workspace) == (1, 2)
+    deleting = await repository.internal_document(doc_id)
+    assert deleting["status"] == "deleting"
+    assert await repository.transcript_documents(workspace, user, [doc_id]) == {}
+    with pytest.raises(HTTPException) as caught:
+        await quotas.admit_chat(workspace, user, str(uuid4()), doc_id, "free")
+    assert caught.value.status_code == 409
+
+    remove, delete = AsyncMock(), MagicMock()
+    monkeypatch.setattr(tasks, "remove_generations", remove)
+    monkeypatch.setattr(tasks, "delete_pdf", delete)
+    await tasks.process_document(repository, doc_id, deleting["job_id"], 1, 2)
+    assert (await repository.internal_document(doc_id))["status"] == "deleted"
+    assert (await transcripts.list(workspace, user))["items"] == []
+    assert counts(postgres_url, workspace) == ((0, 0) if mode == "cascade" else (1, 2))
+    if mode == "retain_30d":
+        accepted = datetime.fromisoformat(deleting["delete_requested_at"])
+        assert scalar(postgres_url, "select document_deleted_at from doctrace.conversations where doc_id = :d",
+                      {"d": doc_id}) == accepted
+    remove.assert_awaited_once()
+    delete.assert_called_once()
