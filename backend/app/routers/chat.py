@@ -56,12 +56,12 @@ async def _stream_chat_sse(query: str, doc_id: str, user_id: str, language: str 
         except Exception:
             # Admission already consumed quota; status telemetry must never
             # prevent the answer from streaming.
-            logger.warning("Could not mark chat request streaming", exc_info=True)
+            logger.warning("chat_status_write_failed", exc_info=True)
     if transcripts is not None and assistant_message_id:
         try:
             await transcripts.mark_streaming(assistant_message_id)
         except Exception:
-            logger.warning("Could not mark assistant message streaming", exc_info=True)
+            logger.warning("chat_transcript_write_failed", exc_info=True)
 
     try:
         pipeline = await create_initialized_rag_pipeline(usage=usage)
@@ -114,10 +114,10 @@ async def _stream_chat_sse(query: str, doc_id: str, user_id: str, language: str 
     except (asyncio.CancelledError, GeneratorExit):
         outcome = "interrupted"
         raise
-    except Exception as e:
+    except Exception:
         outcome = "failed"
         error_code = "stream_error"
-        logger.exception("Chat stream error: %s", e)
+        logger.exception("chat_stream_failed")
         yield _sse_message("error", json.dumps({"message": "Chat service unavailable. Please try again."}))
         yield _sse_message("done", json.dumps("[DONE]"))
 
@@ -139,12 +139,12 @@ async def _stream_chat_sse(query: str, doc_id: str, user_id: str, language: str 
                             sources_payload,
                         )
                     except Exception:
-                        logger.warning("Could not persist assistant transcript", exc_info=True)
+                        logger.warning("chat_transcript_write_failed", exc_info=True)
                 if quotas is not None and chat_request_id:
                     try:
                         await quotas.mark_chat_status(chat_request_id, outcome, error_code)
                     except Exception:
-                        logger.warning("Could not finalize chat request", exc_info=True)
+                        logger.warning("chat_status_write_failed", exc_info=True)
                 if usage is not None:
                     await usage.flush()
 
@@ -207,5 +207,5 @@ async def chat(
     except HTTPException:
         raise
     except Exception as e:
-        logger.exception("Chat error: %s", e)
+        logger.exception("chat_failed")
         raise HTTPException(status_code=500, detail="Chat stream failed.") from e

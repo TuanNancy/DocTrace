@@ -82,7 +82,7 @@ class WorkspaceService:
         except DatabaseNotConfigured as exc:
             raise api_error(503, "workspace_unavailable", "Workspace service chưa được cấu hình.") from exc
         except Exception as exc:
-            logger.exception("Workspace operation failed")
+            logger.exception("workspace_operation_failed")
             raise api_error(503, "workspace_unavailable",
                             "Không thể truy cập workspace. Vui lòng thử lại.") from exc
 

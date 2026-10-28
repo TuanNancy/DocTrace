@@ -68,7 +68,7 @@ class OpenRouterChatProvider(ChatProvider):
             response = await client.chat.completions.create(**params)
             update_from_response(usage, response, round((perf_counter() - started) * 1000))
             if not response.choices:
-                logger.warning("No choices returned from OpenRouter")
+                logger.warning("provider_no_choices")
                 return ""
             return response.choices[0].message.content or ""
         except asyncio.CancelledError:
@@ -78,8 +78,8 @@ class OpenRouterChatProvider(ChatProvider):
         except Exception as e:
             if usage is not None:
                 usage.mark_error()
-            logger.exception("OpenRouter API error: %s", e)
-            raise RuntimeError(f"OpenRouter API error: {e}") from e
+            logger.exception("provider_call_failed")
+            raise RuntimeError("OpenRouter API error") from e
         finally:
             if usage is not None:
                 usage.latency_ms = round((perf_counter() - started) * 1000)
@@ -134,8 +134,8 @@ class OpenRouterChatProvider(ChatProvider):
         except Exception as e:
             if usage is not None:
                 usage.mark_error()
-            logger.exception("OpenRouter streaming error: %s", e)
-            raise RuntimeError(f"OpenRouter streaming error: {e}") from e
+            logger.exception("provider_stream_failed")
+            raise RuntimeError("OpenRouter streaming error") from e
         finally:
             if usage is not None:
                 usage.latency_ms = round((perf_counter() - started) * 1000)
@@ -156,13 +156,12 @@ async def fetch_generation(config: AppConfig, generation_id: str) -> dict | None
             )
         if response.status_code != 200:
             logger.warning(
-                "OpenRouter generation lookup failed status=%s generation=%s",
-                response.status_code, generation_id,
+                "provider_generation_failed", extra={"status_code": response.status_code},
             )
             return None
         payload = response.json()
         data = payload.get("data") if isinstance(payload, dict) else None
         return data if isinstance(data, dict) else None
     except Exception:
-        logger.warning("OpenRouter generation lookup errored generation=%s", generation_id, exc_info=True)
+        logger.warning("provider_generation_failed", exc_info=True)
         return None

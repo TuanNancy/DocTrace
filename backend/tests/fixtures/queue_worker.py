@@ -30,6 +30,8 @@ async def index(content, filename, generation, *, user_id):
     with connection() as redis:
         redis.set(f"vectors:{generation}", user_id)
         redis.set(f"started:{doc_id}", generation)
+        if filename == "private-failure.pdf":
+            raise RuntimeError("private-prompt-canary https://private.test/pdf?token=secret")
         if filename == "invalid.pdf":
             raise InvalidPDFError("no text")
         if filename == "retry.pdf" and redis.incr(f"failures:{doc_id}") == 1:

@@ -61,10 +61,8 @@ class AppConfig:
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
     supabase_url: Optional[str] = None
     supabase_publishable_key: Optional[str] = None
-    # Control-plane Postgres. Optional until workspace tenancy is enabled; when
-    # present, readiness and the workspace APIs require it.
+    # Control-plane Postgres is required by readiness and workspace APIs.
     database_url: Optional[str] = None
-    direct_database_url: Optional[str] = None
     database_pool_size: int = 5
     database_pool_max_overflow: int = 5
     database_pool_timeout_seconds: float = 5.0
@@ -129,7 +127,6 @@ class AppConfig:
 
     def __post_init__(self):
         self.database_url = self.database_url or None
-        self.direct_database_url = self.direct_database_url or None
         self.log_level = self.log_level.upper()
         self.milvus_index_type = self.milvus_index_type or ("AUTOINDEX" if self.milvus_uri else "IVF_FLAT")
         self.openrouter_base_url = self.openrouter_base_url.rstrip("/")
@@ -182,12 +179,11 @@ class AppConfig:
             errors.append("MILVUS_COLLECTION must not be empty")
         if urlparse(self.redis_url).scheme not in ("redis", "rediss") or not urlparse(self.redis_url).hostname:
             errors.append("REDIS_URL must be an absolute redis(s) URL")
-        for attr, key in (("database_url", "DATABASE_URL"),
-                          ("direct_database_url", "DIRECT_DATABASE_URL")):
-            value = getattr(self, attr)
-            if value and (urlparse(value).scheme not in ("postgres", "postgresql", "postgresql+psycopg")
-                          or not urlparse(value).hostname):
-                errors.append(f"{key} must be an absolute PostgreSQL URL")
+        if self.database_url and (
+            urlparse(self.database_url).scheme not in ("postgres", "postgresql", "postgresql+psycopg")
+            or not urlparse(self.database_url).hostname
+        ):
+            errors.append("DATABASE_URL must be an absolute PostgreSQL URL")
         for attr, key, minimum in (
             ("database_pool_size", "DATABASE_POOL_SIZE", 1),
             ("database_pool_max_overflow", "DATABASE_POOL_MAX_OVERFLOW", 0),

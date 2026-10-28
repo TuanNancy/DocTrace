@@ -10,6 +10,7 @@ services:
     volumes:
       - ./deploy/tests:/checks:ro
     healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
       interval: 1s
       start_period: 1s
   nginx:

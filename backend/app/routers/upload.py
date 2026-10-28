@@ -97,12 +97,12 @@ async def upload_pdf(
     try:
         await run_in_threadpool(upload_pdf_to_supabase_storage, file_content, key)
     except Exception:
-        logger.exception("PDF retention failed")
+        logger.exception("pdf_retention_failed", extra={"doc_id": doc_id})
         try:
             # No job has been created yet, even if S3 committed before losing its reply.
             await run_in_threadpool(delete_pdf, key)
         except Exception:
-            logger.exception("Could not remove incomplete upload doc=%s", doc_id)
+            logger.exception("pdf_cleanup_failed", extra={"doc_id": doc_id})
         raise HTTPException(503, "Không thể lưu PDF. Vui lòng tải lại tài liệu.") from None
     try:
         document = await workspaces.create_document({
@@ -116,9 +116,9 @@ async def upload_pdf(
             try:
                 await run_in_threadpool(delete_pdf, key)
             except Exception:
-                logger.exception("Could not remove rejected PDF doc=%s", doc_id)
+                logger.exception("pdf_cleanup_failed", extra={"doc_id": doc_id})
             raise
-        logger.exception("Could not confirm document enqueue doc=%s", doc_id)
+        logger.exception("enqueue_confirmation_failed", extra={"doc_id": doc_id})
         try:
             # A lost EXEC reply can still mean the catalog and job were committed.
             document = await repository.get(workspace.workspace_id, uid, doc_id)
@@ -127,10 +127,10 @@ async def upload_pdf(
                 try:
                     await run_in_threadpool(delete_pdf, key)
                 except Exception:
-                    logger.exception("Could not remove unqueued PDF doc=%s", doc_id)
+                    logger.exception("pdf_cleanup_failed", extra={"doc_id": doc_id})
             # When Redis is unavailable, retain the PDF: the worker may already own it.
         except Exception:
-            logger.exception("Could not reconcile enqueue doc=%s", doc_id)
+            logger.exception("enqueue_reconcile_failed", extra={"doc_id": doc_id})
         else:
             return public_document(document)
         raise HTTPException(503, "Không thể lưu hoặc xếp hàng tài liệu. Vui lòng kiểm tra thư viện và thử lại.") from None

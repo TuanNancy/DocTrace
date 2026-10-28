@@ -31,7 +31,7 @@ def test_local_cloud_and_index_override():
     ("MAX_CHUNKS_PER_DOCUMENT", "-1"), ("MILVUS_PORT", "70000"),
     ("DOCUMENT_INDEX_TIMEOUT_SECONDS", "0"), ("DOCUMENT_DELETE_TIMEOUT_SECONDS", "-1"),
     ("REDIS_URL", "https://wrong.test"),
-    ("DATABASE_URL", "https://wrong.test"), ("DIRECT_DATABASE_URL", "redis://wrong.test"),
+    ("DATABASE_URL", "https://wrong.test"),
     ("DATABASE_POOL_SIZE", "0"), ("DATABASE_POOL_MAX_OVERFLOW", "-1"),
     ("DATABASE_POOL_TIMEOUT_SECONDS", "nan"), ("DATABASE_CONNECT_TIMEOUT_SECONDS", "0"),
     ("DATABASE_STATEMENT_TIMEOUT_MS", "0"), ("LOG_LEVEL", "verbose"), ("LOG_JSON", "maybe"),
@@ -108,7 +108,7 @@ def test_database_pool_logging_and_readiness_settings_parse():
         "LOG_LEVEL": "debug", "LOG_JSON": "true",
     })
     assert config.database_url.startswith("postgresql://app:")
-    assert config.direct_database_url.startswith("postgres://migrate:")
+    assert not hasattr(config, "direct_database_url")
     assert (config.database_pool_size, config.database_pool_max_overflow) == (7, 3)
     assert (config.database_pool_timeout_seconds, config.database_connect_timeout_seconds) == (2.5, 4)
     assert config.database_statement_timeout_ms == 9000

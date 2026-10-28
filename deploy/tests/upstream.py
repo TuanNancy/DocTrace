@@ -118,6 +118,7 @@ async def probe(request: Request):
         "forwarded_for": request.headers.get("x-forwarded-for"),
         "scheme": request.url.scheme,
         "host": request.headers.get("host"),
+        "request_id": request.state.request_id,
         "active": sum(pipeline.active for pipeline in pipelines),
     }
 
@@ -130,4 +131,4 @@ async def release():
 
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000, proxy_headers=True, forwarded_allow_ips="*")
+    uvicorn.run(app, host="0.0.0.0", port=8000, proxy_headers=True, forwarded_allow_ips="*", log_config=None)

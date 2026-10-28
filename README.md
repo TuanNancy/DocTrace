@@ -61,14 +61,21 @@ CI sử dụng Python **3.12** và Node **22**. Docker cần thiết cho Redis, 
    - Toàn bộ các biến `SUPABASE_S3_*` và `SUPABASE_STORAGE_BUCKET`: giữ PDF gốc.
    - `OPENROUTER_API_KEY`, `RAG_MODEL`, `EMBEDDING_MODEL`.
    - Milvus host/port hoặc `MILVUS_URI` + `MILVUS_TOKEN` cho Zilliz.
-   - `DATABASE_URL` (pooled) và `DIRECT_DATABASE_URL` (DDL/migration) cho control plane Postgres.
+   - `DATABASE_URL` dùng login riêng `doctrace_app` cho control plane Postgres (session pooler hỗ trợ IPv4).
    - `REDIS_URL=redis://localhost:6379/0`, `RQ_QUEUE_NAME=documents-v2`.
 
-Thư viện tài liệu vẫn dùng Redis và không cần service-role key. Postgres giữ control plane (workspace, thành viên, plan/quota, transcript, usage); schema nằm trong `doctrace` và không expose qua Supabase Data API. Chạy migration một lần sau khi cấu hình DB:
+Thư viện tài liệu vẫn dùng Redis và không cần service-role key. Postgres giữ control plane (workspace, thành viên, plan/quota, transcript, usage); schema nằm trong `doctrace` và không expose qua Supabase Data API. Tạo runtime role bằng `deploy/postgres/bootstrap-runtime-role.sql`, đặt mật khẩu riêng, rồi lưu credential DDL `DIRECT_DATABASE_URL` trong `backend/.env.migrations` theo file example. Xem [hướng dẫn tách quyền](DEPLOYMENT.md#tách-credential-runtime-và-migration) để bootstrap và chuyển cấu hình cũ. Alembic không dùng fallback `DATABASE_URL`.
+
+Chạy migration trong một subshell để credential DDL không đi theo API/worker:
 
 ```sh
 cd backend
-alembic upgrade head
+(
+  set -a
+  . ./.env.migrations
+  set +a
+  alembic upgrade head
+)
 ```
 
 Nếu thư viện Redis đã có tài liệu từ bản trước P1, chạy backfill để gắn `workspace_id`/`owner_user_id` và dựng lại các sorted set workspace. Mặc định là dry run; script idempotent và giữ index per-user cũ để rollback:
@@ -79,7 +86,7 @@ python scripts/backfill_workspaces.py
 python scripts/backfill_workspaces.py --apply
 ```
 
-`/ready` kiểm tra Redis và Postgres/schema; `/health` chỉ là liveness của process.
+`/ready` yêu cầu Redis và Postgres sẵn sàng: có migration stamp, đủ bảng/cột/quyền, runtime không có quyền DDL/admin. Thiếu DB hoặc dùng login migration sẽ trả `503`; schema mở rộng tương thích vẫn qua check khi rollback image. `/health` chỉ là liveness của process.
 
 Root `.env` được hỗ trợ; `backend/.env` ghi đè cả root và biến process. `get_config()` cache một lần, nên khởi động lại API/worker sau khi đổi cấu hình.
 

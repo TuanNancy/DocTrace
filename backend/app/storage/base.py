@@ -106,7 +106,7 @@ class VectorStore(ABC):
                 "backend": self.__class__.__name__,
             }
         except Exception as e:
-            logger.exception("Could not read connection status: %s", e)
+            logger.exception("vector_status_failed")
             return {
                 "status": "unknown",
                 "connected": False,

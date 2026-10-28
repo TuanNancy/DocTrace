@@ -1,4 +1,6 @@
 from contextlib import contextmanager
+import json
+import logging
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
@@ -8,6 +10,7 @@ import pytest
 from app.jobs import documents as tasks
 from app.services import provider_calls
 from app.services.pdf_indexing import InvalidPDFError
+from app.core.observability import JsonFormatter, current_request_id, log_context
 
 
 @pytest.fixture
@@ -185,3 +188,49 @@ async def test_delete_waits_for_transcript_recovery_before_external_cleanup(atte
     remove.assert_not_awaited()
     delete.assert_not_called()
     assert repository.finish.call_args.kwargs["retryable"] is True
+
+
+async def test_worker_binds_context_through_blocking_calls_and_resets_it(attempt, dependencies, monkeypatch, caplog):
+    repository, index, _, _ = dependencies
+    attempt["document"].update(request_id="original-upload", workspace_id="workspace")
+    captured = []
+
+    def download(key):
+        assert current_request_id() == "original-upload"
+        record = logging.LogRecord("app.jobs.documents", logging.INFO, __file__, 1, "document_job_started", (), None)
+        captured.append(json.loads(JsonFormatter().format(record)))
+        return b"pdf"
+
+    monkeypatch.setattr(tasks, "download_pdf", download)
+    index.side_effect = ConnectionError("secret-upstream-body")
+    with caplog.at_level(logging.INFO, logger="app.jobs.documents"):
+        with pytest.raises(ConnectionError):
+            await tasks.process_document(repository, "doc", "job", 2, 1)
+    assert captured[0]["request_id"] == "original-upload"
+    assert captured[0]["workspace_id"] == "workspace"
+    assert captured[0]["job_id"] == "job"
+    assert captured[0]["attempt"] == 2
+    assert current_request_id() == "-"
+    assert log_context.get() == {}
+
+
+def test_worker_never_persists_raw_rq_exception():
+    from fakeredis import FakeRedis
+    from rq import Queue
+    from rq.job import Job, JobStatus
+    from rq.registry import FailedJobRegistry
+    from rq.serializers import JSONSerializer
+    from app.worker import DocumentWorker
+
+    with FakeRedis() as connection:
+        queue = Queue("documents-test", connection=connection, serializer=JSONSerializer)
+        job = queue.enqueue("app.jobs.documents.index_document", "doc")
+        worker = DocumentWorker([queue], connection=connection, serializer=JSONSerializer)
+        worker.handle_job_failure(job, queue, exc_string="private-prompt Bearer secret")
+
+        persisted = Job.fetch(job.id, connection=connection, serializer=JSONSerializer)
+        assert persisted.get_status() == JobStatus.FAILED
+        assert job.id in FailedJobRegistry(queue=queue).get_job_ids()
+        assert persisted.exc_info == "Document job failed; consult structured logs by job_id."
+        assert "private-prompt" not in persisted.latest_result().exc_string
+        assert "secret" not in persisted.latest_result().exc_string

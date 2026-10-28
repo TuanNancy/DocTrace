@@ -5,6 +5,7 @@ Builds a disposable image if omitted. PDF/AI/S3/Milvus are replaced by fixtures.
 """
 import argparse
 import asyncio
+import json
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import subprocess
@@ -23,6 +24,7 @@ from rq.serializers import JSONSerializer
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app.core.config import AppConfig
+from app.core.observability import bind_log_context
 from app.services.document_repository import DocumentRepository, document_key, workspace_user_key
 from app.services.job_queue import DocumentQueue
 
@@ -69,9 +71,10 @@ def main():
 
     def document(name="normal.pdf"):
         doc_id = str(uuid.uuid4())
-        return run(repository.create({"doc_id": doc_id, "user_id": owner, "owner_user_id": owner,
-                                      "workspace_id": workspace, "name": name, "size_bytes": 20,
-                                      "storage_key": f"{owner}/{doc_id}/{name}"}, limit=1000))
+        with bind_log_context(request_id="upload-" + doc_id):
+            return run(repository.create({"doc_id": doc_id, "user_id": owner, "owner_user_id": owner,
+                                          "workspace_id": workspace, "name": name, "size_bytes": 20,
+                                          "storage_key": f"{owner}/{doc_id}/{name}"}, limit=1000))
 
     def current(record):
         return run(repository.internal_document(record["doc_id"]))
@@ -140,7 +143,8 @@ def main():
         def worker(suffix):
             return launch(suffix, "-v", f"{ROOT / 'tests' / 'fixtures'}:/checks:ro", "-e", "PYTHONPATH=/app",
                           "-e", "REDIS_URL=redis://redis:6379/0", "-e", f"RQ_QUEUE_NAME={config.rq_queue_name}",
-                          "-e", "DOCUMENT_INDEX_TIMEOUT_SECONDS=5", image, "python", "/checks/queue_worker.py")
+                          "-e", "DOCUMENT_INDEX_TIMEOUT_SECONDS=5", "-e", "LOG_JSON=true",
+                          image, "python", "/checks/queue_worker.py")
 
         workers = [worker("worker-one"), worker("worker-two")]
         eventually(lambda: state(queued, "ready"))
@@ -166,6 +170,21 @@ def main():
         eventually(lambda: state(timed_out, "ready"))
         assert current(timed_out)["attempt_number"] == 2
         print("PASS: real Linux workers, scheduled retry, timeout, invalid PDF, lost publication reply, result expiry", flush=True)
+
+        failed = document("private-failure.pdf")
+        eventually(lambda: state(failed, "error"))
+        eventually(lambda: queue.status(failed["job_id"]) == "failed")
+        failure = Job.fetch(failed["job_id"], connection=connection, serializer=JSONSerializer).latest_result()
+        assert failure.exc_string == "Document job failed; consult structured logs by job_id."
+        logs = "\n".join(docker("logs", name) for name in workers)
+        assert "private-failure.pdf" not in logs and "private-prompt-canary" not in logs
+        records = [json.loads(line) for line in logs.splitlines() if line.startswith('{"timestamp"')]
+        attempts = [row for row in records if row.get("doc_id") == failed["doc_id"]
+                    and row["message"] == "document_job_failed"]
+        assert {row["attempt"] for row in attempts} == {1, 2, 3}
+        assert all(row["request_id"] == failed["request_id"] and row["job_id"] == failed["job_id"]
+                   and row["workspace_id"] == workspace and row["user_id"] == owner for row in attempts)
+        print("PASS: originating request correlation across retries and private RQ failure/log sinks", flush=True)
 
         slow = document("slow.pdf")
         eventually(lambda: started(slow))

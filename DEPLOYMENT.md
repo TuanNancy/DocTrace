@@ -18,7 +18,7 @@ Bộ deploy chạy API, Redis, worker xử lý PDF và Nginx/Certbot bằng Dock
 
 Tạo bucket PDF private, cấu hình Supabase Auth cùng S3 keys trong `backend/.env`, rồi chạy Redis và worker. Postgres giữ control plane (`doctrace` schema: workspace, membership, plan/quota, transcript, usage); Redis vẫn giữ thư viện/queue và PDF nằm trong Storage. Không dùng service-role key cho database. Bản PostgreSQL cũ chuyển sang thư viện Redis mới theo quy trình bên dưới và tải lại PDF.
 
-`GET /health` là liveness của API process. `GET /ready` kiểm tra Redis và Postgres/schema với timeout ngắn, không gọi worker, Supabase, Milvus hay OpenRouter. Theo dõi log worker và trạng thái tài liệu để kiểm tra xử lý nền.
+`GET /health` là liveness của API process. `GET /ready` yêu cầu Redis và Postgres/schema/quyền runtime hợp lệ; Compose production và CD dùng endpoint này. Probe dùng kết nối riêng, connect/statement timeout 2 giây, không chờ pool query nghiệp vụ. Thiếu DB, thiếu migration/quyền hoặc runtime có quyền admin/DDL trả `503`. Theo dõi heartbeat và trạng thái tài liệu để kiểm tra worker, Supabase Auth/Storage, Milvus và OpenRouter.
 
 ## 1. Hiểu các image và service
 
@@ -65,7 +65,7 @@ Copy `backend/.env.example` thành `backend/.env`, giữ các giá trị tuning 
 | Nhóm | Biến / giá trị |
 |---|---|
 | Supabase Auth | `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY` từ project |
-| Postgres control plane | `DATABASE_URL` (runtime/pooled) và `DIRECT_DATABASE_URL` (migration/DDL). Có thể bỏ trống `DIRECT_DATABASE_URL` để dùng chung `DATABASE_URL`; cả hai phải là PostgreSQL URL |
+| Postgres control plane | `DATABASE_URL` (runtime, login `doctrace_app`, session pooler hỗ trợ IPv4). Lưu riêng `DIRECT_DATABASE_URL` (migration/DDL) trong `backend/.env.migrations` |
 | PDF private | `SUPABASE_S3_ENDPOINT`, `SUPABASE_S3_REGION`, `SUPABASE_S3_ACCESS_KEY_ID`, `SUPABASE_S3_SECRET_ACCESS_KEY`, `SUPABASE_STORAGE_BUCKET` theo S3 settings của cùng project |
 | Zilliz Cloud | `MILVUS_URI` là endpoint HTTPS của cluster; `MILVUS_TOKEN` là credential được cấp quyền truy cập; `MILVUS_COLLECTION=pdf_chunks_owned_v1` |
 | OpenRouter | `OPENROUTER_API_KEY`, `RAG_MODEL`, `EMBEDDING_MODEL` theo model bạn chọn |
@@ -75,9 +75,20 @@ Copy `backend/.env.example` thành `backend/.env`, giữ các giá trị tuning 
 
 S3 access key/secret là credential riêng của Storage, không phải Supabase publishable key. Giữ `MILVUS_INDEX_TYPE` không khai báo để URI mode chọn AUTOINDEX. Dùng collection mới cho bộ embedding mới; không trộn vector từ hai model hoặc recreate collection đang có dữ liệu.
 
-Postgres dùng schema riêng `doctrace`; không expose schema này qua Supabase Data API. Nên tách role migration (DDL) và role runtime (chỉ DML trên `doctrace`). `DIRECT_DATABASE_URL` được Alembic ưu tiên; API/worker dùng `DATABASE_URL`. Migration chạy tự động qua service `migrate` trong `compose.production.yml` và `deploy/deploy.sh`; nếu migration lỗi, API/worker cũ vẫn chạy và deployment dừng trước khi recreate service. Có thể chạy tay:
+### Tách credential runtime và migration
+
+Postgres dùng schema riêng `doctrace`; không expose qua Supabase Data API. Runtime bắt buộc dùng login ít quyền riêng. Chuẩn bị trước khi deploy bản kiểm tra `/ready` chặt hơn:
+
+1. Copy `backend/.env.migrations.example` thành `backend/.env.migrations`, điền `DIRECT_DATABASE_URL` bằng role sở hữu schema/migration. Bọc URL trong dấu nháy đơn nếu source file từ shell; percent-encode ký tự đặc biệt trong password. File này được Git ignore và chỉ inject vào service `migrate`. Có thể đổi đường dẫn bằng `MIGRATION_ENV_FILE` trong `.env.production`.
+2. Kết nối `psql` bằng migration identity qua direct/session pooler; dùng `\i deploy/postgres/bootstrap-runtime-role.sql` từ repository root, sau đó `\password doctrace_app` để đặt password riêng bằng prompt. Script idempotent, không reset password và từ chối role đã có quyền admin/role membership.
+3. Chạy `alembic upgrade head` bằng credential migration để áp dụng schema và grant cụ thể cho `doctrace_app` (kể cả khi đã ở head). Runtime chỉ có quyền DML cần thiết: không DDL, không sửa plan definitions/platform admins/migration stamp và không sửa/xóa audit. Không cấp quyền trên `auth`, `storage`, `realtime` hay mặc định quyền trên bảng tương lai.
+4. Đổi `DATABASE_URL` trong `backend/.env` sang role mới và bỏ `DIRECT_DATABASE_URL` khỏi file runtime. Với Supabase shared session pooler, dùng host/port từ Dashboard Connect và username `doctrace_app.PROJECT_REF` thay `postgres.PROJECT_REF`, password riêng của role; direct connection dùng username `doctrace_app`. Giữ SSL. API/worker chỉ nhận file runtime.
+5. Recreate API/worker và kiểm tra `/ready`, upload → ready → chat. Quyền `CREATE` kế thừa từ `PUBLIC` trên schema tùy biến cũng làm readiness thất bại; kiểm tra và thu hồi grant rộng đó bằng migration identity nếu database cũ có cấu hình này.
+
+Alembic chỉ nhận `DIRECT_DATABASE_URL` hoặc URL test được cấp rõ ràng, không fallback sang `DATABASE_URL`. Local shell dùng subshell như README. Production migration chạy qua `migrate` và `deploy/deploy.sh`; nếu migration lỗi, deployment dừng trước khi recreate API/worker. Với cập nhật thủ công, build image mới trước migration:
 
 ```sh
+docker compose --env-file .env.production -f compose.production.yml build api
 docker compose --env-file .env.production -f compose.production.yml run --rm --no-deps migrate
 ```
 
@@ -118,7 +129,7 @@ API và worker có giới hạn riêng `1400m`; Redis `256m`, Nginx `128m` (tổ
 
 Compose đặt `REDIS_URL=redis://redis:6379/0` cho API và worker. Cả hai phải dùng cùng `RQ_QUEUE_NAME` (mặc định `documents-v2`). `DOCUMENT_INDEX_TIMEOUT_SECONDS=900`, `DOCUMENT_DELETE_TIMEOUT_SECONDS=300`; tăng timeout cần điều chỉnh `stop_grace_period` (mặc định 16 phút) tương ứng. RQ graceful shutdown chờ job hiện tại; force kill cần chờ RQ phát hiện job bị bỏ dở và lên lịch retry.
 
-`backend/.env` được inject lúc chạy; không copy vào image. `.env.production` chứa domain/cấu hình Compose và được Git ignore. Các giá trị `NEXT_PUBLIC_*` của frontend được cấu hình trên Vercel; API URL phải dùng HTTPS.
+`backend/.env` và `backend/.env.migrations` được inject riêng lúc chạy; không copy vào image. Cả hai cùng `.env.production` được Git ignore; giới hạn quyền đọc các file credential trên host (`chmod 600`). Các giá trị `NEXT_PUBLIC_*` của frontend được cấu hình trên Vercel; API URL phải dùng HTTPS.
 
 ### Vercel và kết nối Auth/API
 
@@ -222,11 +233,12 @@ sudo journalctl -u doctrace-cert-renew.service
 
 ## 5. Cập nhật và quan sát
 
-Sau lần cấp certificate đầu tiên, nếu chưa bật CD:
+Sau lần cấp certificate đầu tiên, nếu chưa bật CD, build image mới trước bước migration:
 
 ```sh
+docker compose --env-file .env.production -f compose.production.yml build api
 docker compose --env-file .env.production -f compose.production.yml run --rm --no-deps migrate
-docker compose --env-file .env.production -f compose.production.yml up -d --build --wait api worker nginx
+docker compose --env-file .env.production -f compose.production.yml up -d --no-build --wait api worker nginx
 docker compose --env-file .env.production -f compose.production.yml ps
 docker compose --env-file .env.production -f compose.production.yml logs --tail=100 api worker redis nginx
 docker compose --env-file .env.production -f compose.production.yml exec nginx nginx -t
@@ -250,7 +262,11 @@ Quan sát queue mặc định bằng:
 docker compose --env-file .env.production -f compose.production.yml exec worker rq info --url redis://redis:6379/0
 ```
 
-Theo dõi worker heartbeat, queue `documents-v2`, RAM Redis và trạng thái `error/delete_error`. Log nối được bằng `doc`, `job`, `attempt`; mỗi response có `X-Request-ID` và log JSON (khi `LOG_JSON=true`) mang cùng ID. `/health` chỉ là liveness; `/ready` kiểm tra Redis và Postgres/schema. `down -v` xóa thư viện và queue trong Redis. AOF `everysec` có cửa sổ mất ghi gần nhất khi crash; PDF/vector riêng không tự khôi phục được danh mục nếu mất volume. Sau sự cố Storage/Redis ở thời điểm không xác định, có thể cần dọn PDF/vector không còn trong thư viện bằng tay; không có periodic cleanup service.
+Theo dõi worker heartbeat, queue `documents-v2`, RAM Redis và trạng thái `error/delete_error`. Log nối bằng `request_id`, `workspace_id`, `user_id`, `doc_id`, `job_id`, `attempt`. Upload ghi request ID cùng transaction catalog/enqueue; automatic retry giữ ID, retry/delete thủ công ghi ID mới. `LOG_JSON=true` bật JSON; cả JSON và text chỉ ghi event đăng ký, metadata cho phép, exception class và vị trí code. SDK/RQ/SQL không ghi raw messages/parameters/exception values; RQ failure records dùng thông báo chung.
+
+Nginx phát JSON access log gồm route label, request ID, status/upstream status và thời gian; bỏ raw URL/query/header/IP/body. Request-level error log được tắt vì Nginx không hỗ trợ scrub request line; dùng access status `4xx/5xx` và log API để truy lỗi. Lỗi startup/config vẫn có diagnostic của Nginx. `X-Request-ID` được validate/generate tại proxy và truyền tới API. `/ready` là health gate; `/health` là liveness.
+
+`down -v` xóa thư viện và queue trong Redis. AOF `everysec` có cửa sổ mất ghi gần nhất khi crash; PDF/vector riêng không tự khôi phục được danh mục nếu mất volume. Sau sự cố Storage/Redis ở thời điểm không xác định, có thể cần dọn PDF/vector không còn trong thư viện bằng tay; không có periodic cleanup service.
 
 ### Chuyển từ thư viện PostgreSQL sang Redis
 
@@ -302,7 +318,7 @@ docker run --rm -v "$PWD/deploy:/workspace/deploy:ro" doctrace-api:verify python
 
 Trong PowerShell, dùng đường dẫn tuyệt đối cho tham số `-v` ở lệnh cuối.
 
-Integration test dùng production Compose/templates với project name ngẫu nhiên, ports loopback ngẫu nhiên, auth/RAG giả lập và certificate tự ký. Nó kiểm tra bootstrap, TLS, redirect, forwarding/CORS, upload limit, stream trước khi upstream hoàn tất, cancellation, certificate rotation và API recreation. Containers/volumes test được dọn trong `finally`; không gọi ACME hay dịch vụ AI thật.
+Integration test dùng production Compose/templates với project name ngẫu nhiên, ports loopback ngẫu nhiên, auth/RAG giả lập và certificate tự ký. Nó kiểm tra bootstrap, TLS, redirect, forwarding/CORS, upload limit, stream trước khi upstream hoàn tất, cancellation, certificate rotation, API recreation và privacy log khi lỗi 404/413/502/504. Proxy fixture dùng `/health` vì không có Postgres; production dùng `/ready`. Containers/volumes test được dọn trong `finally`; không gọi ACME hay dịch vụ AI thật.
 
 CI chạy backend tests, deployment checks và frontend typecheck/lint/Vitest/Chromium/build. Frontend checks dùng cấu hình public giả và Auth/API fixtures local; chưa chứng minh dịch vụ cloud thực đã được kết nối đúng.
 
@@ -373,7 +389,7 @@ Tạo secrets trước khi push cấu hình CD lên `main`. Nếu thiếu, job d
 1. Runner gửi script từ đúng checkout đã kiểm tra qua SSH; VPS fetch và checkout **chính xác `github.sha`**, không tự deploy HEAD mới nhất của `main`.
 2. Build image `doctrace-api:sha-<SHA>` trên VPS. Nếu tag đã tồn tại, dùng lại image đó. Build xong mới đổi `API_IMAGE` trong `.env.production`, để lệnh Compose và certificate timer dùng đúng release.
 3. Cập nhật API/worker với `--no-build --wait`, giữ thời gian dừng worker **16 phút**; recreate Nginx để render lại mounted templates. Đây là cập nhật tại chỗ, có thể có gián đoạn ngắn.
-4. Kiểm tra Nginx config, worker của **chính container hiện tại** đăng ký heartbeat/queue trong Redis, rồi gọi HTTPS `/health` qua domain cấu hình.
+4. Kiểm tra Nginx config, worker của **chính container hiện tại** đăng ký heartbeat/queue trong Redis, rồi gọi HTTPS `/ready` qua domain cấu hình.
 5. Ghi release thành công và release trước vào `.git/doctrace-deploy/`. Image đang chạy trước lần CD đầu được giữ dưới tag `doctrace-api:retained-<image-id>`.
 
 GitHub concurrency và host `flock` ngăn deploy chồng nhau. Một run CI cũ đến sau release mới hơn sẽ được bỏ qua bằng kiểm tra Git ancestry. Job có timeout 45 phút để chừa thời gian build và graceful shutdown. Script không dọn image/volume khi deploy. Theo dõi `docker system df` trên VPS 40 GB; khi dọn image cũ, giữ các tag trong `.git/doctrace-deploy/current` và `previous` để rollback.

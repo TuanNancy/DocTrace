@@ -1,4 +1,6 @@
 # Docker DNS re-resolves the API after its container is recreated (Nginx 1.28+).
+include /opt/doctrace/privacy.conf;
+
 resolver 127.0.0.11 valid=10s ipv6=off;
 upstream api_backend {
     zone api_backend 64k;
@@ -9,6 +11,8 @@ upstream api_backend {
 server {
     listen 80;
     server_name ${API_DOMAIN};
+    access_log /dev/stdout doctrace_safe;
+    add_header X-Request-ID $doctrace_request_id always;
 
     location = /nginx-health {
         access_log off;
@@ -30,6 +34,8 @@ server {
     listen 443 ssl;
     http2 on;
     server_name ${API_DOMAIN};
+    access_log /dev/stdout doctrace_safe;
+    add_header X-Request-ID $doctrace_request_id always;
     ssl_certificate /etc/letsencrypt/live/doctrace/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/doctrace/privkey.pem;
     ssl_protocols TLSv1.2 TLSv1.3;
@@ -45,6 +51,8 @@ server {
         proxy_http_version 1.1;
         proxy_set_header Connection "";
         proxy_set_header Host $host;
+        proxy_set_header X-Request-ID $doctrace_request_id;
+        proxy_hide_header X-Request-ID;
         proxy_set_header X-Real-IP $remote_addr;
         # Nginx is the public edge: discard client-supplied forwarding headers.
         proxy_set_header X-Forwarded-For $remote_addr;

@@ -141,7 +141,7 @@ class TranscriptService:
         except DatabaseNotConfigured as exc:
             raise api_error(503, "transcript_unavailable", "Dịch vụ hội thoại chưa được cấu hình.") from exc
         except Exception as exc:
-            logger.exception("Transcript operation failed")
+            logger.exception("transcript_operation_failed")
             raise api_error(503, "transcript_unavailable", "Không thể truy cập hội thoại. Vui lòng thử lại.") from exc
 
     def _list(self, session, workspace_id: str, user_id: str, doc_id: str | None,

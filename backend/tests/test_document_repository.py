@@ -15,6 +15,7 @@ from rq.job import Job, JobStatus
 from rq.serializers import JSONSerializer
 
 from app.core.config import AppConfig
+from app.core.observability import request_id_context
 from app.services import document_repository as module
 from app.services.job_queue import DocumentQueue
 
@@ -75,6 +76,30 @@ async def test_create_commits_catalog_and_one_json_job_without_ttl(library):
     assert listed["items"][0]["status"] == "queued"
     assert "storage_key" not in listed["items"][0]
     assert "job_id" not in listed["items"][0]
+
+
+async def test_job_correlation_commits_with_catalog_and_changes_only_on_new_admission(library):
+    repository, connection, _, _ = library
+    token = request_id_context.set("upload-request")
+    try:
+        record = await create(repository, upload())
+    finally:
+        request_id_context.reset(token)
+    assert record["request_id"] == "upload-request"
+    assert (await repository.internal_document(record["doc_id"]))["request_id"] == "upload-request"
+    attempt = await repository.begin(record["doc_id"], record["job_id"], 1)
+    await repository.finish(attempt, error="generic failure")
+    job(connection, record, JobStatus.FAILED)
+    token = request_id_context.set("retry-request")
+    try:
+        retried = await repository.queue(WORKSPACE, OWNER, record["doc_id"], "index")
+    finally:
+        request_id_context.reset(token)
+    assert retried["request_id"] == "retry-request"
+    assert job(connection, retried).args == [record["doc_id"]]
+    automatic_attempt = await repository.begin(record["doc_id"], retried["job_id"], 2)
+    assert automatic_attempt["document"]["request_id"] == "retry-request"
+    assert "request_id" not in module.public_document(retried)
 
 
 async def test_owner_scope_applies_to_reads_listing_and_mutations(library):

@@ -122,7 +122,7 @@ class QuotaService:
         except DatabaseNotConfigured as exc:
             raise api_error(503, "quota_unavailable", "Dịch vụ quota chưa được cấu hình.") from exc
         except Exception as exc:
-            logger.exception("Quota operation failed")
+            logger.exception("quota_operation_failed")
             raise api_error(503, "quota_unavailable", "Không thể kiểm tra quota. Vui lòng thử lại.") from exc
 
     @staticmethod

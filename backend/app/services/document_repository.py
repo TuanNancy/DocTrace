@@ -21,6 +21,7 @@ from rq.job import Job
 from starlette.concurrency import run_in_threadpool
 
 from app.core.config import AppConfig, get_config
+from app.core.observability import current_request_id
 from app.services.job_queue import DocumentQueue, LIVE_STATES
 from app.services.quotas import document_quota_error
 
@@ -207,6 +208,7 @@ class DocumentRepository:
             timestamp = now()
             record = {**document, "user_id": owner_user_id, "owner_user_id": owner_user_id,
                       "workspace_id": workspace_id,
+                      "request_id": current_request_id(),
                       "status": "queued", "chunks_count": 0, "warnings": [], "error": None,
                       "created_at": timestamp, "updated_at": timestamp, "active_index_id": None,
                       "job_id": f"index-{document['doc_id']}", "job_kind": "index",
@@ -268,6 +270,7 @@ class DocumentRepository:
                         if document["status"] not in allowed:
                             raise HTTPException(409, "Tài liệu chưa thể thực hiện thao tác này.")
                         document.update(job_id=job_id, job_kind=kind, attempt_number=0, attempt_id=None,
+                                        request_id=current_request_id(),
                                         status="queued" if kind == "index" else "deleting", error=None,
                                         active_index_id=None, updated_at=now())
                         if kind == "delete":

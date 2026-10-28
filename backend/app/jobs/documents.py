@@ -6,6 +6,7 @@ from starlette.concurrency import run_in_threadpool
 from rq import get_current_job
 
 from app.core.config import get_config
+from app.core.observability import bind_log_context
 from app.services.document_repository import DocumentRepository
 from app.services.job_queue import MAX_RETRIES
 from app.services.provider_calls import UsageAttribution, UsageCollector
@@ -34,8 +35,23 @@ async def process_document(repository: DocumentRepository, doc_id: str, job_id: 
     if not attempt:
         return  # Old job, duplicate execution, or an already committed result.
     document = attempt["document"]
+    with bind_log_context(
+        request_id=document.get("request_id"), workspace_id=document.get("workspace_id"),
+        user_id=document["user_id"], doc_id=doc_id, job_id=job_id,
+        attempt=attempt_number, kind=attempt["kind"],
+    ):
+        logger.info("document_job_started")
+        try:
+            await _process_attempt(repository, attempt, retries_left)
+        except BaseException:
+            logger.exception("document_job_failed")
+            raise
+
+
+async def _process_attempt(repository: DocumentRepository, attempt: dict, retries_left: int) -> None:
+    document = attempt["document"]
     uid, doc_id = document["user_id"], document["doc_id"]
-    logger.info("Started job=%s attempt=%s doc=%s kind=%s", job_id, attempt["attempt_id"], doc_id, attempt["kind"])
+    job_id = attempt["job_id"]
     usage = (
         UsageCollector(UsageAttribution(
             workspace_id=document.get("workspace_id"), user_id=uid, doc_id=doc_id, job_id=job_id,
@@ -51,7 +67,8 @@ async def process_document(repository: DocumentRepository, doc_id: str, job_id: 
                 )
                 await remove_generations(uid, document["generations"])
                 await run_in_threadpool(delete_pdf, document["storage_key"])
-                await repository.finish(attempt)
+                if await repository.finish(attempt):
+                    logger.info("document_job_completed")
             else:
                 # Retried jobs clean earlier partial indexes before writing a fresh one.
                 await remove_generations(uid, [item for item in document["generations"] if item != attempt["attempt_id"]])
@@ -60,7 +77,8 @@ async def process_document(repository: DocumentRepository, doc_id: str, job_id: 
                 result = await index_pdf_bytes(
                     content, document["name"], attempt["attempt_id"], user_id=uid, **kwargs,
                 )
-                await repository.finish(attempt, chunks_count=result.chunks_count, warnings=result.warnings)
+                if await repository.finish(attempt, chunks_count=result.chunks_count, warnings=result.warnings):
+                    logger.info("document_job_completed", extra={"chunks_count": result.chunks_count})
         except Exception as exc:
             # Read before recording failure: a lost publish response may have committed.
             current = await repository.internal_document(doc_id)
@@ -74,7 +92,7 @@ async def process_document(repository: DocumentRepository, doc_id: str, job_id: 
             ))
             if not permanent:
                 raise  # RQ owns timeout, retry scheduling and abandoned-job maintenance.
-            logger.info("PDF rejected job=%s doc=%s", job_id, doc_id)
+            logger.info("document_pdf_rejected", extra={"error_code": "invalid_pdf"})
         # Failed generations remain registered for the next retry/delete. No finally
         # deletion: a publication response can be lost after Redis has committed it.
     finally:

@@ -152,7 +152,9 @@ class DeploymentTest(unittest.TestCase):
         self.assertTrue(all(c["project"] == "existing-project" for c in updates))
         self.assertIn("--no-build", updates[0]["args"])
         self.assertIn("--force-recreate", updates[1]["args"])
-        self.assertTrue(any(c["command"] == "curl" for c in self.commands()))
+        readiness = [c for c in self.commands() if c["command"] == "curl"]
+        self.assertTrue(readiness)
+        self.assertTrue(all(c["args"][-1] == "https://api.example.test/ready" for c in readiness))
 
     def test_migrations_run_before_services_and_failure_blocks_start(self):
         self.invoke("deploy", self.new)

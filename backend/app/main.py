@@ -4,7 +4,7 @@ FastAPI entry point, CORS, and routers.
 from contextlib import asynccontextmanager
 from anyio import CapacityLimiter
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
@@ -49,6 +49,16 @@ app.include_router(documents.router)
 app.include_router(workspaces.router)
 app.include_router(usage.router)
 app.include_router(conversations.router)
+
+
+@app.exception_handler(Exception)
+async def unhandled_error(request: Request, exc: Exception) -> JSONResponse:
+    # The outer Starlette error handler runs after request context is reset.
+    # Reuse state for correlation and never serialize the underlying exception.
+    return JSONResponse(
+        {"detail": "Service unavailable. Please try again."}, status_code=500,
+        headers={"X-Request-ID": getattr(request.state, "request_id", "-"), "Cache-Control": "no-store"},
+    )
 
 
 @app.get("/ready", tags=["health"])
