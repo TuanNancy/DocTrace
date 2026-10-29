@@ -1,0 +1,238 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "DocTrace: kiến trúc runtime của trợ lý PDF",
+    "output": ".archify/architecture-doctrace-runtime-20261029-232005/doctrace-runtime.html",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/TuanNancy/DocTrace.git",
+      "revision": "f238046102a1b3e733026057e1b24297383c921c"
+    },
+    "legend": {
+      "mode": "auto",
+      "entries": {
+        "frontend": { "label": "Giao diện" },
+        "backend": { "label": "Dịch vụ" },
+        "database": { "label": "Lưu trữ" },
+        "cloud": { "label": "Dịch vụ quản lý" },
+        "security": { "label": "Biên TLS" },
+        "external": { "label": "Bên ngoài" }
+      }
+    }
+  },
+  "components": [
+    {
+      "id": "user",
+      "type": "external",
+      "label": "Người dùng",
+      "sublabel": "trình duyệt",
+      "pos": [20, 341],
+      "size": [110, 54],
+      "sources": [
+        { "path": "frontend/src/lib/api.ts", "line": 186, "end_line": 203, "label": "Browser POST /api/chat (SSE)" }
+      ]
+    },
+    {
+      "id": "web",
+      "type": "frontend",
+      "label": "Next.js workspace",
+      "sublabel": "Vercel · SSR session",
+      "tag": "Vercel",
+      "pos": [20, 132],
+      "size": [180, 62],
+      "sources": [
+        { "path": "frontend/src/lib/api.ts", "line": 19, "end_line": 34, "label": "API URL + X-Workspace-Id" },
+        { "path": "frontend/src/middleware.ts", "line": 1, "end_line": 10, "label": "Middleware phiên đăng nhập" }
+      ]
+    },
+    {
+      "id": "auth",
+      "type": "cloud",
+      "label": "Supabase Auth",
+      "sublabel": "JWT · Google login",
+      "tag": "Supabase",
+      "pos": [270, 132],
+      "size": [150, 62],
+      "sources": [
+        { "path": "backend/app/core/auth.py", "line": 14, "end_line": 58, "label": "API xác thực Bearer JWT" },
+        { "path": "frontend/src/lib/supabase/middleware.ts", "line": 5, "end_line": 38, "label": "SSR gọi getUser()" }
+      ]
+    },
+    {
+      "id": "storage",
+      "type": "cloud",
+      "label": "Supabase Storage",
+      "sublabel": "PDF private (S3)",
+      "tag": "Supabase",
+      "pos": [450, 132],
+      "size": [170, 62],
+      "sources": [
+        { "path": "backend/app/services/supabase_pdf_storage.py", "line": 25, "end_line": 58, "label": "Object key + S3 client" },
+        { "path": "backend/app/jobs/documents.py", "line": 76, "end_line": 76, "label": "Worker tải PDF theo storage_key" }
+      ]
+    },
+    {
+      "id": "milvus",
+      "type": "database",
+      "label": "Zilliz / Milvus",
+      "sublabel": "chunk vector theo owner",
+      "tag": "Zilliz",
+      "pos": [700, 132],
+      "size": [170, 62],
+      "sources": [
+        { "path": "backend/app/storage/factory.py", "line": 11, "end_line": 23, "label": "Tạo Milvus adapter" },
+        { "path": "backend/app/storage/milvus_vector_store.py", "line": 166, "end_line": 176, "label": "Lọc user_id + doc_id" },
+        { "path": "backend/app/services/pdf_indexing.py", "line": 80, "end_line": 97, "label": "ensure_collection + insert_chunks" }
+      ]
+    },
+    {
+      "id": "llm",
+      "type": "external",
+      "label": "OpenRouter",
+      "sublabel": "chat + embedding",
+      "tag": "managed",
+      "pos": [940, 132],
+      "size": [170, 62],
+      "sources": [
+        { "path": "backend/app/providers/openrouter.py", "line": 19, "end_line": 41, "label": "Chat provider, không retry SDK" },
+        { "path": "backend/app/providers/embeddings.py", "line": 26, "end_line": 56, "label": "Embedding + probe dimension" }
+      ]
+    },
+    {
+      "id": "edge",
+      "type": "security",
+      "label": "Nginx",
+      "sublabel": "TLS · SSE không đệm",
+      "tag": "VPS",
+      "pos": [180, 337],
+      "size": [140, 62],
+      "sources": [
+        { "path": "deploy/nginx/https.conf.template", "line": 33, "end_line": 70, "label": "TLS + proxy_buffering off" },
+        { "path": "compose.production.yml", "line": 135, "end_line": 155, "label": "Container nginx production" }
+      ]
+    },
+    {
+      "id": "api",
+      "type": "backend",
+      "label": "FastAPI",
+      "sublabel": "REST + SSE · /ready",
+      "tag": "VPS",
+      "pos": [450, 335],
+      "size": [170, 66],
+      "sources": [
+        { "path": "backend/app/main.py", "line": 28, "end_line": 54, "label": "Router, CORS, /ready" },
+        { "path": "backend/app/routers/upload.py", "line": 88, "end_line": 112, "label": "Lưu PDF rồi commit catalog" },
+        { "path": "backend/app/routers/chat.py", "line": 94, "end_line": 127, "label": "Chat SSE: cache, retrieve, sources" }
+      ]
+    },
+    {
+      "id": "redis",
+      "type": "database",
+      "label": "Redis catalog",
+      "sublabel": "AOF · queue · rate limit",
+      "tag": "VPS",
+      "pos": [700, 335],
+      "size": [170, 66],
+      "sources": [
+        { "path": "backend/app/services/document_repository.py", "line": 29, "end_line": 60, "label": "Key catalog doctrace:library:v2" },
+        { "path": "backend/app/services/job_queue.py", "line": 29, "end_line": 38, "label": "Enqueue trong pipeline Redis" },
+        { "path": "compose.production.yml", "line": 2, "end_line": 18, "label": "Redis AOF, noeviction" }
+      ]
+    },
+    {
+      "id": "worker",
+      "type": "backend",
+      "label": "RQ worker",
+      "sublabel": "documents-v2",
+      "tag": "VPS",
+      "pos": [940, 335],
+      "size": [170, 66],
+      "sources": [
+        { "path": "backend/app/worker.py", "line": 53, "end_line": 62, "label": "Queue + DocumentWorker" },
+        { "path": "backend/app/jobs/documents.py", "line": 62, "end_line": 81, "label": "Index hoặc xoá generation" }
+      ]
+    },
+    {
+      "id": "cache",
+      "type": "database",
+      "label": "Redis cache",
+      "sublabel": "LRU · fail-open",
+      "tag": "VPS",
+      "pos": [450, 505],
+      "size": [160, 62],
+      "sources": [
+        { "path": "backend/app/services/answer_cache.py", "line": 100, "end_line": 115, "label": "AnswerCache timeout 1s" },
+        { "path": "compose.production.yml", "line": 20, "end_line": 38, "label": "Redis cache riêng, allkeys-lru" }
+      ]
+    },
+    {
+      "id": "pg",
+      "type": "database",
+      "label": "Postgres doctrace",
+      "sublabel": "workspace · quota · transcript",
+      "tag": "Supabase",
+      "pos": [700, 505],
+      "size": [170, 62],
+      "sources": [
+        { "path": "backend/app/db.py", "line": 1, "end_line": 6, "label": "Control plane Postgres" },
+        { "path": "backend/app/services/quotas.py", "line": 179, "end_line": 226, "label": "Admission + usage_counters" }
+      ]
+    }
+  ],
+  "connections": [
+    { "from": "user", "to": "web", "label": "tải trang", "fromSide": "top", "toSide": "bottom" },
+    { "from": "user", "to": "edge", "label": "HTTPS", "fromSide": "right", "toSide": "left", "variant": "emphasis" },
+    { "from": "web", "to": "auth", "label": "SSR session", "fromSide": "right", "toSide": "left", "variant": "security" },
+    { "from": "edge", "to": "api", "label": "proxy :8000", "fromSide": "right", "toSide": "left", "variant": "emphasis" },
+    { "from": "api", "to": "auth", "label": "Bearer JWT", "fromSide": "top", "toSide": "bottom", "variant": "security" },
+    { "from": "api", "to": "storage", "label": "giữ PDF", "fromSide": "top", "toSide": "bottom" },
+    { "from": "api", "to": "milvus", "label": "truy vấn chunk", "fromSide": "top", "toSide": "bottom" },
+    { "from": "api", "to": "llm", "label": "chat + embedding", "fromSide": "top", "toSide": "bottom" },
+    { "from": "api", "to": "redis", "label": "catalog + queue", "fromSide": "right", "toSide": "left" },
+    { "from": "api", "to": "cache", "label": "đọc/ghi đáp án", "fromSide": "bottom", "toSide": "top", "variant": "dashed" },
+    { "from": "api", "to": "pg", "label": "quota + transcript", "fromSide": "bottom", "toSide": "top" },
+    { "from": "worker", "to": "redis", "label": "nhận job", "fromSide": "left", "toSide": "right" },
+    { "from": "worker", "to": "llm", "label": "embedding", "fromSide": "top", "toSide": "bottom" },
+    { "from": "worker", "to": "milvus", "label": "ghi chunk", "fromSide": "top", "toSide": "bottom" },
+    { "from": "worker", "to": "pg", "label": "provider_calls", "fromSide": "bottom", "toSide": "top" },
+    {
+      "from": "worker",
+      "to": "storage",
+      "label": "tải PDF",
+      "fromSide": "right",
+      "toSide": "top",
+      "via": [[1135, 368], [1135, 90], [535, 90]],
+      "variant": "dashed"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Phân vùng dữ liệu",
+      "items": [
+        "Redis giữ catalog doctrace:library:v2, queue documents-v2 và rate limit; key catalog không TTL",
+        "Milvus lọc user_id + generation; Postgres giữ workspace, quota, transcript và provider_calls",
+        "Owner và platform admin chỉ thấy metadata, không đọc PDF hay transcript của member"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Vòng đời tài liệu",
+      "items": [
+        "Upload trả 202 sau khi Storage nhận PDF, rồi Redis commit metadata + enqueue trong một transaction",
+        "Worker ghi generation mới; chỉ job hiện tại được publish, retry đăng ký generation khác",
+        "Index timeout 900s, delete 300s; worker có 16 phút graceful stop"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Vận hành",
+      "items": [
+        "VPS Compose chạy Nginx, API, worker và Redis AOF; answer cache là Redis riêng, fail-open",
+        "Supabase Auth/Storage/Postgres, Zilliz vector và OpenRouter đọc cấu hình từ env",
+        "/ready kiểm tra Redis + Postgres; deploy đi từ CI qua SSH, rollback bằng deploy.sh"
+      ]
+    }
+  ]
+}
